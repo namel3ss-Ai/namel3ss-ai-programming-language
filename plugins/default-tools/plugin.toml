@@ -1,0 +1,9 @@
+id = "default-tools"
+name = "Default Tools"
+version = "1.0.0"
+description = "Built-in utility tools for Namel3ss"
+author = "Namel3ss"
+n3_core_version = ">=3.0.0,<4.0.0"
+
+[entrypoints]
+tools = "default_tools:register_tools"

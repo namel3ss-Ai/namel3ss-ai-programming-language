@@ -1,0 +1,9 @@
+id = "default-agents"
+name = "Default Agents"
+version = "1.0.0"
+description = "Registers simple utility agents"
+author = "Namel3ss"
+n3_core_version = ">=3.0.0,<4.0.0"
+
+[entrypoints]
+agents = "default_agents:register_agents"

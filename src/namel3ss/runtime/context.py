@@ -30,6 +30,8 @@ class ExecutionContext:
     tool_registry: Optional[ToolRegistry] = None
     metrics: Optional[MetricsTracker] = None
     secrets: Optional[SecretsManager] = None
+    trigger_manager: Optional[Any] = None
+    optimizer_engine: Optional[Any] = None
 
 
 def execute_app(app: IRApp, context: ExecutionContext) -> Dict[str, Any]:

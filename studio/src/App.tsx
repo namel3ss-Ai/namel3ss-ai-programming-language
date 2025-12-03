@@ -8,6 +8,9 @@ import MetricsPanel from "./panels/MetricsPanel";
 import JobsPanel from "./panels/JobsPanel";
 import DiagnosticsPanel from "./panels/DiagnosticsPanel";
 import RagMemoryPanel from "./panels/RagMemoryPanel";
+import FlowsPanel from "./panels/FlowsPanel";
+import PluginsPanel from "./panels/PluginsPanel";
+import OptimizerPanel from "./panels/OptimizerPanel";
 import { ApiClient } from "./api/client";
 
 const DEFAULT_CODE = `app "support":
@@ -28,9 +31,12 @@ const PANELS = [
   "Pages",
   "Runner",
   "Traces",
+  "Flows",
   "Metrics",
   "Jobs",
   "RAG & Memory",
+  "Plugins",
+  "Optimizer",
   "Diagnostics",
 ];
 
@@ -48,12 +54,18 @@ const App: React.FC = () => {
         return <RunnerPanel code={code} client={client} />;
       case "Traces":
         return <TracePanel client={client} />;
+      case "Flows":
+        return <FlowsPanel code={code} client={client} />;
       case "Metrics":
         return <MetricsPanel client={client} />;
       case "Jobs":
         return <JobsPanel client={client} />;
       case "RAG & Memory":
         return <RagMemoryPanel client={client} />;
+      case "Plugins":
+        return <PluginsPanel client={client} />;
+      case "Optimizer":
+        return <OptimizerPanel client={client} />;
       case "Diagnostics":
         return <DiagnosticsPanel code={code} client={client} />;
       default:

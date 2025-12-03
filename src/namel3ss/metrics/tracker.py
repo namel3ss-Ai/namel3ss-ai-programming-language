@@ -13,6 +13,7 @@ from .models import CostEvent
 class MetricsTracker:
     def __init__(self) -> None:
         self._events: List[CostEvent] = []
+        self._flow_counters: Dict[str, int] = defaultdict(int)
 
     def record_ai_call(
         self, provider: str, tokens_in: int = 0, tokens_out: int = 0, cost: float = 0.0
@@ -83,6 +84,21 @@ class MetricsTracker:
             )
         )
 
+    def record_flow_run(self, flow_name: str) -> None:
+        self._flow_counters["flows_run"] += 1
+        self._flow_counters[f"flow:{flow_name}:runs"] += 1
+
+    def record_flow_error(self, flow_name: str) -> None:
+        self._flow_counters["flow_errors"] += 1
+        self._flow_counters[f"flow:{flow_name}:errors"] += 1
+
+    def record_parallel_branch(self, count: int) -> None:
+        self._flow_counters["parallel_branches"] += count
+
+    def record_trigger_fire(self, kind: str) -> None:
+        self._flow_counters["trigger_total"] += 1
+        self._flow_counters[f"trigger:{kind}"] += 1
+
     def snapshot(self) -> Dict[str, Any]:
         by_operation: Dict[str, Dict[str, Any]] = defaultdict(
             lambda: {"count": 0, "cost": 0.0, "tokens_in": 0, "tokens_out": 0}
@@ -94,4 +110,8 @@ class MetricsTracker:
             bucket["tokens_in"] += event.tokens_in
             bucket["tokens_out"] += event.tokens_out
         total_cost = sum(event.cost for event in self._events)
-        return {"total_cost": total_cost, "by_operation": dict(by_operation)}
+        return {
+            "total_cost": total_cost,
+            "by_operation": dict(by_operation),
+            "flow_metrics": dict(self._flow_counters),
+        }

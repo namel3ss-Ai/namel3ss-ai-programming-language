@@ -6,13 +6,17 @@ from __future__ import annotations
 
 from dataclasses import asdict
 from typing import Any, Dict, Optional
+from pathlib import Path
 
-from fastapi import Depends, FastAPI, HTTPException
+from fastapi import Depends, FastAPI, HTTPException, UploadFile, File, Form
 from pydantic import BaseModel
 
 from . import ir, lexer, parser
+from .flows.triggers import FlowTrigger, TriggerManager
 from .runtime.engine import Engine
 from .ui.renderer import UIRenderer
+from .ui.runtime import UIEventRouter
+from .ui.components import UIEvent, UIContext
 from .obs.tracer import Tracer
 from .security import (
     API_KEY_HEADER,
@@ -32,6 +36,13 @@ from .studio.engine import StudioEngine
 from .diagnostics.pipeline import run_diagnostics
 from .diagnostics.models import has_effective_errors
 from .packaging.bundler import Bundler, make_server_bundle, make_worker_bundle
+from .secrets.manager import SecretsManager
+from .plugins.registry import PluginRegistry
+from .plugins.versioning import CORE_VERSION
+from .optimizer.storage import OptimizerStorage
+from .optimizer.overlays import OverlayStore
+from .optimizer.engine import OptimizerEngine
+from .optimizer.apply import SuggestionApplier
 
 
 class ParseRequest(BaseModel):
@@ -72,6 +83,34 @@ class RAGQueryRequest(BaseModel):
     indexes: Optional[list[str]] = None
 
 
+class FlowsRequest(BaseModel):
+    code: str
+
+
+class TriggerRegistrationRequest(BaseModel):
+    id: str
+    kind: str
+    flow_name: str
+    config: Dict[str, Any]
+    enabled: bool = True
+
+
+class TriggerFireRequest(BaseModel):
+    payload: Optional[Dict[str, Any]] = None
+
+
+class UIEventRequest(BaseModel):
+    code: str
+    page: str
+    component_id: str
+    event: str
+    payload: Dict[str, Any] = {}
+
+
+class PluginInstallRequest(BaseModel):
+    path: str
+
+
 def _parse_source_to_ast(source: str) -> Dict[str, Any]:
     tokens = lexer.Lexer(source).tokenize()
     module = parser.Parser(tokens).parse_module()
@@ -90,6 +129,12 @@ def create_app() -> FastAPI:
     app = FastAPI(title="Namel3ss V3", version="0.1.0")
     last_trace: Optional[Dict[str, Any]] = None
     metrics_tracker = MetricsTracker()
+    plugin_registry = PluginRegistry(Path(SecretsManager().get("N3_PLUGINS_DIR") or "plugins"), core_version=CORE_VERSION, tracer=Tracer())
+    trigger_manager = TriggerManager(
+        job_queue=global_job_queue, secrets=SecretsManager(), tracer=Tracer(), metrics=metrics_tracker
+    )
+    optimizer_storage = OptimizerStorage(Path(SecretsManager().get("N3_OPTIMIZER_DB") or "optimizer.db"))
+    overlay_store = OverlayStore(Path(SecretsManager().get("N3_OPTIMIZER_OVERLAYS") or "optimizer_overlays.json"))
 
     @app.get("/health")
     def health() -> Dict[str, str]:
@@ -109,7 +154,12 @@ def create_app() -> FastAPI:
         if not can_run_app(principal.role):
             raise HTTPException(status_code=403, detail="Forbidden")
         try:
-            engine = Engine.from_source(payload.source, metrics_tracker=metrics_tracker)
+            engine = Engine.from_source(
+                payload.source,
+                metrics_tracker=metrics_tracker,
+                trigger_manager=trigger_manager,
+                plugin_registry=plugin_registry,
+            )
             result = engine.run_app(
                 payload.app_name, include_trace=True, principal_role=principal.role.value
             )
@@ -138,7 +188,12 @@ def create_app() -> FastAPI:
         if not can_run_flow(principal.role):
             raise HTTPException(status_code=403, detail="Forbidden")
         try:
-            engine = Engine.from_source(payload.source, metrics_tracker=metrics_tracker)
+            engine = Engine.from_source(
+                payload.source,
+                metrics_tracker=metrics_tracker,
+                trigger_manager=trigger_manager,
+                plugin_registry=plugin_registry,
+            )
             result = engine.execute_flow(
                 payload.flow, principal_role=principal.role.value
             )
@@ -172,13 +227,30 @@ def create_app() -> FastAPI:
         if not can_view_pages(principal.role):
             raise HTTPException(status_code=403, detail="Forbidden")
         try:
-            engine = Engine.from_source(payload.code)
+            engine = Engine.from_source(payload.code, trigger_manager=trigger_manager, plugin_registry=plugin_registry)
             if payload.page not in engine.program.pages:
                 raise HTTPException(status_code=404, detail="Page not found")
             ui_page = engine.ui_renderer.from_ir_page(engine.program.pages[payload.page])
-            return {"ui": ui_page.__dict__}
+            runtime_components = engine.ui_renderer.build_runtime_components(engine.program.pages[payload.page])
+            return {"ui": ui_page.__dict__, "components": [c.__dict__ for c in runtime_components]}
         except HTTPException:
             raise
+        except Exception as exc:  # pragma: no cover
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    @app.post("/api/flows")
+    def api_flows(
+        payload: FlowsRequest, principal: Principal = Depends(get_principal)
+    ) -> Dict[str, Any]:
+        if not can_run_flow(principal.role):
+            raise HTTPException(status_code=403, detail="Forbidden")
+        try:
+            program = _parse_source_to_ir(payload.code)
+            flows = [
+                {"name": flow.name, "description": flow.description, "steps": len(flow.steps)}
+                for flow in program.flows.values()
+            ]
+            return {"flows": flows}
         except Exception as exc:  # pragma: no cover
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 
@@ -236,7 +308,9 @@ def create_app() -> FastAPI:
     def api_meta(principal: Principal = Depends(get_principal)) -> Dict[str, Any]:
         if principal.role not in {Role.ADMIN, Role.DEVELOPER}:
             raise HTTPException(status_code=403, detail="Forbidden")
-        engine = Engine.from_source("")
+        engine = Engine.from_source(
+            "", metrics_tracker=metrics_tracker, trigger_manager=trigger_manager, plugin_registry=plugin_registry
+        )
         return {
             "ai": {
                 "models": list(engine.registry.models.keys()),
@@ -255,7 +329,12 @@ def create_app() -> FastAPI:
 
     scheduler = JobScheduler(global_job_queue)
     worker = Worker(
-        runtime_factory=lambda code: Engine.from_source(code or "", metrics_tracker=metrics_tracker),
+        runtime_factory=lambda code: Engine.from_source(
+            code or "",
+            metrics_tracker=metrics_tracker,
+            trigger_manager=trigger_manager,
+            plugin_registry=plugin_registry,
+        ),
         job_queue=global_job_queue,
         tracer=Tracer(),
     )
@@ -298,7 +377,9 @@ def create_app() -> FastAPI:
         if principal.role not in {Role.ADMIN, Role.DEVELOPER, Role.VIEWER}:
             raise HTTPException(status_code=403, detail="Forbidden")
         try:
-            engine = Engine.from_source(payload.code, metrics_tracker=metrics_tracker)
+            engine = Engine.from_source(
+                payload.code, metrics_tracker=metrics_tracker, trigger_manager=trigger_manager, plugin_registry=plugin_registry
+            )
             results = await engine.rag_engine.a_retrieve(payload.query, index_names=payload.indexes)
             if engine.rag_engine.tracer:
                 engine.rag_engine.tracer.update_last_rag_result_count(len(results))
@@ -316,18 +397,235 @@ def create_app() -> FastAPI:
         except Exception as exc:  # pragma: no cover
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 
+    @app.post("/api/rag/upload")
+    async def api_rag_upload(
+        file: UploadFile = File(...),
+        index: str = Form("default"),
+        principal: Principal = Depends(get_principal),
+    ) -> Dict[str, Any]:
+        if principal.role not in {Role.ADMIN, Role.DEVELOPER}:
+            raise HTTPException(status_code=403, detail="Forbidden")
+        try:
+            content_bytes = await file.read()
+            try:
+                text = content_bytes.decode("utf-8")
+            except UnicodeDecodeError:
+                text = content_bytes.decode("latin-1", errors="ignore")
+            engine = Engine.from_source(
+                "", metrics_tracker=metrics_tracker, trigger_manager=trigger_manager, plugin_registry=plugin_registry
+            )
+            await engine.rag_engine.a_index_documents(index, [text])
+            return {"indexed": 1, "index": index}
+        except Exception as exc:  # pragma: no cover
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    @app.get("/api/flows/triggers")
+    async def api_list_triggers(principal: Principal = Depends(get_principal)) -> Dict[str, Any]:
+        if principal.role not in {Role.ADMIN, Role.DEVELOPER, Role.VIEWER}:
+            raise HTTPException(status_code=403, detail="Forbidden")
+        triggers = await trigger_manager.a_list_triggers()
+        return {
+            "triggers": [
+                {
+                    "id": t.id,
+                    "kind": t.kind,
+                    "flow_name": t.flow_name,
+                    "config": t.config,
+                    "enabled": t.enabled,
+                    "last_fired": t.last_fired.isoformat() if t.last_fired else None,
+                    "next_fire_at": t.next_fire_at.isoformat() if t.next_fire_at else None,
+                }
+                for t in triggers
+            ]
+        }
+
+    @app.post("/api/flows/triggers")
+    async def api_register_trigger(
+        payload: TriggerRegistrationRequest, principal: Principal = Depends(get_principal)
+    ) -> Dict[str, Any]:
+        if principal.role not in {Role.ADMIN, Role.DEVELOPER}:
+            raise HTTPException(status_code=403, detail="Forbidden")
+        trigger = FlowTrigger(
+            id=payload.id,
+            kind=payload.kind,
+            flow_name=payload.flow_name,
+            config=payload.config,
+            enabled=payload.enabled,
+        )
+        await trigger_manager.a_register_trigger(trigger)
+        return {"trigger": trigger.__dict__}
+
+    @app.post("/api/flows/trigger/{trigger_id}")
+    async def api_fire_trigger(
+        trigger_id: str, payload: TriggerFireRequest, principal: Principal = Depends(get_principal)
+    ) -> Dict[str, Any]:
+        if not can_run_flow(principal.role):
+            raise HTTPException(status_code=403, detail="Forbidden")
+        job = await trigger_manager.a_fire_trigger(trigger_id, payload.payload or {})
+        return {"job_id": job.id if job else None}
+
+    @app.post("/api/flows/triggers/tick")
+    async def api_tick_triggers(principal: Principal = Depends(get_principal)) -> Dict[str, Any]:
+        if principal.role not in {Role.ADMIN, Role.DEVELOPER}:
+            raise HTTPException(status_code=403, detail="Forbidden")
+        fired = await trigger_manager.a_tick_schedules()
+        return {"fired": [job.id for job in fired]}
+
+    @app.get("/api/plugins")
+    def api_plugins(principal: Principal = Depends(get_principal)) -> Dict[str, Any]:
+        if principal.role not in {Role.ADMIN, Role.DEVELOPER, Role.VIEWER}:
+            raise HTTPException(status_code=403, detail="Forbidden")
+        plugins = plugin_registry.discover()
+        return {"plugins": [p.__dict__ for p in plugins]}
+
+    @app.post("/api/plugins/{plugin_id}/load")
+    def api_plugin_load(plugin_id: str, principal: Principal = Depends(get_principal)) -> Dict[str, Any]:
+        if principal.role not in {Role.ADMIN, Role.DEVELOPER}:
+            raise HTTPException(status_code=403, detail="Forbidden")
+        # build sdk from a minimal engine so plugin can register contributions
+        engine = Engine.from_source(
+            "", metrics_tracker=metrics_tracker, trigger_manager=trigger_manager, plugin_registry=plugin_registry
+        )
+        from .plugins.sdk import PluginSDK
+
+        sdk = PluginSDK.from_engine(engine)
+        info = plugin_registry.load(plugin_id, sdk)
+        return {"plugin": info.__dict__}
+
+    @app.post("/api/plugins/{plugin_id}/unload")
+    def api_plugin_unload(plugin_id: str, principal: Principal = Depends(get_principal)) -> Dict[str, Any]:
+        if principal.role not in {Role.ADMIN, Role.DEVELOPER}:
+            raise HTTPException(status_code=403, detail="Forbidden")
+        engine = Engine.from_source(
+            "", metrics_tracker=metrics_tracker, trigger_manager=trigger_manager, plugin_registry=plugin_registry
+        )
+        from .plugins.sdk import PluginSDK
+
+        sdk = PluginSDK.from_engine(engine)
+        plugin_registry.unload(plugin_id, sdk)
+        return {"status": "ok"}
+
+    @app.post("/api/plugins/install")
+    def api_plugin_install(
+        payload: PluginInstallRequest, principal: Principal = Depends(get_principal)
+    ) -> Dict[str, Any]:
+        if principal.role not in {Role.ADMIN, Role.DEVELOPER}:
+            raise HTTPException(status_code=403, detail="Forbidden")
+        path = Path(payload.path)
+        info = plugin_registry.install_from_path(path)
+        return {"plugin": info.__dict__}
+
     @app.get("/api/jobs")
     def api_jobs(principal: Principal = Depends(get_principal)) -> Dict[str, Any]:
         if principal.role not in {Role.ADMIN, Role.DEVELOPER, Role.VIEWER}:
             raise HTTPException(status_code=403, detail="Forbidden")
         return {"jobs": [job.__dict__ for job in global_job_queue.list()]}
 
+    @app.post("/api/ui/event")
+    async def api_ui_event(
+        payload: UIEventRequest, principal: Principal = Depends(get_principal)
+    ) -> Dict[str, Any]:
+        if not can_view_pages(principal.role):
+            raise HTTPException(status_code=403, detail="Forbidden")
+        try:
+            engine = Engine.from_source(
+                payload.code, metrics_tracker=metrics_tracker, trigger_manager=trigger_manager, plugin_registry=plugin_registry
+            )
+            if payload.page not in engine.program.pages:
+                raise HTTPException(status_code=404, detail="Page not found")
+            router = UIEventRouter(
+                flow_engine=engine.flow_engine,
+                agent_runner=engine.agent_runner,
+                tool_registry=engine.tool_registry,
+                rag_engine=engine.rag_engine,
+                job_queue=engine.job_queue,
+                memory_engine=engine.memory_engine,
+                tracer=metrics_tracker and Tracer(),
+                metrics=metrics_tracker,
+            )
+            components = engine.ui_renderer.build_runtime_components(engine.program.pages[payload.page])
+            target_comp = next((c for c in components if c.id == payload.component_id), None)
+            if not target_comp:
+                raise HTTPException(status_code=404, detail="Component not found")
+            ui_context = UIContext(
+                app_name=engine.program.apps[list(engine.program.apps.keys())[0]].name if engine.program.apps else "__app__",
+                page_name=payload.page,
+                metadata={"execution_context": engine._build_default_execution_context()},
+            )
+            event = UIEvent(component_id=payload.component_id, event=payload.event, payload=payload.payload)
+            result = await router.a_handle_event(target_comp, event, ui_context)
+            return {"result": result.__dict__}
+        except HTTPException:
+            raise
+        except Exception as exc:  # pragma: no cover
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    @app.get("/api/optimizer/suggestions")
+    def api_optimizer_suggestions(
+        status: Optional[str] = None, principal: Principal = Depends(get_principal)
+    ) -> Dict[str, Any]:
+        if principal.role not in {Role.ADMIN, Role.DEVELOPER}:
+            raise HTTPException(status_code=403, detail="Forbidden")
+        storage = optimizer_storage
+        from namel3ss.optimizer.models import OptimizationStatus
+
+        stat = OptimizationStatus(status) if status else None
+        suggestions = storage.list(stat)
+        return {"suggestions": [s.__dict__ for s in suggestions]}
+
+    @app.post("/api/optimizer/scan")
+    def api_optimizer_scan(principal: Principal = Depends(get_principal)) -> Dict[str, Any]:
+        if principal.role not in {Role.ADMIN, Role.DEVELOPER}:
+            raise HTTPException(status_code=403, detail="Forbidden")
+        engine = OptimizerEngine(
+            storage=optimizer_storage,
+            metrics=metrics_tracker,
+            memory_engine=None,
+            tracer=Tracer(),
+            router=None,
+            secrets=SecretsManager(),
+        )
+        suggestions = engine.scan()
+        return {"created": [s.id for s in suggestions]}
+
+    @app.post("/api/optimizer/apply/{suggestion_id}")
+    def api_optimizer_apply(suggestion_id: str, principal: Principal = Depends(get_principal)) -> Dict[str, Any]:
+        if principal.role not in {Role.ADMIN, Role.DEVELOPER}:
+            raise HTTPException(status_code=403, detail="Forbidden")
+        sugg = optimizer_storage.get(suggestion_id)
+        if not sugg:
+            raise HTTPException(status_code=404, detail="Not found")
+        applier = SuggestionApplier(overlay_store, optimizer_storage, tracer=Tracer())
+        applier.apply(sugg)
+        return {"status": "applied"}
+
+    @app.post("/api/optimizer/reject/{suggestion_id}")
+    def api_optimizer_reject(suggestion_id: str, principal: Principal = Depends(get_principal)) -> Dict[str, Any]:
+        if principal.role not in {Role.ADMIN, Role.DEVELOPER}:
+            raise HTTPException(status_code=403, detail="Forbidden")
+        sugg = optimizer_storage.get(suggestion_id)
+        if not sugg:
+            raise HTTPException(status_code=404, detail="Not found")
+        from namel3ss.optimizer.models import OptimizationStatus
+
+        sugg.status = OptimizationStatus.REJECTED
+        optimizer_storage.update(sugg)
+        return {"status": "rejected"}
+
+    @app.get("/api/optimizer/overlays")
+    def api_optimizer_overlays(principal: Principal = Depends(get_principal)) -> Dict[str, Any]:
+        if principal.role not in {Role.ADMIN, Role.DEVELOPER}:
+            raise HTTPException(status_code=403, detail="Forbidden")
+        return {"overlays": overlay_store.load().to_dict()}
+
     @app.get("/api/studio-summary")
     def api_studio_summary(principal: Principal = Depends(get_principal)) -> Dict[str, Any]:
         if principal.role not in {Role.ADMIN, Role.DEVELOPER, Role.VIEWER}:
             raise HTTPException(status_code=403, detail="Forbidden")
         # Build a minimal runtime for counting
-        engine = Engine.from_source("", metrics_tracker=metrics_tracker)
+        engine = Engine.from_source(
+            "", metrics_tracker=metrics_tracker, trigger_manager=trigger_manager, plugin_registry=plugin_registry
+        )
         studio = StudioEngine(
             job_queue=global_job_queue,
             tracer=Tracer(),

@@ -1,0 +1,22 @@
+app "hello":
+  entry_page "home"
+
+page "home":
+  route "/"
+  section "hero":
+    component "text":
+      value "Welcome to Namel3ss"
+    component "form":
+      value "Enter your name"
+
+model "default":
+  provider "dummy"
+
+ai "greet":
+  model "default"
+  input from user_input
+
+flow "pipeline":
+  step "call":
+    kind "ai"
+    target "greet"

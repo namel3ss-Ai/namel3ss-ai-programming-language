@@ -12,63 +12,63 @@ from pathlib import Path
 from . import ir, lexer, parser
 from .server import create_app
 from .runtime.engine import Engine
+from .secrets.manager import SecretsManager
 
 
-def load_module_from_file(path: Path):
-    source = path.read_text(encoding="utf-8")
-    tokens = lexer.Lexer(source, filename=str(path)).tokenize()
-    return parser.Parser(tokens).parse_module()
-
-
-def main(argv: list[str] | None = None) -> None:
+def build_cli_parser() -> argparse.ArgumentParser:
     cli = argparse.ArgumentParser(prog="n3", description="Namel3ss V3 CLI")
     sub = cli.add_subparsers(dest="command", required=True)
+    commands: list[str] = []
 
-    parse_cmd = sub.add_parser("parse", help="Parse an .ai file and show AST")
+    def register(name: str, **kwargs):
+        commands.append(name)
+        return sub.add_parser(name, **kwargs)
+
+    parse_cmd = register("parse", help="Parse an .ai file and show AST")
     parse_cmd.add_argument("file", type=Path)
 
-    ir_cmd = sub.add_parser("ir", help="Generate IR from an .ai file")
+    ir_cmd = register("ir", help="Generate IR from an .ai file")
     ir_cmd.add_argument("file", type=Path)
 
-    run_cmd = sub.add_parser("run", help="Run an app from an .ai file")
+    run_cmd = register("run", help="Run an app from an .ai file")
     run_cmd.add_argument("app_name", type=str)
     run_cmd.add_argument("--file", type=Path, required=True, help="Path to .ai file")
 
-    graph_cmd = sub.add_parser("graph", help="Build reasoning graph for an .ai file")
+    graph_cmd = register("graph", help="Build reasoning graph for an .ai file")
     graph_cmd.add_argument("file", type=Path)
 
-    serve_cmd = sub.add_parser("serve", help="Start the FastAPI server")
+    serve_cmd = register("serve", help="Start the FastAPI server")
     serve_cmd.add_argument("--host", default="127.0.0.1")
     serve_cmd.add_argument("--port", type=int, default=8000)
     serve_cmd.add_argument("--dry-run", action="store_true", help="Build app but do not start server")
 
-    run_agent_cmd = sub.add_parser("run-agent", help="Run an agent from an .ai file")
+    run_agent_cmd = register("run-agent", help="Run an agent from an .ai file")
     run_agent_cmd.add_argument("--file", type=Path, required=True, help="Path to .ai file")
     run_agent_cmd.add_argument("--agent", required=True, help="Agent name to run")
 
-    run_flow_cmd = sub.add_parser("run-flow", help="Run a flow from an .ai file")
+    run_flow_cmd = register("run-flow", help="Run a flow from an .ai file")
     run_flow_cmd.add_argument("--file", type=Path, required=True, help="Path to .ai file")
     run_flow_cmd.add_argument("--flow", required=True, help="Flow name to run")
 
-    page_ui_cmd = sub.add_parser("page-ui", help="Render UI for a page")
+    page_ui_cmd = register("page-ui", help="Render UI for a page")
     page_ui_cmd.add_argument("--file", type=Path, required=True, help="Path to .ai file")
     page_ui_cmd.add_argument("--page", required=True, help="Page name to render")
 
-    meta_cmd = sub.add_parser("meta", help="Show program metadata")
+    meta_cmd = register("meta", help="Show program metadata")
     meta_cmd.add_argument("--file", type=Path, required=True, help="Path to .ai file")
 
-    job_flow_cmd = sub.add_parser("job-flow", help="Enqueue a flow job")
+    job_flow_cmd = register("job-flow", help="Enqueue a flow job")
     job_flow_cmd.add_argument("--file", type=Path, required=True)
     job_flow_cmd.add_argument("--flow", required=True)
 
-    job_agent_cmd = sub.add_parser("job-agent", help="Enqueue an agent job")
+    job_agent_cmd = register("job-agent", help="Enqueue an agent job")
     job_agent_cmd.add_argument("--file", type=Path, required=True)
     job_agent_cmd.add_argument("--agent", required=True)
 
-    job_status_cmd = sub.add_parser("job-status", help="Check job status")
+    job_status_cmd = register("job-status", help="Check job status")
     job_status_cmd.add_argument("job_id")
 
-    diag_cmd = sub.add_parser("diagnostics", help="Run diagnostics on an .ai file")
+    diag_cmd = register("diagnostics", help="Run diagnostics on an .ai file")
     diag_cmd.add_argument("--file", type=Path, required=True)
     diag_cmd.add_argument("--strict", action="store_true", help="Treat warnings as errors")
     diag_cmd.add_argument(
@@ -78,10 +78,48 @@ def main(argv: list[str] | None = None) -> None:
         help="Diagnostics output format",
     )
 
-    bundle_cmd = sub.add_parser("bundle", help="Create an app bundle")
+    bundle_cmd = register("bundle", help="Create an app bundle")
     bundle_cmd.add_argument("--file", type=Path, required=True)
     bundle_cmd.add_argument("--target", choices=["server", "worker"], default="server")
 
+    build_cmd = register("build-target", help="Build deployment target assets")
+    build_cmd.add_argument("target", choices=["server", "worker", "docker", "serverless-aws", "desktop", "mobile"])
+    build_cmd.add_argument("--file", type=Path, required=True, help="Path to .ai file")
+    build_cmd.add_argument("--output-dir", type=Path, required=True)
+
+    optimize_cmd = register("optimize", help="Run optimizer actions")
+    opt_sub = optimize_cmd.add_subparsers(dest="opt_command", required=True)
+    opt_scan_cmd = opt_sub.add_parser("scan", help="Run optimizer scan once")
+    opt_list_cmd = opt_sub.add_parser("list", help="List optimizer suggestions")
+    opt_list_cmd.add_argument("--status", choices=["pending", "applied", "rejected", "expired"], default=None)
+    opt_apply_cmd = opt_sub.add_parser("apply", help="Apply a suggestion by id")
+    opt_apply_cmd.add_argument("suggestion_id")
+    opt_reject_cmd = opt_sub.add_parser("reject", help="Reject a suggestion by id")
+    opt_reject_cmd.add_argument("suggestion_id")
+    opt_overlays_cmd = opt_sub.add_parser("overlays", help="Show optimizer overlays")
+    opt_overlays_cmd.add_argument("--output", choices=["json", "text"], default="json")
+    opt_overlays_cmd.set_defaults(output="json")
+
+    cov_cmd = register("test-cov", help="Run tests with coverage")
+    cov_cmd.add_argument("pytest_args", nargs="*", help="Additional pytest arguments")
+
+    init_cmd = register("init", help="Scaffold a project from a template")
+    init_cmd.add_argument("template", help="Template name")
+    init_cmd.add_argument("target_dir", nargs="?", default=".", help="Target directory")
+    init_cmd.add_argument("--force", action="store_true", help="Overwrite target directory if non-empty")
+
+    cli._n3_commands = commands
+    return cli
+
+
+def load_module_from_file(path: Path):
+    source = path.read_text(encoding="utf-8")
+    tokens = lexer.Lexer(source, filename=str(path)).tokenize()
+    return parser.Parser(tokens).parse_module()
+
+
+def main(argv: list[str] | None = None) -> None:
+    cli = build_cli_parser()
     args = cli.parse_args(argv)
 
     if args.command == "parse":
@@ -244,6 +282,94 @@ def main(argv: list[str] | None = None) -> None:
         bundle = bundler.from_ir(program)
         wrapped = make_worker_bundle(bundle) if args.target == "worker" else make_server_bundle(bundle)
         print(json.dumps(wrapped, indent=2))
+        return
+
+    if args.command == "build-target":
+        from namel3ss.deploy.builder import DeployBuilder
+        from namel3ss.deploy.models import DeployTargetConfig, DeployTargetKind
+
+        source = args.file.read_text(encoding="utf-8")
+        builder = DeployBuilder(source, args.output_dir)
+        target_cfg = DeployTargetConfig(kind=DeployTargetKind(args.target), name=args.target, output_dir=args.output_dir)
+        artifacts = builder.build([target_cfg])
+        print(
+            json.dumps(
+                {"artifacts": [{"kind": str(a.kind), "path": str(a.path), "metadata": a.metadata} for a in artifacts]},
+                indent=2,
+            )
+        )
+        return
+
+    if args.command == "optimize":
+        from namel3ss.optimizer.engine import OptimizerEngine
+        from namel3ss.optimizer.storage import OptimizerStorage
+        from namel3ss.optimizer.overlays import OverlayStore
+        from namel3ss.optimizer.apply import SuggestionApplier
+        from namel3ss.metrics.tracker import MetricsTracker
+        from namel3ss.obs.tracer import Tracer
+        from namel3ss.optimizer.models import OptimizationStatus
+
+        secrets = SecretsManager()
+        storage = OptimizerStorage(Path(secrets.get("N3_OPTIMIZER_DB") or "optimizer.db"))
+        overlays = OverlayStore(Path(secrets.get("N3_OPTIMIZER_OVERLAYS") or "optimizer_overlays.json"))
+        if args.opt_command == "scan":
+            engine = OptimizerEngine(
+                storage=storage,
+                metrics=MetricsTracker(),
+                memory_engine=None,
+                tracer=Tracer(),
+                router=None,
+                secrets=secrets,
+            )
+            suggestions = engine.scan()
+            print(json.dumps({"created": [s.id for s in suggestions]}, indent=2))
+            return
+        if args.opt_command == "list":
+            status = OptimizationStatus(args.status) if args.status else None
+            payload = storage.list(status)
+            print(json.dumps({"suggestions": [s.__dict__ for s in payload]}, indent=2))
+            return
+        if args.opt_command == "apply":
+            sugg = storage.get(args.suggestion_id)
+            if not sugg:
+                raise SystemExit(f"Suggestion {args.suggestion_id} not found")
+            applier = SuggestionApplier(overlays, storage, tracer=Tracer())
+            applier.apply(sugg)
+            print(json.dumps({"status": "applied"}, indent=2))
+            return
+        if args.opt_command == "reject":
+            sugg = storage.get(args.suggestion_id)
+            if not sugg:
+                raise SystemExit(f"Suggestion {args.suggestion_id} not found")
+            sugg.status = OptimizationStatus.REJECTED
+            storage.update(sugg)
+            print(json.dumps({"status": "rejected"}, indent=2))
+            return
+        if args.opt_command == "overlays":
+            overlay = overlays.load().to_dict()
+            if args.output == "json":
+                print(json.dumps({"overlays": overlay}, indent=2))
+            else:
+                print(overlay)
+            return
+
+    if args.command == "test-cov":
+        try:
+            import pytest
+        except ImportError as exc:  # pragma: no cover - runtime check
+            raise SystemExit("pytest is required for coverage runs") from exc
+        pytest_args = ["--cov=namel3ss", "--cov-report=term-missing"]
+        pytest_args.extend(args.pytest_args or [])
+        raise SystemExit(pytest.main(pytest_args))
+
+    if args.command == "init":
+        from namel3ss.templates import init_template, list_templates
+
+        available = list_templates()
+        if args.template not in available:
+            raise SystemExit(f"Unknown template '{args.template}'. Available: {', '.join(available)}")
+        dest = init_template(args.template, Path(args.target_dir), force=args.force)
+        print(json.dumps({"status": "ok", "template": args.template, "path": str(dest)}, indent=2))
         return
 
 

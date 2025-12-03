@@ -8,6 +8,8 @@ from typing import List
 
 from ..ir import IRPage
 from .models import UIComponent, UIPage, UISection
+from .runtime import map_component
+from .components import UIComponentInstance
 
 
 class UIRenderer:
@@ -31,3 +33,11 @@ class UIRenderer:
             route=page.route,
             sections=sections,
         )
+
+    def build_runtime_components(self, page: IRPage) -> List[UIComponentInstance]:
+        instances: List[UIComponentInstance] = []
+        for sec_idx, section in enumerate(page.sections):
+            for comp_idx, comp in enumerate(section.components):
+                comp_id = f"{page.name}:{section.name}:{comp_idx}"
+                instances.append(map_component(comp_id, comp.type, comp.props, section.name, page.name))
+        return instances

@@ -15,9 +15,15 @@ from .models import MemoryItem, MemorySpaceConfig, MemoryType
 
 
 class MemoryEngine:
-    def __init__(self, spaces: List[MemorySpaceConfig], store: Optional[MemoryStore] = None) -> None:
+    def __init__(
+        self,
+        spaces: List[MemorySpaceConfig],
+        store: Optional[MemoryStore] = None,
+        trigger_manager: Optional[object] = None,
+    ) -> None:
         self.store: MemoryStore = store or InMemoryMemoryStore()
         self.spaces: Dict[str, MemorySpaceConfig] = {space.name: space for space in spaces}
+        self.trigger_manager = trigger_manager
 
     def record_conversation(self, space: str, message: str, role: str) -> MemoryItem:
         config = self.spaces.get(space)
@@ -29,7 +35,9 @@ class MemoryEngine:
             content=message,
             metadata={"role": role},
         )
-        return self.store.add(item)
+        added = self.store.add(item)
+        self._notify_triggers(space, added)
+        return added
 
     def add_item(self, space: str, content: str, memory_type: MemoryType) -> MemoryItem:
         item = MemoryItem(
@@ -38,7 +46,9 @@ class MemoryEngine:
             type=memory_type,
             content=content,
         )
-        return self.store.add(item)
+        added = self.store.add(item)
+        self._notify_triggers(space, added)
+        return added
 
     def get_recent(self, space: str, limit: int = 10) -> List[MemoryItem]:
         items = self.store.list(space)
@@ -50,13 +60,24 @@ class MemoryEngine:
     def list_all(self, space: str | None = None) -> List[MemoryItem]:
         return self.store.list(space)
 
+    def _notify_triggers(self, space: str, item: MemoryItem) -> None:
+        if self.trigger_manager:
+            try:
+                self.trigger_manager.notify_memory_event(space, {"item": item.__dict__})
+            except Exception:
+                # Triggering should not break memory writes.
+                pass
+
 
 class ShardedMemoryEngine(MemoryEngine):
-    def __init__(self, spaces: List[MemorySpaceConfig], num_shards: int = 4) -> None:
+    def __init__(
+        self, spaces: List[MemorySpaceConfig], num_shards: int = 4, trigger_manager: Optional[object] = None
+    ) -> None:
         self._stores = [InMemoryMemoryStore() for _ in range(num_shards)]
         self.spaces: Dict[str, MemorySpaceConfig] = {space.name: space for space in spaces}
         self.num_shards = num_shards
         self._counter = 0
+        self.trigger_manager = trigger_manager
 
     def _choose_store(self, key: str) -> InMemoryMemoryStore:
         # round-robin distribution to avoid skew
@@ -107,5 +128,7 @@ class ShardedMemoryEngine(MemoryEngine):
 
 
 class PersistentMemoryEngine(MemoryEngine):
-    def __init__(self, spaces: List[MemorySpaceConfig], db_path: str) -> None:
-        super().__init__(spaces, store=SQLiteMemoryStore(db_path))
+    def __init__(
+        self, spaces: List[MemorySpaceConfig], db_path: str, trigger_manager: Optional[object] = None
+    ) -> None:
+        super().__init__(spaces, store=SQLiteMemoryStore(db_path), trigger_manager=trigger_manager)

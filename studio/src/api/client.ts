@@ -8,6 +8,13 @@ import {
   StudioSummaryResponse,
   TraceResponse,
   RAGQueryResponse,
+  FlowsResponse,
+  TriggerListResponse,
+  TriggerFireResponse,
+  PluginsResponse,
+  PluginLoadResponse,
+  OptimizerSuggestionsResponse,
+  OptimizerScanResponse,
 } from "./types";
 
 const defaultBase = import.meta.env.VITE_API_BASE_URL || "http://localhost:8000";
@@ -57,5 +64,39 @@ export const ApiClient = {
     request<RAGQueryResponse>("/api/rag/query", {
       method: "POST",
       body: JSON.stringify({ code, query, indexes }),
+    }),
+  fetchFlows: (code: string) =>
+    request<FlowsResponse>("/api/flows", {
+      method: "POST",
+      body: JSON.stringify({ code }),
+    }),
+  fetchTriggers: () => request<TriggerListResponse>("/api/flows/triggers"),
+  fireTrigger: (triggerId: string, payload?: any) =>
+    request<TriggerFireResponse>(`/api/flows/trigger/${triggerId}`, {
+      method: "POST",
+      body: JSON.stringify({ payload }),
+    }),
+  fetchPlugins: () => request<PluginsResponse>("/api/plugins"),
+  loadPlugin: (id: string) =>
+    request<PluginLoadResponse>(`/api/plugins/${id}/load`, {
+      method: "POST",
+    }),
+  unloadPlugin: (id: string) =>
+    request(`/api/plugins/${id}/unload`, {
+      method: "POST",
+    }),
+  fetchOptimizerSuggestions: (status?: string) =>
+    request<OptimizerSuggestionsResponse>(`/api/optimizer/suggestions${status ? `?status=${status}` : ""}`),
+  scanOptimizer: () =>
+    request<OptimizerScanResponse>(`/api/optimizer/scan`, {
+      method: "POST",
+    }),
+  applySuggestion: (id: string) =>
+    request(`/api/optimizer/apply/${id}`, {
+      method: "POST",
+    }),
+  rejectSuggestion: (id: string) =>
+    request(`/api/optimizer/reject/${id}`, {
+      method: "POST",
     }),
 };

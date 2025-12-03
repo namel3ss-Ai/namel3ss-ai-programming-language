@@ -19,5 +19,13 @@ class ToolRegistry:
     def get(self, name: str) -> Optional[Tool]:
         return self._tools.get(name)
 
+    @property
+    def tools(self) -> Dict[str, Tool]:
+        """Expose registered tools for inspection/testing."""
+        return self._tools
+
     def list_names(self) -> List[str]:
         return list(self._tools.keys())
+
+    def unregister(self, name: str) -> None:
+        self._tools.pop(name, None)

@@ -1,0 +1,53 @@
+{
+  "name": "namel3ss-v3",
+  "displayName": "Namel3ss V3",
+  "description": "Syntax highlighting and basic commands for Namel3ss .ai programs.",
+  "version": "0.1.0",
+  "publisher": "namel3ss",
+  "engines": {
+    "vscode": "^1.80.0"
+  },
+  "categories": [
+    "Programming Languages"
+  ],
+  "activationEvents": [
+    "onLanguage:namel3ss"
+  ],
+  "main": "./dist/extension.js",
+  "contributes": {
+    "languages": [
+      {
+        "id": "namel3ss",
+        "aliases": ["Namel3ss", "namel3ss"],
+        "extensions": [".ai"],
+        "configuration": "./language-configuration.json"
+      }
+    ],
+    "grammars": [
+      {
+        "language": "namel3ss",
+        "scopeName": "source.namel3ss",
+        "path": "./syntaxes/namel3ss.tmLanguage.json"
+      }
+    ],
+    "commands": [
+      {
+        "command": "namel3ss.runParse",
+        "title": "Namel3ss: Parse current file"
+      },
+      {
+        "command": "namel3ss.runDiagnostics",
+        "title": "Namel3ss: Run diagnostics on current file"
+      }
+    ]
+  },
+  "scripts": {
+    "lint": "echo \"No lint configured\"",
+    "test": "node ./test/validate.js",
+    "build": "tsc -p ."
+  },
+  "devDependencies": {
+    "typescript": "^5.4.0",
+    "@types/node": "^20.0.0"
+  }
+}

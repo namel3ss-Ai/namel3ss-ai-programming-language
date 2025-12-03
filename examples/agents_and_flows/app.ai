@@ -1,0 +1,29 @@
+app "agents-flows":
+  entry_page "home"
+
+page "home":
+  route "/"
+  section "info":
+    component "text":
+      value "Agents + Flows demo"
+
+model "default":
+  provider "dummy"
+
+agent "writer":
+  goal "Write a short statement about a topic."
+
+flow "orchestrate":
+  step "branch":
+    kind "ai"
+    target "decide"
+  step "fanout":
+    kind "agent"
+    target "writer"
+  step "join":
+    kind "tool"
+    target "echo"
+
+ai "decide":
+  model "default"
+  input from user_input

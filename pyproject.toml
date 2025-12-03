@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "namel3ss"
-version = "0.1.0"
+version = "3.0.0"
 description = "Namel3ss V3 – AI Programming Language"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -15,6 +15,7 @@ authors = [
 dependencies = [
   "fastapi>=0.110.0",
   "uvicorn>=0.29.0",
+  "python-multipart>=0.0.9",
 ]
 
 [project.optional-dependencies]
@@ -24,7 +25,9 @@ dev = [
   "isort>=5.13.0",
   "mypy>=1.10.0",
   "pytest>=8.0.0",
+  "pytest-cov>=4.1.0",
   "httpx>=0.28.0",
+  "mkdocs>=1.5.3",
 ]
 
 [project.scripts]
@@ -52,3 +55,10 @@ warn_unused_configs = true
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["src"]
+addopts = "--cov=namel3ss --cov-report=term-missing"
+markers = [
+  "unit: fast-running unit tests",
+  "integration: integration-level tests",
+  "slow: stress/load tests",
+  "e2e: end-to-end tests",
+]

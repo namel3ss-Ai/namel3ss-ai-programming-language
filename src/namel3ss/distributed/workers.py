@@ -33,7 +33,7 @@ class Worker:
         job.status = "running"
         runtime = self.runtime_factory(job.payload.get("code") if job.payload else None)
         try:
-            result = self._execute_job(runtime, job)
+            result = await self._execute_job(runtime, job)
             job.result = result
             job.status = "success"
         except Exception as exc:  # pragma: no cover - error path
@@ -49,9 +49,9 @@ class Worker:
             if not job:
                 await asyncio.sleep(poll_interval)
 
-    def _execute_job(self, runtime, job: Job):
+    async def _execute_job(self, runtime, job: Job):
         if job.type == "flow":
-            return runtime.execute_flow(job.target)
+            return await runtime.a_execute_flow(job.target, payload=job.payload)
         if job.type == "agent":
             return runtime.execute_agent(job.target)
         if job.type == "page":

@@ -1,0 +1,22 @@
+app "agents-demo":
+  entry_page "home"
+
+page "home":
+  route "/"
+  section "summary":
+    component "text":
+      value "Agents demo"
+
+model "default":
+  provider "dummy"
+
+agent "summarizer":
+  goal "Summarize a topic in one sentence."
+
+flow "orchestrate":
+  step "plan":
+    kind "agent"
+    target "summarizer"
+  step "reflect":
+    kind "tool"
+    target "echo"

@@ -145,6 +145,8 @@ class AgentRunner:
             context.tracer.end_agent(summary=summary)
         if context.metrics:
             context.metrics.record_agent_run()
+        if getattr(context, "trigger_manager", None):
+            context.trigger_manager.notify_agent_signal(agent.name, {"summary": summary})
         return AgentPlanResult(agent_name=agent.name, steps=results, summary=summary)
 
     def _run_step(self, step: AgentStep, last_output: Optional[dict], context: ExecutionContext):

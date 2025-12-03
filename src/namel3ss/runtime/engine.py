@@ -4,6 +4,7 @@ Runtime engine for Namel3ss V3.
 
 from __future__ import annotations
 
+import asyncio
 from dataclasses import asdict
 from pathlib import Path
 from typing import Any, Dict, Optional
@@ -21,11 +22,15 @@ from ..memory.models import MemorySpaceConfig, MemoryType
 from ..obs.tracer import Tracer
 from ..rag.engine import RAGEngine
 from ..flows.engine import FlowEngine
+from ..flows.triggers import TriggerManager
 from ..ui.renderer import UIRenderer
 from ..tools.builtin import register_builtin_tools
 from ..tools.registry import ToolRegistry
 from ..plugins.registry import PluginRegistry
-from ..plugins.models import PluginInfo
+from ..optimizer.storage import OptimizerStorage
+from ..optimizer.overlays import OverlayStore
+from ..optimizer.engine import OptimizerEngine
+from ..optimizer.apply import SuggestionApplier
 from ..ai.config import default_global_ai_config
 from ..distributed.queue import JobQueue, global_job_queue
 from ..distributed.scheduler import JobScheduler
@@ -41,16 +46,34 @@ from .graph import Graph, GraphEdge, GraphNode, NodeType
 
 
 class Engine:
-    def __init__(self, program: IRProgram, metrics_tracker: Optional[MetricsTracker] = None) -> None:
+    def __init__(
+        self,
+        program: IRProgram,
+        metrics_tracker: Optional[MetricsTracker] = None,
+        trigger_manager: Optional[TriggerManager] = None,
+        plugins_dir: Optional[Path] = None,
+        plugin_registry: Optional[PluginRegistry] = None,
+    ) -> None:
         self.program = program
         self.secrets_manager = SecretsManager()
         self.metrics_tracker = metrics_tracker or MetricsTracker()
+        self.job_queue: JobQueue = global_job_queue
+        self.scheduler = JobScheduler(self.job_queue)
+        self.trigger_manager = trigger_manager or TriggerManager(
+            job_queue=self.job_queue,
+            secrets=self.secrets_manager,
+            tracer=Tracer(),
+            metrics=self.metrics_tracker,
+        )
+        self.plugins_dir = plugins_dir or Path(self.secrets_manager.get("N3_PLUGINS_DIR") or "plugins")
+        self.plugin_registry = plugin_registry or PluginRegistry(self.plugins_dir)
         self.registry = self._build_registry(program)
         self.router = ModelRouter(self.registry, default_global_ai_config())
         self.memory_engine = self._build_memory_engine(program)
+        if hasattr(self.memory_engine, "trigger_manager"):
+            self.memory_engine.trigger_manager = self.trigger_manager
         self.rag_engine = self._build_rag_engine()
         self.tool_registry = self._build_tool_registry()
-        self.plugin_registry = self._build_plugin_registry()
         self.agent_runner = AgentRunner(
             program=self.program,
             model_registry=self.registry,
@@ -69,23 +92,60 @@ class Engine:
             tool_registry=self.tool_registry,
             agent_runner=self.agent_runner,
             router=self.router,
+            metrics=self.metrics_tracker,
+            secrets=self.secrets_manager,
         )
+        self.optimizer_storage = OptimizerStorage(Path(self.secrets_manager.get("N3_OPTIMIZER_DB") or "optimizer.db"))
+        self.overlay_store = OverlayStore(Path(self.secrets_manager.get("N3_OPTIMIZER_OVERLAYS") or "optimizer_overlays.json"))
+        self.optimizer_engine = OptimizerEngine(
+            storage=self.optimizer_storage,
+            metrics=self.metrics_tracker,
+            memory_engine=self.memory_engine,
+            tracer=Tracer(),
+            router=self.router,
+            secrets=self.secrets_manager,
+        )
+        self.suggestion_applier = SuggestionApplier(self.overlay_store, self.optimizer_storage, tracer=Tracer())
+        self._load_plugins()
         self.ui_renderer = UIRenderer()
         self.graph = self.build_graph(program)
-        self.job_queue: JobQueue = global_job_queue
-        self.scheduler = JobScheduler(self.job_queue)
 
     @classmethod
-    def from_file(cls, path: str | Path, metrics_tracker: Optional[MetricsTracker] = None) -> "Engine":
+    def from_file(
+        cls,
+        path: str | Path,
+        metrics_tracker: Optional[MetricsTracker] = None,
+        trigger_manager: Optional[TriggerManager] = None,
+        plugins_dir: Optional[Path] = None,
+        plugin_registry: Optional[PluginRegistry] = None,
+    ) -> "Engine":
         source_path = Path(path)
         source = source_path.read_text(encoding="utf-8")
-        return cls(cls._load_program(source, filename=str(source_path)), metrics_tracker=metrics_tracker)
+        return cls(
+            cls._load_program(source, filename=str(source_path)),
+            metrics_tracker=metrics_tracker,
+            trigger_manager=trigger_manager,
+            plugins_dir=plugins_dir,
+            plugin_registry=plugin_registry,
+        )
 
     @classmethod
     def from_source(
-        cls, source: str, filename: str = "<string>", metrics_tracker: Optional[MetricsTracker] = None
+        cls,
+        source: str,
+        filename: str = "<string>",
+        metrics_tracker: Optional[MetricsTracker] = None,
+        trigger_manager: Optional[TriggerManager] = None,
+        plugins_dir: Optional[Path] = None,
+        plugin_registry: Optional[PluginRegistry] = None,
     ) -> "Engine":
-        return cls(cls._load_program(source, filename=filename), metrics_tracker=metrics_tracker)
+        return cls(
+            cls._load_program(source, filename=filename),
+            metrics_tracker=metrics_tracker,
+            trigger_manager=trigger_manager,
+            plugins_dir=plugins_dir,
+            plugin_registry=plugin_registry,
+        )
 
     @staticmethod
     def _load_program(source: str, filename: str) -> IRProgram:
@@ -269,12 +329,27 @@ class Engine:
         register_builtin_tools(registry)
         return registry
 
-    def _build_plugin_registry(self) -> PluginRegistry:
-        plugins = [
-            PluginInfo(name=plugin.name, description=plugin.description)
-            for plugin in self.program.plugins.values()
-        ]
-        return PluginRegistry(plugins)
+    def _build_default_execution_context(self) -> ExecutionContext:
+        return ExecutionContext(
+            app_name="__ui__",
+            request_id=str(uuid4()),
+            memory_engine=self.memory_engine,
+            rag_engine=self.rag_engine,
+            tracer=Tracer(),
+            tool_registry=self.tool_registry,
+            metrics=self.metrics_tracker,
+            secrets=self.secrets_manager,
+            trigger_manager=self.trigger_manager,
+        )
+
+    def _load_plugins(self) -> None:
+        from ..plugins.sdk import PluginSDK
+
+        sdk = PluginSDK.from_engine(self)
+        for info in self.plugin_registry.discover():
+            if not info.enabled or not info.compatible:
+                continue
+            self.plugin_registry.load(info.id, sdk)
 
     def run_app(
         self,
@@ -297,6 +372,7 @@ class Engine:
                 tool_registry=self.tool_registry,
                 metrics=self.metrics_tracker,
                 secrets=self.secrets_manager,
+                trigger_manager=self.trigger_manager,
             )
         if context.tracer:
             context.tracer.start_app(app_name, role=principal_role)
@@ -361,6 +437,7 @@ class Engine:
                 tracer=Tracer(),
                 tool_registry=self.tool_registry,
                 secrets=self.secrets_manager,
+                trigger_manager=self.trigger_manager,
             )
             if context.tracer:
                 context.tracer.start_app("__agent__")
@@ -380,6 +457,7 @@ class Engine:
             tool_registry=self.tool_registry,
             metrics=self.metrics_tracker,
             secrets=self.secrets_manager,
+            trigger_manager=self.trigger_manager,
         )
         if context.tracer:
             context.tracer.start_app("__page__")
@@ -398,6 +476,23 @@ class Engine:
         flow_name: str,
         context: Optional[ExecutionContext] = None,
         principal_role: Optional[str] = None,
+        payload: Optional[dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        return asyncio.run(
+            self.a_execute_flow(
+                flow_name,
+                context=context,
+                principal_role=principal_role,
+                payload=payload,
+            )
+        )
+
+    async def a_execute_flow(
+        self,
+        flow_name: str,
+        context: Optional[ExecutionContext] = None,
+        principal_role: Optional[str] = None,
+        payload: Optional[dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         if flow_name not in self.program.flows:
             raise Namel3ssError(f"Unknown flow '{flow_name}'")
@@ -411,15 +506,20 @@ class Engine:
                 tool_registry=self.tool_registry,
                 metrics=self.metrics_tracker,
                 secrets=self.secrets_manager,
+                trigger_manager=self.trigger_manager,
             )
             if context.tracer:
                 context.tracer.start_app("__flow__", role=principal_role)
         flow = self.program.flows[flow_name]
-        result = self.flow_engine.run_flow(flow, context)
-        payload = asdict(result)
+        initial_state = {}
+        if payload:
+            initial_state = payload.get("state") or payload.get("payload") or {}
+            context.metadata.update(payload)
+        result = await self.flow_engine.run_flow_async(flow, context, initial_state=initial_state)
+        payload_out = asdict(result)
         if context.tracer and context.tracer.last_trace:
-            payload["trace"] = asdict(context.tracer.last_trace)
-        return payload
+            payload_out["trace"] = asdict(context.tracer.last_trace)
+        return payload_out
 
     async def execute_flow_async(self, flow_name: str) -> str:
         job = self.scheduler.schedule_flow(flow_name, {})

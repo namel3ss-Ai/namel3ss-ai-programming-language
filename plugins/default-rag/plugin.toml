@@ -1,0 +1,9 @@
+id = "default-rag"
+name = "Default RAG Index"
+version = "1.0.0"
+description = "Registers a default in-memory RAG index"
+author = "Namel3ss"
+n3_core_version = ">=3.0.0,<4.0.0"
+
+[entrypoints]
+rag_pipelines = "default_rag:register_rag"

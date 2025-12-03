@@ -1,0 +1,26 @@
+app "docs":
+  entry_page "home"
+
+page "home":
+  route "/"
+  section "upload":
+    component "file-upload":
+      value "Upload a document"
+  section "query":
+    component "form":
+      value "Enter your question"
+
+model "default":
+  provider "dummy"
+
+ai "rewrite":
+  model "default"
+  input from user_input
+
+flow "answer":
+  step "rewrite":
+    kind "ai"
+    target "rewrite"
+  step "echo":
+    kind "tool"
+    target "echo"

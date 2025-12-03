@@ -62,12 +62,15 @@ class FlowStepTrace:
     target: str
     success: bool
     output_preview: Optional[str] = None
+    node_id: Optional[str] = None
+    handled: Optional[bool] = None
 
 
 @dataclass
 class FlowTrace:
     flow_name: str
     steps: List[FlowStepTrace] = field(default_factory=list)
+    events: List[Any] = field(default_factory=list)
 
 
 @dataclass

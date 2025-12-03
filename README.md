@@ -29,18 +29,22 @@ flow "pipeline":
 ```
 
 ## What’s implemented in this repo
-- Full lexer/parser/AST/IR for apps, pages, models, ai, agents, memory, flows, plugins, and UI sections/components.
-- Runtime engine with model routing, sharded memory engine, RAG engine + sync worker, tools, agents (including teams), flows, and distributed job queue/worker/scheduler.
-- UI renderer and endpoints for pages/UI.
-- Observability: traces across AI/page/app/agent/flow/team/jobs + metrics tracking.
-- Security: API key auth + RBAC.
-- Studio summary, diagnostics engine, packaging/bundles, and CLI/HTTP surfaces for everything above.
+- Stable lexer/parser/AST/IR for apps, pages, models, ai, agents, memory, flows, plugins, and UI sections/components.
+- Runtime engines: model router (dummy + OpenAI), agents (teams, reflection, retries), flows V3 (branching, parallel joins, error boundaries, shared state), tools, memory, RAG V3 (hybrid retrieval, reranking), job queue/worker/scheduler, triggers/automations.
+- UI runtime + validation + event router + RAG upload pipeline; Studio React app with panels for pages, traces, metrics, jobs, RAG, flows/automations, plugins, optimizer.
+- Plugins V3: manifests, semver compatibility, registry + SDK, HTTP + CLI management.
+- Deployment targets V3: server/worker entrypoints, Dockerfile generation, AWS Lambda adapter, desktop/mobile skeletons, CLI `n3 build-target ...`.
+- Optimizer (self-improving runtime): heuristic + optional AI-assisted analyzers, overlays, storage, CLI/HTTP/Studio integration.
+- Observability + security: tracing across subsystems, metrics, API key auth, RBAC.
+- Diagnostics engine, packaging/bundles, and CLI/HTTP surfaces for everything above.
 
 ## Getting started (dev)
 1. Clone the repo.
 2. Install Python 3.11+ and dependencies: `pip install -e .[dev]` (or your preferred tooling).
-3. Run tests: `python -m pytest`.
-4. Start the server: `python -m namel3ss.server` (or `n3 serve --dry-run` to verify config).
-5. Try the CLI: `n3 parse examples/app.ai` or run an app: `n3 run support --file examples/app.ai`.
+3. Run tests with coverage: `n3 test-cov` (or `python -m pytest` for a quick run). Use `pytest -m "not slow"` to skip stress tests.
+4. Start the server: `python -m namel3ss.server` or `n3 serve --dry-run` to validate config.
+5. Scaffold: `n3 init app-basic my-app` (templates in `templates/`). Examples live under `examples/`.
+6. Try the CLI: `n3 parse examples/getting_started/app.ai`, `n3 run support --file examples/getting_started/app.ai`, `n3 optimize scan`, or build deploy assets with `n3 build-target server --file examples/getting_started/app.ai --output-dir build/`.
+7. Studio: install Node 18+, run `npm install` then `npm run dev` inside `studio/` to open the panels. VS Code users can install the `vscode-extension/` locally for syntax + parse/diagnostics commands.
 
-Read the full architecture overview → `docs/namel3ss_v3_overview.md`
+Read the architecture + API surface → `docs/architecture.md` and `docs/api-surface.md`

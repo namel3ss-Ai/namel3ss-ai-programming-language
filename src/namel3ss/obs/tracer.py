@@ -114,6 +114,8 @@ class Tracer:
         target: str,
         success: bool,
         output_preview: Optional[str],
+        node_id: Optional[str] = None,
+        handled: Optional[bool] = None,
     ) -> None:
         if not self._current_flow:
             return
@@ -124,6 +126,8 @@ class Tracer:
                 target=target,
                 success=success,
                 output_preview=output_preview,
+                node_id=node_id,
+                handled=handled,
             )
         )
 
@@ -172,6 +176,59 @@ class Tracer:
     def update_last_rag_result_count(self, count: int) -> None:
         if self._current_app and self._current_app.rag_queries:
             self._current_app.rag_queries[-1].result_count = count
+
+    def record_flow_graph_build(self, flow_name: str, graph) -> None:
+        if not self._current_app:
+            self.start_app("unknown")
+        # attach a lightweight event to the active flow if present
+        if not self._current_flow:
+            self.start_flow(flow_name)
+        if self._current_flow:
+            self._current_flow.events.append(
+                {"event": "flow.graph.build", "flow_name": flow_name, "node_count": len(getattr(graph, "nodes", {}))}
+            )
+
+    def record_branch_eval(self, node_id: str, result: object) -> None:
+        if self._current_flow:
+            self._current_flow.events.append(
+                {"event": "flow.branch.eval", "node_id": node_id, "result": result}
+            )
+
+    def record_parallel_start(self, node_ids: list[str]) -> None:
+        if self._current_flow:
+            self._current_flow.events.append(
+                {"event": "flow.parallel.start", "nodes": list(node_ids)}
+            )
+
+    def record_parallel_join(self, node_ids: list[str]) -> None:
+        if self._current_flow:
+            self._current_flow.events.append(
+                {"event": "flow.parallel.join", "nodes": list(node_ids)}
+            )
+
+    def record_flow_error(
+        self, node_id: str, node_kind: str, handled: bool, boundary_id: Optional[str]
+    ) -> None:
+        if self._current_flow:
+            self._current_flow.events.append(
+                {
+                    "event": "flow.error",
+                    "node_id": node_id,
+                    "node_kind": node_kind,
+                    "handled": handled,
+                    "boundary_id": boundary_id,
+                }
+            )
+
+    def record_flow_event(self, event: str, payload: Optional[dict] = None) -> None:
+        payload = payload or {}
+        if not self._current_app:
+            self.start_app("automation")
+        if not self._current_flow:
+            flow_name = payload.get("flow") or "automation"
+            self.start_flow(flow_name)
+        if self._current_flow:
+            self._current_flow.events.append({"event": event, **payload})
 
     @property
     def last_trace(self) -> Optional[AppTrace]:

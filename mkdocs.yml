@@ -1,0 +1,32 @@
+site_name: Namel3ss V3
+site_description: AI-native programming language and agent OS
+repo_url: https://github.com/namel3ss-ai/namel3ss-ai-programming-language
+theme:
+  name: mkdocs
+nav:
+  - Home: docs/index.md
+  - Architecture: docs/architecture.md
+  - API Surface: docs/api-surface.md
+  - Testing: docs/testing.md
+  - Quickstart:
+      - Installation: docs/quickstart/installation.md
+      - First App: docs/quickstart/first-app.md
+      - Flows & Agents: docs/quickstart/flows-and-agents.md
+      - RAG & Memory: docs/quickstart/rag-and-memory.md
+  - Reference:
+      - CLI: docs/reference/cli.md
+      - HTTP API: docs/reference/http-api.md
+      - Plugins: docs/reference/plugins.md
+      - Deployment: docs/reference/deployment.md
+      - Optimizer: docs/reference/optimizer.md
+      - VS Code: docs/reference/vscode-extension.md
+  - Concepts:
+      - Language: docs/concepts/language.md
+      - Agents: docs/concepts/agents.md
+      - Flows: docs/concepts/flows.md
+      - RAG: docs/concepts/rag.md
+      - UI Components: docs/concepts/ui-components.md
+      - Optimizer: docs/concepts/optimizer.md
+  - Releases:
+      - v3.0.0: docs/releases/v3.0.0.md
+      - Blog: docs/releases/announcing-namel3ss-v3.md
