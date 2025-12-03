@@ -21,6 +21,7 @@ nav:
       - Optimizer: docs/reference/optimizer.md
       - VS Code: docs/reference/vscode-extension.md
   - Concepts:
+      - AI: docs/concepts/ai.md
       - Language: docs/concepts/language.md
       - Agents: docs/concepts/agents.md
       - Flows: docs/concepts/flows.md

@@ -90,10 +90,10 @@ class RagSDK:
 
     def register_index(self, name: str, plugin_id: Optional[str] = None) -> None:
         if name not in self.rag_engine.index_registry:
-            from ..rag.engine import RAGIndexConfig
+            from ..rag.index_config import RAGIndexConfig
 
             self.rag_engine.index_registry[name] = RAGIndexConfig(name=name, backend="memory", collection=name)
-            self.rag_engine._get_store(self.rag_engine.index_registry[name])
+        self.rag_engine._get_store(self.rag_engine.index_registry[name])
         pid = plugin_id or self.default_plugin_id
         if pid:
             self.contributions.setdefault(pid, []).append(name)

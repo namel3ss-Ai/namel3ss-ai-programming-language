@@ -5,35 +5,21 @@ RAG engine orchestrating multi-index retrieval, hybrid scoring, and reranking.
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass, field
 from typing import Dict, List, Optional
 from uuid import uuid4
 
 from .factory import VectorStoreFactory
 from .models import RAGItem, ScoredItem
+from .index_config import RAGIndexConfig
 from .rewriter import DeterministicRewriter, QueryRewriter
 from .reranker import DeterministicReranker, Reranker
-from .store import embed_text
+from .embedding_registry import EmbeddingProviderRegistry
+from .store_registry import VectorStoreRegistry
 from .vectorstores.memory import InMemoryVectorStore
 from ..secrets.manager import SecretsManager
 from ..metrics.tracker import MetricsTracker
 from ..obs.tracer import Tracer
 from ..memory.engine import MemoryEngine
-
-
-@dataclass
-class RAGIndexConfig:
-    name: str
-    backend: str = "memory"
-    collection: str = "default"
-    k: int = 10
-    weight: float = 1.0
-    enable_hybrid: bool = False
-    dense_weight: float = 0.7
-    sparse_weight: float = 0.3
-    enable_rerank: bool = False
-    enable_rewrite: bool = False
-    dsn: Optional[str] = None
 
 
 class RAGEngine:
@@ -44,6 +30,7 @@ class RAGEngine:
         metrics: Optional[MetricsTracker] = None,
         tracer: Optional[Tracer] = None,
         memory_engine: Optional[MemoryEngine] = None,
+        embedding_provider=None,
     ) -> None:
         self.secrets = secrets or SecretsManager()
         self.metrics = metrics
@@ -54,25 +41,30 @@ class RAGEngine:
         self._default_index = default_indexes[0].name
         for idx in default_indexes:
             self.index_registry[idx.name] = idx
+        self.store_registry = VectorStoreRegistry(self.secrets)
         self.factory = VectorStoreFactory(self.secrets)
-        # Ensure default index store exists for memory backend
-        self._stores: Dict[str, InMemoryVectorStore] = {}
         self.store = self._get_store(self.index_registry[self._default_index])
+        registry = EmbeddingProviderRegistry(self.secrets)
+        self.embedding_provider = embedding_provider or registry.get_default_provider()
 
     def _get_store(self, index: RAGIndexConfig):
-        key = index.name
-        if key not in self._stores:
-            self._stores[key] = self.factory.get(index.backend, {"name": index.name, "dsn": index.dsn, "table": index.collection})
-        return self._stores[key]
+        return self.store_registry.get_store(index)
 
     def index_documents(self, index_name: str, texts: List[str]) -> None:
         if index_name not in self.index_registry:
             self.index_registry[index_name] = RAGIndexConfig(name=index_name, backend="memory", collection=index_name)
         index = self.index_registry[index_name]
         store = self._get_store(index)
+        embeddings = self.embedding_provider.embed_batch(texts)
         items = [
-            RAGItem(id=str(uuid4()), text=text, metadata={"index": index_name}, embedding=embed_text(text), source=index_name)
-            for text in texts
+            RAGItem(
+                id=str(uuid4()),
+                text=text,
+                metadata={"index": index_name},
+                embedding=embeddings[idx],
+                source=index_name,
+            )
+            for idx, text in enumerate(texts)
         ]
         if hasattr(store, "add_sync"):
             store.add_sync(items)  # type: ignore[attr-defined]
@@ -85,9 +77,16 @@ class RAGEngine:
             self.index_registry[index_name] = RAGIndexConfig(name=index_name, backend="memory", collection=index_name)
         index = self.index_registry[index_name]
         store = self._get_store(index)
+        embeddings = self.embedding_provider.embed_batch(texts)
         items = [
-            RAGItem(id=str(uuid4()), text=text, metadata={"index": index_name}, embedding=embed_text(text), source=index_name)
-            for text in texts
+            RAGItem(
+                id=str(uuid4()),
+                text=text,
+                metadata={"index": index_name},
+                embedding=embeddings[idx],
+                source=index_name,
+            )
+            for idx, text in enumerate(texts)
         ]
         await store.a_add(items)
 
@@ -103,7 +102,7 @@ class RAGEngine:
         query_text = query
         # Query rewrite
         rewritten = await self._rewrite(query_text)
-        query_embedding = embed_text(rewritten)
+        query_embedding = self.embedding_provider.embed_text(rewritten)
         candidates: List[ScoredItem] = []
         for name in selected:
             index = self.index_registry.get(name)

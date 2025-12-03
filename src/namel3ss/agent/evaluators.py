@@ -66,9 +66,13 @@ class OpenAIEvaluator:
     def evaluate(self, step_result: AgentStepResult, context) -> AgentStepEvaluation:
         try:
             selection = self.router.select_model(logical_name=self.logical_model)
+            cfg = self.registry.get_model_config(selection.model_name)
             provider = self.registry.get_provider_for_model(selection.model_name)
             prompt = self._build_prompt(step_result)
-            resp = provider.invoke(prompt=prompt, model=selection.model_name)
+            resp = provider.invoke(
+                messages=[{"role": "user", "content": prompt}],
+                model=cfg.model or selection.model_name,
+            )
             reasoning = str(resp.get("result", ""))[:200]
             # Simple heuristic: look for "retry"/"stop" tokens
             verdict: str = "accept"

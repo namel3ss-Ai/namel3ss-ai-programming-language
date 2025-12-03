@@ -33,7 +33,7 @@ class OpenAIReranker:
             prompt = f"Given query '{query}', rank the following documents by relevance:\n"
             for idx, c in enumerate(candidates):
                 prompt += f"{idx+1}. {c.item.text[:100]}\n"
-            result = self.provider.invoke(prompt=prompt)
+            result = self.provider.invoke(messages=[{"role": "user", "content": prompt}])
             text = str(result.get("result", ""))
             # naive parse: pick first mentioned index
             ranked = []

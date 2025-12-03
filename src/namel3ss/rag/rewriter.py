@@ -20,5 +20,5 @@ class OpenAIRewriter:
 
     async def a_rewrite(self, query: str, context) -> str:
         prompt = f"Rewrite the user query for retrieval: {query}"
-        result = self.provider.invoke(prompt=prompt)
+        result = self.provider.invoke(messages=[{"role": "user", "content": prompt}])
         return str(result.get("result", query))

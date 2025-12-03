@@ -12,17 +12,17 @@ def test_openai_provider_selected_when_key_present():
     router = ModelRouter(registry)
     selection = router.select_model("logical")
     provider = registry.get_provider_for_model("logical")
-    assert selection.provider_name == "openai:gpt-test"
+    assert selection.provider_name == "openai"
     assert isinstance(provider, OpenAIProvider)
 
     calls = []
 
-    def fake_client(url, body):
-        calls.append((url, body))
+    def fake_client(url, body, headers):
+        calls.append((url, body, headers))
         return {"choices": [{"message": {"content": "ok"}}]}
 
     provider._http_client = fake_client  # type: ignore[attr-defined]
-    result = provider.invoke("hello", model="gpt-test")
+    result = provider.invoke(messages=[{"role": "user", "content": "hello"}], model="gpt-test")
     assert result["result"] == "ok"
     assert calls, "HTTP client should have been invoked"
 
@@ -33,7 +33,7 @@ def test_openai_provider_falls_back_to_dummy_without_key():
     registry.register_model("logical", "openai:gpt-test")
     provider = registry.get_provider_for_model("logical")
     assert isinstance(provider, DummyProvider)
-    out = provider.invoke("ping")
+    out = provider.invoke(messages=[{"role": "user", "content": "ping"}])
     assert "dummy output" in out["result"]
 
 

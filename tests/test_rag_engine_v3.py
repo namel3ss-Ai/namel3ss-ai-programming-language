@@ -1,6 +1,7 @@
 import asyncio
 
-from namel3ss.rag.engine import RAGEngine, RAGIndexConfig
+from namel3ss.rag.engine import RAGEngine
+from namel3ss.rag.index_config import RAGIndexConfig
 from namel3ss.rag.models import RAGItem, ScoredItem
 from namel3ss.rag.store import embed_text
 from namel3ss.memory.engine import MemoryEngine

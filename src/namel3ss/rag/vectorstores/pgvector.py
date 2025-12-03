@@ -16,6 +16,8 @@ class PGVectorStore(VectorStore):
     def __init__(self, dsn: str, table: str = "rag_items") -> None:
         if psycopg is None:
             raise Namel3ssError("psycopg/pgvector not installed; cannot use pgvector backend")
+        if not dsn:
+            raise Namel3ssError("PGVector backend requested but DSN not set")
         self.dsn = dsn
         self.table = table
         self._ensure_table()
@@ -56,6 +58,17 @@ class PGVectorStore(VectorStore):
             item = RAGItem(id=row[0], text=row[1], metadata=row[2] or {}, embedding=None, source="pgvector")
             scored.append(ScoredItem(item=item, score=float(row[3]), source="pgvector"))
         return scored
+
+    def add_sync(self, items: List[RAGItem]) -> None:
+        # delegate to async implementation
+        import asyncio
+
+        asyncio.run(self.a_add(items))
+
+    def search(self, query_embedding: List[float], top_k: int = 5) -> List[ScoredItem]:
+        import asyncio
+
+        return asyncio.run(self.a_query(query_embedding, k=top_k))
 
     async def a_delete(self, ids: List[str]) -> None:
         with psycopg.connect(self.dsn) as conn:  # pragma: no cover - env dependent

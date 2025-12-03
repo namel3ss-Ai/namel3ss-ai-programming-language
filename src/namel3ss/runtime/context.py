@@ -93,8 +93,11 @@ def execute_ai_call_with_registry(
     """Execute an AI call through the model registry."""
 
     selection = router.select_model(logical_name=ai_call.model_name)
+    cfg = registry.get_model_config(selection.model_name)
     provider = registry.get_provider_for_model(selection.model_name)
-    invocation = provider.invoke(prompt=ai_call.input_source)
+    messages = [{"role": "user", "content": ai_call.input_source or (context.user_input or "")}]
+    provider_model = cfg.model or selection.model_name
+    invocation = provider.invoke(messages=messages, model=provider_model)
     result = execute_ai_call(ai_call, context)
     result.update(
         {

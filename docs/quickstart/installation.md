@@ -7,5 +7,9 @@
 5. **Run tests**: `n3 test-cov` or `pytest -m "not slow"`.
 
 Environment flags:
+- `N3_MODEL_<NAME>_PROVIDER` (dummy|openai|http_json)
+- `N3_MODEL_<NAME>_MODEL` (provider-specific model id)
+- `N3_MODEL_<NAME>_BASE_URL` / `N3_MODEL_<NAME>_RESPONSE_PATH` for http_json endpoints (Ollama/LM Studio/etc.)
+- Embeddings: `N3_EMBEDDINGS_PROVIDER` (deterministic|openai|http_json), `N3_EMBEDDINGS_MODEL`, `N3_EMBEDDINGS_BASE_URL`, `N3_EMBEDDINGS_RESPONSE_PATH`
 - `N3_PLUGINS_DIR` (default `plugins`) for plugin discovery.
 - `N3_OPTIMIZER_DB` / `N3_OPTIMIZER_OVERLAYS` to control optimizer persistence locations.

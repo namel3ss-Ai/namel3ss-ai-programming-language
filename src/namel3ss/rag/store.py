@@ -1,5 +1,5 @@
 """
-In-memory vector store for RAG.
+Legacy helpers for deterministic embeddings (compatibility).
 """
 
 from __future__ import annotations
@@ -7,16 +7,15 @@ from __future__ import annotations
 import math
 from typing import List
 
+from .embeddings_deterministic import DeterministicEmbeddingProvider
 from .models import DocumentChunk
 
 
 def embed_text(text: str, dimensions: int = 8) -> List[float]:
-    """Deterministic naive embedding."""
+    """Deterministic naive embedding kept for compatibility."""
 
-    vector = [0.0 for _ in range(dimensions)]
-    for idx, ch in enumerate(text):
-        vector[idx % dimensions] += (ord(ch) % 97) / 100.0
-    return vector
+    provider = DeterministicEmbeddingProvider(dimensions=dimensions)
+    return provider.embed_text(text)
 
 
 def _cosine(a: List[float], b: List[float]) -> float:

@@ -17,3 +17,8 @@ Steps:
 4. Studio: use the RAG panel and Memory summary to view indexed items.
 
 The RAG example defines default indexes and uses the in-memory vector store for CI-friendly runs.
+
+Backend selection:
+- Default is in-memory.
+- PgVector: set `N3_RAG_INDEX_docs_BACKEND=pgvector` and `N3_RAG_PGVECTOR_DSN`.
+- FAISS: set `N3_RAG_INDEX_docs_BACKEND=faiss` and ensure FAISS is installed; provide index dimension via index options or defaults.
