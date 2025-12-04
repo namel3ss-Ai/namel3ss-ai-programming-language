@@ -1,0 +1,13 @@
+agent helper {
+  prompt:
+    """
+    You are a helpful assistant.
+    """
+}
+
+flow ask_helper:
+  input question
+  step call_helper:
+    use agent helper
+    with question
+}

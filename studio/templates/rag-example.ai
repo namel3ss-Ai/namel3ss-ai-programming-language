@@ -1,0 +1,8 @@
+app "RAG Demo" {
+  dataset docs:
+    # add your documents here
+
+  rag_pipeline search_docs:
+    from docs
+    query input
+}

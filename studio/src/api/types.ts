@@ -218,7 +218,10 @@ export interface PageUIResponse {
 }
 
 export interface RunAppResponse {
-  result: any;
+  status?: string;
+  message?: string;
+  error?: string | null;
+  result?: any;
   trace?: any;
 }
 

@@ -46,6 +46,18 @@ export const postDiagnostics = (source: string) =>
     body: JSON.stringify({ code: source }),
   });
 
+export const postFmtPreview = (source: string) =>
+  request<FmtPreviewResponse>("/api/fmt/preview", {
+    method: "POST",
+    body: JSON.stringify({ source }),
+  });
+
+export const postRunApp = (code: string, appName: string) =>
+  request<RunAppResponse>("/api/run-app", {
+    method: "POST",
+    body: JSON.stringify({ source: code, app_name: appName }),
+  });
+
 export const ApiClient = {
   fetchPages: (code: string) =>
     request<PagesResponse>("/api/pages", {
@@ -118,9 +130,6 @@ export const ApiClient = {
     request(`/api/optimizer/reject/${id}`, {
       method: "POST",
     }),
-  postFmtPreview: (source: string) =>
-    request<FmtPreviewResponse>("/api/fmt/preview", {
-      method: "POST",
-      body: JSON.stringify({ source }),
-    }),
+  postFmtPreview,
+  postRunApp,
 };

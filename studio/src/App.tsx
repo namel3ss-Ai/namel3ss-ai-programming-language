@@ -12,6 +12,7 @@ import FlowsPanel from "./panels/FlowsPanel";
 import PluginsPanel from "./panels/PluginsPanel";
 import OptimizerPanel from "./panels/OptimizerPanel";
 import AgentsDebuggerPanel from "./panels/AgentsDebuggerPanel";
+import { IDEPanel } from "./panels/IDEPanel";
 import { ApiClient } from "./api/client";
 
 const DEFAULT_CODE = `app "support":
@@ -40,6 +41,7 @@ const PANELS = [
   "Plugins",
   "Optimizer",
   "Diagnostics",
+  "IDE",
 ];
 
 const App: React.FC = () => {
@@ -72,6 +74,8 @@ const App: React.FC = () => {
         return <OptimizerPanel client={client} />;
       case "Diagnostics":
         return <DiagnosticsPanel code={code} client={client} />;
+      case "IDE":
+        return <IDEPanel />;
       default:
         return null;
     }

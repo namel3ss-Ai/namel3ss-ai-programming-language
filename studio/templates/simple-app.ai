@@ -1,0 +1,6 @@
+app "Simple App" {
+  page main:
+    title: "Hello, Namel3ss"
+    section:
+      text: "Welcome to your first app."
+}
