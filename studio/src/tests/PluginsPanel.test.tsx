@@ -13,9 +13,9 @@ const fakeClient = {
 
 describe("PluginsPanel", () => {
   beforeEach(() => {
-    (fakeClient.fetchPlugins as any).mockResolvedValue({
-      plugins: [{ id: "p1", name: "PluginOne", version: "0.1.0", compatible: true, loaded: false, enabled: true }],
-    });
+    (fakeClient.fetchPlugins as any).mockResolvedValue([
+      { id: "p1", name: "PluginOne", version: "0.1.0", compatible: true, loaded: false, enabled: true },
+    ]);
     (fakeClient.loadPlugin as any).mockResolvedValue({ plugin: { id: "p1" } });
     (fakeClient.unloadPlugin as any).mockResolvedValue({ status: "ok" });
   });
@@ -30,7 +30,7 @@ describe("PluginsPanel", () => {
   });
 
   it("shows empty state", async () => {
-    (fakeClient.fetchPlugins as any).mockResolvedValueOnce({ plugins: [] });
+    (fakeClient.fetchPlugins as any).mockResolvedValueOnce([]);
     render(<PluginsPanel client={fakeClient} />);
     fireEvent.click(screen.getByText("Refresh"));
     expect(await screen.findByText("No plugins found.")).toBeInTheDocument();

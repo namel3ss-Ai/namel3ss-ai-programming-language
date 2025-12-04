@@ -11,6 +11,7 @@ import RagMemoryPanel from "./panels/RagMemoryPanel";
 import FlowsPanel from "./panels/FlowsPanel";
 import PluginsPanel from "./panels/PluginsPanel";
 import OptimizerPanel from "./panels/OptimizerPanel";
+import AgentsDebuggerPanel from "./panels/AgentsDebuggerPanel";
 import { ApiClient } from "./api/client";
 
 const DEFAULT_CODE = `app "support":
@@ -32,6 +33,7 @@ const PANELS = [
   "Runner",
   "Traces",
   "Flows",
+  "Agents",
   "Metrics",
   "Jobs",
   "RAG & Memory",
@@ -56,6 +58,8 @@ const App: React.FC = () => {
         return <TracePanel client={client} />;
       case "Flows":
         return <FlowsPanel code={code} client={client} />;
+      case "Agents":
+        return <AgentsDebuggerPanel client={client} />;
       case "Metrics":
         return <MetricsPanel client={client} />;
       case "Jobs":

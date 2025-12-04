@@ -5,13 +5,19 @@ FastAPI surface for Namel3ss V3.
 from __future__ import annotations
 
 from dataclasses import asdict
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, List
 from pathlib import Path
+import time
+import uuid
 
 from fastapi import Depends, FastAPI, HTTPException, UploadFile, File, Form
+from fastapi.responses import HTMLResponse
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from . import ir, lexer, parser
+from .errors import ParseError
+from .lang.formatter import format_source
 from .flows.triggers import FlowTrigger, TriggerManager
 from .runtime.engine import Engine
 from .ui.renderer import UIRenderer
@@ -42,6 +48,9 @@ from .optimizer.storage import OptimizerStorage
 from .optimizer.overlays import OverlayStore
 from .optimizer.engine import OptimizerEngine
 from .optimizer.apply import SuggestionApplier
+
+BASE_DIR = Path(__file__).resolve().parents[2]
+STUDIO_STATIC_DIR = BASE_DIR / "studio" / "static"
 
 
 class ParseRequest(BaseModel):
@@ -112,6 +121,31 @@ class PluginInstallRequest(BaseModel):
     path: str
 
 
+class PluginMetadata(BaseModel):
+    id: str
+    name: str
+    version: str | None = None
+    description: Optional[str] = None
+    author: Optional[str] = None
+    compatible: Optional[bool] = True
+    enabled: Optional[bool] = True
+    loaded: Optional[bool] = False
+    errors: List[str] = []
+    path: Optional[str] = None
+    entrypoints: Dict[str, Any] = {}
+    contributions: Dict[str, List[str]] = {}
+    tags: List[str] = []
+
+
+class FmtPreviewRequest(BaseModel):
+    source: str
+
+
+class FmtPreviewResponse(BaseModel):
+    formatted: str
+    changes_made: bool
+
+
 def _parse_source_to_ast(source: str) -> Dict[str, Any]:
     tokens = lexer.Lexer(source).tokenize()
     module = parser.Parser(tokens).parse_module()
@@ -128,7 +162,15 @@ def create_app() -> FastAPI:
     """Create the FastAPI app."""
 
     app = FastAPI(title="Namel3ss V3", version="0.1.0")
+    if STUDIO_STATIC_DIR.exists():
+        app.mount(
+            "/studio-static",
+            StaticFiles(directory=str(STUDIO_STATIC_DIR)),
+            name="studio-static",
+        )
     last_trace: Optional[Dict[str, Any]] = None
+    recent_traces: List[Dict[str, Any]] = []
+    recent_agent_traces: List[Dict[str, Any]] = []
     metrics_tracker = MetricsTracker()
     plugin_registry = PluginRegistry(Path(SecretsManager().get("N3_PLUGINS_DIR") or "plugins"), core_version=CORE_VERSION, tracer=Tracer())
     trigger_manager = TriggerManager(
@@ -148,6 +190,76 @@ def create_app() -> FastAPI:
         except Exception as exc:  # pragma: no cover - FastAPI handles tracebacks
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 
+    @app.post("/api/fmt/preview", response_model=FmtPreviewResponse)
+    def api_fmt_preview(payload: FmtPreviewRequest) -> FmtPreviewResponse:
+        if payload.source == "":
+            return FmtPreviewResponse(formatted="", changes_made=False)
+        try:
+            formatted = format_source(payload.source)
+        except ParseError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        return FmtPreviewResponse(formatted=formatted, changes_made=formatted != payload.source)
+
+    def _store_trace(flow_name: Optional[str], trace_payload: Dict[str, Any], status: str, started_at: float, duration: float) -> Dict[str, Any]:
+        record = {
+            "id": str(uuid.uuid4()),
+            "flow_name": flow_name,
+            "started_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(started_at)),
+            "status": status,
+            "duration_seconds": duration,
+            "trace": trace_payload,
+        }
+        recent_traces.append(record)
+        while len(recent_traces) > 20:
+            recent_traces.pop(0)
+        return record
+
+    def _store_agent_traces(trace_payload: Dict[str, Any], duration: float) -> None:
+        pages = trace_payload.get("pages") or []
+        started_at = time.time() - duration
+        for page in pages:
+            agents = page.get("agents") or []
+            for agent in agents:
+                steps = agent.get("steps") or []
+                run_id = str(uuid.uuid4())
+                run_record = {
+                    "id": run_id,
+                    "agent_name": agent.get("agent_name") or agent.get("name") or "agent",
+                    "team_name": None,
+                    "role": None,
+                    "started_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(started_at)),
+                    "finished_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(started_at + duration)),
+                    "status": "completed",
+                    "duration_seconds": duration,
+                    "cost": None,
+                    "token_usage": None,
+                    "steps": [],
+                    "messages": [],
+                }
+                for idx, step in enumerate(steps):
+                    step_id = step.get("node_id") or f"{run_id}-step-{idx}"
+                    run_record["steps"].append(
+                        {
+                            "id": step_id,
+                            "step_name": step.get("step_name") or step.get("name") or f"step-{idx}",
+                            "kind": step.get("kind") or "step",
+                            "target": step.get("target"),
+                            "started_at": run_record["started_at"],
+                            "finished_at": run_record["finished_at"],
+                            "success": step.get("success", True),
+                            "retries": step.get("retries", 0),
+                            "evaluation_score": step.get("evaluation_score"),
+                            "evaluation_verdict": step.get("verdict"),
+                            "message_preview": step.get("output_preview"),
+                            "tool_calls": [],
+                            "memory_events": [],
+                            "rag_events": [],
+                        }
+                    )
+                recent_agent_traces.append(run_record)
+        while len(recent_agent_traces) > 50:
+            recent_agent_traces.pop(0)
+
     @app.post("/api/run-app")
     def api_run_app(
         payload: RunAppRequest, principal: Principal = Depends(get_principal)
@@ -155,6 +267,7 @@ def create_app() -> FastAPI:
         if not can_run_app(principal.role):
             raise HTTPException(status_code=403, detail="Forbidden")
         try:
+            started_at = time.time()
             engine = Engine.from_source(
                 payload.source,
                 metrics_tracker=metrics_tracker,
@@ -166,13 +279,22 @@ def create_app() -> FastAPI:
             )
             nonlocal last_trace
             last_trace = result.get("trace")
+            duration = time.time() - started_at
+            stored = _store_trace(None, last_trace, "completed", started_at, duration)
+            _store_agent_traces(stored["trace"], duration)
             return {"result": result, "trace": result.get("trace")}
         except Exception as exc:  # pragma: no cover
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 
-    @app.get("/studio")
-    def studio() -> Dict[str, str]:
-        return {"message": "Studio coming soon"}
+    @app.get("/studio", response_class=HTMLResponse)
+    def studio() -> HTMLResponse:
+        index_path = STUDIO_STATIC_DIR / "index.html"
+        if not index_path.exists():
+            return HTMLResponse(
+                "<html><body><h1>Studio assets not found.</h1></body></html>",
+                status_code=500,
+            )
+        return HTMLResponse(index_path.read_text(encoding="utf-8"))
 
     @app.get("/api/last-trace")
     def api_last_trace(principal: Principal = Depends(get_principal)) -> Dict[str, Any]:
@@ -182,6 +304,60 @@ def create_app() -> FastAPI:
             raise HTTPException(status_code=404, detail="No trace available")
         return {"trace": last_trace}
 
+    @app.get("/api/traces")
+    def api_traces(principal: Principal = Depends(get_principal)) -> List[Dict[str, Any]]:
+        if not can_view_traces(principal.role):
+            raise HTTPException(status_code=403, detail="Forbidden")
+        summaries = []
+        for rec in recent_traces:
+            summaries.append(
+                {
+                    "id": rec["id"],
+                    "flow_name": rec.get("flow_name"),
+                    "started_at": rec.get("started_at"),
+                    "status": rec.get("status"),
+                    "duration_seconds": rec.get("duration_seconds"),
+                }
+            )
+        return summaries
+
+    @app.get("/api/trace/{trace_id}")
+    def api_trace(trace_id: str, principal: Principal = Depends(get_principal)) -> Dict[str, Any]:
+        if not can_view_traces(principal.role):
+            raise HTTPException(status_code=403, detail="Forbidden")
+        for rec in recent_traces:
+            if rec["id"] == trace_id:
+                return rec
+        raise HTTPException(status_code=404, detail="Trace not found")
+
+    @app.get("/api/agent-traces")
+    def api_agent_traces(principal: Principal = Depends(get_principal)) -> List[Dict[str, Any]]:
+        if not can_view_traces(principal.role):
+            raise HTTPException(status_code=403, detail="Forbidden")
+        return [
+            {
+                "id": rec["id"],
+                "agent_name": rec.get("agent_name"),
+                "team_name": rec.get("team_name"),
+                "role": rec.get("role"),
+                "started_at": rec.get("started_at"),
+                "finished_at": rec.get("finished_at"),
+                "status": rec.get("status"),
+                "duration_seconds": rec.get("duration_seconds"),
+                "cost": rec.get("cost"),
+            }
+            for rec in recent_agent_traces
+        ]
+
+    @app.get("/api/agent-trace/{trace_id}")
+    def api_agent_trace(trace_id: str, principal: Principal = Depends(get_principal)) -> Dict[str, Any]:
+        if not can_view_traces(principal.role):
+            raise HTTPException(status_code=403, detail="Forbidden")
+        for rec in recent_agent_traces:
+            if rec["id"] == trace_id:
+                return rec
+        raise HTTPException(status_code=404, detail="Agent trace not found")
+
     @app.post("/api/run-flow")
     def api_run_flow(
         payload: RunFlowRequest, principal: Principal = Depends(get_principal)
@@ -189,6 +365,7 @@ def create_app() -> FastAPI:
         if not can_run_flow(principal.role):
             raise HTTPException(status_code=403, detail="Forbidden")
         try:
+            started_at = time.time()
             engine = Engine.from_source(
                 payload.source,
                 metrics_tracker=metrics_tracker,
@@ -200,6 +377,9 @@ def create_app() -> FastAPI:
             )
             nonlocal last_trace
             last_trace = result.get("trace")
+            duration = time.time() - started_at
+            stored = _store_trace(payload.flow, last_trace, "completed", started_at, duration)
+            _store_agent_traces(stored["trace"], duration)
             return {"result": result, "trace": result.get("trace")}
         except Exception as exc:  # pragma: no cover
             raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -460,8 +640,29 @@ def create_app() -> FastAPI:
     def api_plugins(principal: Principal = Depends(get_principal)) -> Dict[str, Any]:
         if principal.role not in {Role.ADMIN, Role.DEVELOPER, Role.VIEWER}:
             raise HTTPException(status_code=403, detail="Forbidden")
-        plugins = plugin_registry.discover()
-        return {"plugins": [p.__dict__ for p in plugins]}
+        manifests = {m.id or m.name: m for m in plugin_registry.list_plugins()}
+        plugins: List[PluginMetadata] = []
+        for info in plugin_registry.discover():
+            manifest = manifests.get(info.id)
+            tags = manifest.tags if manifest else []
+            plugins.append(
+                PluginMetadata(
+                    id=info.id,
+                    name=info.name,
+                    version=info.version,
+                    description=info.description,
+                    author=info.author,
+                    compatible=info.compatible,
+                    enabled=info.enabled,
+                    loaded=info.loaded,
+                    errors=info.errors,
+                    path=info.path,
+                    entrypoints=info.entrypoints,
+                    contributions=info.contributions,
+                    tags=tags or [],
+                )
+            )
+        return {"plugins": [p.model_dump() for p in plugins]}
 
     @app.post("/api/plugins/{plugin_id}/load")
     def api_plugin_load(plugin_id: str, principal: Principal = Depends(get_principal)) -> Dict[str, Any]:

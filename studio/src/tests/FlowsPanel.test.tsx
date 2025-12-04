@@ -9,6 +9,8 @@ const fakeClient = {
   fetchFlows: vi.fn(),
   fetchTriggers: vi.fn(),
   fireTrigger: vi.fn(),
+  fetchTraces: vi.fn(),
+  fetchTraceById: vi.fn(),
 };
 
 describe("FlowsPanel", () => {
@@ -20,10 +22,23 @@ describe("FlowsPanel", () => {
       triggers: [{ id: "t1", kind: "http", flow_name: "pipeline", enabled: true, config: {}, last_fired: null }],
     });
     (fakeClient.fireTrigger as any).mockResolvedValue({ job_id: "job-1" });
+    (fakeClient.fetchTraces as any).mockResolvedValue([
+      { id: "trace-1", started_at: new Date().toISOString(), status: "completed", duration_seconds: 1.2 },
+    ]);
+    (fakeClient.fetchTraceById as any).mockResolvedValue({
+      id: "trace-1",
+      started_at: new Date().toISOString(),
+      status: "completed",
+      duration_seconds: 1.2,
+      graph: { nodes: [{ id: "n1", label: "step1", kind: "ai" }], edges: [] },
+      events: [{ id: "e1", node_id: "n1", kind: "log", message: "ok" }],
+      trace: {},
+    });
   });
 
-  it("loads flows and triggers and can fire", async () => {
+  it("loads traces, flows, triggers and can fire", async () => {
     render(<FlowsPanel code={'flow "pipeline":\n'} client={fakeClient} />);
+    await waitFor(() => expect(fakeClient.fetchTraces).toHaveBeenCalled());
     fireEvent.click(screen.getByText("Refresh"));
     await waitFor(() => expect(fakeClient.fetchFlows).toHaveBeenCalled());
     const tables = await screen.findAllByRole("table");
@@ -39,7 +54,9 @@ describe("FlowsPanel", () => {
   it("shows empty states", async () => {
     (fakeClient.fetchFlows as any).mockResolvedValueOnce({ flows: [] });
     (fakeClient.fetchTriggers as any).mockResolvedValueOnce({ triggers: [] });
+    (fakeClient.fetchTraces as any).mockResolvedValueOnce([]);
     render(<FlowsPanel code={'flow "pipeline":\n'} client={fakeClient} />);
+    await screen.findByText("No traces yet.");
     fireEvent.click(screen.getByText("Refresh"));
     expect(await screen.findByText("No flows detected.")).toBeInTheDocument();
     expect(await screen.findByText("No triggers registered.")).toBeInTheDocument();

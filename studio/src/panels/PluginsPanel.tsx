@@ -17,7 +17,7 @@ const PluginsPanel: React.FC<Props> = ({ client }) => {
     setError(null);
     try {
       const res = await client.fetchPlugins();
-      setPlugins(res.plugins);
+      setPlugins(res);
     } catch (err: any) {
       setError(err.message);
     } finally {

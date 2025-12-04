@@ -6,15 +6,20 @@ import {
   PagesResponse,
   RunAppResponse,
   StudioSummaryResponse,
-  TraceResponse,
   RAGQueryResponse,
   FlowsResponse,
   TriggerListResponse,
   TriggerFireResponse,
-  PluginsResponse,
   PluginLoadResponse,
   OptimizerSuggestionsResponse,
   OptimizerScanResponse,
+  TraceSummary,
+  TraceDetail,
+  AgentTraceSummary,
+  AgentTraceDetail,
+  FmtPreviewResponse,
+  PluginMetadata,
+  PluginsResponse,
 } from "./types";
 
 const defaultBase = import.meta.env.VITE_API_BASE_URL || "http://localhost:8000";
@@ -35,6 +40,12 @@ async function request<T>(path: string, opts: RequestInit = {}): Promise<T> {
   return (await res.json()) as T;
 }
 
+export const postDiagnostics = (source: string) =>
+  request<DiagnosticsResponse>("/api/diagnostics?format=json", {
+    method: "POST",
+    body: JSON.stringify({ code: source }),
+  });
+
 export const ApiClient = {
   fetchPages: (code: string) =>
     request<PagesResponse>("/api/pages", {
@@ -51,7 +62,11 @@ export const ApiClient = {
       method: "POST",
       body: JSON.stringify({ source: code, app_name }),
     }),
-  fetchTrace: () => request<TraceResponse>("/api/last-trace"),
+  fetchTraces: () => request<TraceSummary[]>("/api/traces"),
+  fetchTraceById: (id: string) => request<TraceDetail>(`/api/trace/${encodeURIComponent(id)}`),
+  fetchLastTrace: () => request<TraceDetail>("/api/last-trace"),
+  fetchAgentTraces: () => request<AgentTraceSummary[]>("/api/agent-traces"),
+  fetchAgentTraceById: (id: string) => request<AgentTraceDetail>(`/api/agent-trace/${encodeURIComponent(id)}`),
   fetchMetrics: () => request<MetricsResponse>("/api/metrics"),
   fetchStudioSummary: () => request<StudioSummaryResponse>("/api/studio-summary"),
   fetchDiagnostics: (code: string, strict: boolean) =>
@@ -59,6 +74,7 @@ export const ApiClient = {
       method: "POST",
       body: JSON.stringify({ code }),
     }),
+  postDiagnostics,
   fetchJobs: () => request<JobsResponse>("/api/jobs"),
   queryRag: (code: string, query: string, indexes?: string[]) =>
     request<RAGQueryResponse>("/api/rag/query", {
@@ -76,7 +92,10 @@ export const ApiClient = {
       method: "POST",
       body: JSON.stringify({ payload }),
     }),
-  fetchPlugins: () => request<PluginsResponse>("/api/plugins"),
+  fetchPlugins: async (): Promise<PluginMetadata[]> => {
+    const res = await request<PluginsResponse>("/api/plugins");
+    return res.plugins || [];
+  },
   loadPlugin: (id: string) =>
     request<PluginLoadResponse>(`/api/plugins/${id}/load`, {
       method: "POST",
@@ -98,5 +117,10 @@ export const ApiClient = {
   rejectSuggestion: (id: string) =>
     request(`/api/optimizer/reject/${id}`, {
       method: "POST",
+    }),
+  postFmtPreview: (source: string) =>
+    request<FmtPreviewResponse>("/api/fmt/preview", {
+      method: "POST",
+      body: JSON.stringify({ source }),
     }),
 };

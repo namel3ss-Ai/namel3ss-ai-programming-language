@@ -1,0 +1,158 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Namel3ss Studio</title>
+  <link rel="stylesheet" href="/studio-static/studio.css">
+</head>
+<body>
+  <header class="studio-header">
+    <div>
+      <h1>Namel3ss Studio</h1>
+      <p class="subtitle">Minimal Developer Console</p>
+    </div>
+    <div class="api-key">
+      <label for="api-key-input">API Key</label>
+      <input id="api-key-input" type="text" placeholder="X-API-Key value (e.g., viewer-key)">
+    </div>
+  </header>
+
+  <nav class="studio-tabs">
+    <button class="studio-tab active" data-panel="overview">Overview</button>
+    <button class="studio-tab" data-panel="run">Run</button>
+    <button class="studio-tab" data-panel="traces">Traces</button>
+    <button class="studio-tab" data-panel="memory">Memory</button>
+    <button class="studio-tab" data-panel="rag">RAG</button>
+    <button class="studio-tab" data-panel="diagnostics">Diagnostics</button>
+  </nav>
+
+  <main>
+    <section id="panel-overview" class="panel active">
+      <div class="panel-head">
+        <div>
+          <h2>Overview</h2>
+          <p>Summarizes the current runtime, plugins, and metrics.</p>
+        </div>
+        <button class="reload" data-action="overview-reload">Reload</button>
+      </div>
+      <div id="overview-content" class="panel-body monospace"></div>
+    </section>
+
+    <section id="panel-run" class="panel">
+      <div class="panel-head">
+        <div>
+          <h2>Run</h2>
+          <p>Execute apps or flows against the runtime APIs.</p>
+        </div>
+      </div>
+
+      <div class="runner">
+        <div class="runner-head">
+          <div>
+            <h3>App Runner</h3>
+            <p>Calls <code>/api/run-app</code>.</p>
+          </div>
+          <button class="reload" data-action="run-app">Run App</button>
+        </div>
+        <label>App name
+          <input id="run-app-name" type="text" placeholder="app name">
+        </label>
+        <label>Program source
+          <textarea id="run-app-source" rows="6" placeholder="Paste DSL source for your app"></textarea>
+        </label>
+        <label>Optional JSON payload
+          <textarea id="run-app-payload" rows="3" placeholder="{} (extra fields are ignored by the API)"></textarea>
+        </label>
+        <div id="run-app-output" class="runner-output monospace"></div>
+      </div>
+
+      <div class="runner">
+        <div class="runner-head">
+          <div>
+            <h3>Flow Runner</h3>
+            <p>Calls <code>/api/run-flow</code>.</p>
+          </div>
+          <button class="reload" data-action="run-flow">Run Flow</button>
+        </div>
+        <label>Flow name
+          <input id="run-flow-name" type="text" placeholder="flow name">
+        </label>
+        <label>Program source
+          <textarea id="run-flow-source" rows="6" placeholder="Paste DSL source containing the flow"></textarea>
+        </label>
+        <label>Optional JSON initial state
+          <textarea id="run-flow-state" rows="3" placeholder="{} (extra fields are ignored by the API)"></textarea>
+        </label>
+        <div id="run-flow-output" class="runner-output monospace"></div>
+      </div>
+    </section>
+
+    <section id="panel-traces" class="panel">
+      <div class="panel-head">
+        <div>
+          <h2>Traces</h2>
+          <p>Latest execution trace from the runtime.</p>
+        </div>
+        <button class="reload" data-action="traces-reload">Reload</button>
+      </div>
+      <div id="traces-content" class="panel-body monospace"></div>
+    </section>
+
+    <section id="panel-memory" class="panel">
+      <div class="panel-head">
+        <div>
+          <h2>Memory</h2>
+          <p>View memory state if the server exposes memory APIs.</p>
+        </div>
+        <button class="reload" data-action="memory-reload">Reload</button>
+      </div>
+      <div id="memory-content" class="panel-body monospace"></div>
+    </section>
+
+    <section id="panel-rag" class="panel">
+      <div class="panel-head">
+        <div>
+          <h2>RAG</h2>
+          <p>Query RAG indexes via <code>/api/rag/query</code>.</p>
+        </div>
+        <button class="reload" data-action="rag-run">Run Query</button>
+      </div>
+      <label>Query
+        <input id="rag-query" type="text" placeholder="What are the top docs?">
+      </label>
+      <label>Indexes (comma-separated)
+        <input id="rag-indexes" type="text" placeholder="default">
+      </label>
+      <label>Program source (optional)
+        <textarea id="rag-source" rows="4" placeholder="Paste DSL source if needed to build the RAG engine"></textarea>
+      </label>
+      <div id="rag-content" class="panel-body monospace"></div>
+    </section>
+
+    <section id="panel-diagnostics" class="panel">
+      <div class="panel-head">
+        <div>
+          <h2>Diagnostics</h2>
+          <p>Run diagnostics via <code>/api/diagnostics</code>.</p>
+        </div>
+        <button class="reload" data-action="diagnostics-run">Run Diagnostics</button>
+      </div>
+      <label>Paths (one per line)
+        <textarea id="diagnostics-paths" rows="4" placeholder="/path/to/program.ai"></textarea>
+      </label>
+      <div class="checkboxes">
+        <label><input id="diagnostics-strict" type="checkbox"> Strict mode</label>
+        <label><input id="diagnostics-summary" type="checkbox"> Summary only</label>
+      </div>
+      <div id="diagnostics-content" class="panel-body monospace"></div>
+    </section>
+  </main>
+
+  <footer class="studio-footer">
+    <span id="studio-status">Ready.</span>
+  </footer>
+
+  <script src="/studio-static/studio.js" defer></script>
+</body>
+</html>

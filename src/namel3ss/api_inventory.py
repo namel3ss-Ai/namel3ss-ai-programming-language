@@ -28,6 +28,8 @@ def list_http_routes(app: FastAPI) -> List[Tuple[str, str]]:
     """
     routes: list[tuple[str, str]] = []
     for route in app.routes:
+        if not hasattr(route, "methods"):
+            continue
         methods: Iterable[str] = route.methods or []
         for method in methods:
             if method in {"HEAD", "OPTIONS"}:
