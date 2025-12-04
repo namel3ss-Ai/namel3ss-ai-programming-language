@@ -78,6 +78,7 @@ class FlowRuntimeContext:
     execution_context: Any = None
     max_parallel_tasks: int = 4
     parallel_semaphore: asyncio.Semaphore | None = None
+    step_results: list | None = None
 
 
 def flow_ir_to_graph(flow: IRFlow) -> FlowGraph:

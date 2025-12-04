@@ -1,50 +1,36 @@
-# Namel3ss V3 — AI-Native Programming Language & Agent OS
+# Namel3ss — AI-Native Programming Language & Agent OS
 
-Namel3ss V3 is an opinionated, AI-native DSL and runtime that treats models, agents, tools, flows, memory, RAG, UI, and distributed execution as first-class concepts.
+Namel3ss is a DSL and runtime for building AI-native applications. It treats models, agents, flows, tools, memory, RAG, security, observability, and optimization as first-class concepts so you can ship production-ready AI systems quickly.
 
-## Why it exists
-- Compose AI systems with a concise, English-like DSL and strong optional typing.
-- Run the same program locally or on background workers without rewriting it.
-- Ship with batteries included: agents, tools, flows, memory, RAG, UI schema, observability, security.
-- Keep behavior inspectable via metrics, traces, and a studio backend.
+## Highlights
+- **AI stack**: Multi-provider model and embeddings routers, retrieval pipelines, and memory/RAG fusion.
+- **Agents 2.0**: Reflection, debate, planning, evaluation, and team runners with memory hooks.
+- **Flows 2.0**: Parallel/for_each/try-catch/finally, timeouts, and per-step metrics.
+- **Memory 2.0**: Episodic + semantic memories, retention, summarization worker, and fused recall.
+- **Security 2.0**: OAuth/API keys, RBAC, field-level masking, quotas.
+- **Observability**: Tracing, correlated logs, metrics, and observability APIs for Studio.
+- **Optimizer++**: Evaluation harness, suggestion engine, history with accept/reject loop.
+- **Ecosystem**: Plugin manifests/registry + SDK, curated examples catalog, Studio panels, and templates.
 
-## Tiny taste of the DSL
-```
-app "support":
-  entry_page "home"
-page "home":
-  route "/"
-  section "hero":
-    component "text":
-      value "Welcome to Namel3ss"
-model "default":
-  provider "openai:gpt-4.1-mini"
-ai "summarise":
-  model "default"
-  input from user_message
-flow "pipeline":
-  step "call":
-    kind "ai"
-    target "summarise"
-```
+## Quickstart
+1. Install (Python 3.11+):  
+   `pip install -e .[dev]`
+2. Run tests (fast suite):  
+   `python -m pytest -m "not slow" -q -o addopts=''`
+3. Explore an example:  
+   `n3 parse examples/getting_started/app.ai`  
+   `n3 run support --file examples/getting_started/app.ai`
+4. Start the server + Studio backend:  
+   `python -m namel3ss.server` (or `n3 serve --dry-run` to validate config)
+5. Browse examples under `examples/` and plugins under `plugins/` to extend the runtime.
 
-## What’s implemented in this repo
-- Stable lexer/parser/AST/IR for apps, pages, models, ai, agents, memory, flows, plugins, and UI sections/components.
-- Runtime engines: model router (dummy + OpenAI), agents (teams, reflection, retries), flows V3 (branching, parallel joins, error boundaries, shared state), tools, memory, RAG V3 (hybrid retrieval, reranking), job queue/worker/scheduler, triggers/automations.
-- UI runtime + validation + event router + RAG upload pipeline; Studio React app with panels for pages, traces, metrics, jobs, RAG, flows/automations, plugins, optimizer.
-- Plugins V3: manifests, semver compatibility, registry + SDK, HTTP + CLI management.
-- Deployment targets V3: server/worker entrypoints, Dockerfile generation, AWS Lambda adapter, desktop/mobile skeletons, CLI `n3 build-target ...`.
-- Optimizer (self-improving runtime): heuristic + optional AI-assisted analyzers, overlays, storage, CLI/HTTP/Studio integration.
-- Observability + security: tracing across subsystems, metrics, API key auth, RBAC.
-- Diagnostics engine, packaging/bundles, and CLI/HTTP surfaces for everything above.
+## Documentation & Links
+- Docs site (MkDocs): `docs/index.md` (build with `mkdocs build --strict`)
+- Architecture & API surface: `docs/architecture.md`, `docs/api-surface.md`
+- Quickstart guides: `docs/quickstart/`
+- Reference: CLI, HTTP API, plugins, optimizer under `docs/reference/`
+- Release notes: `CHANGELOG.md` and `docs/releases/`
+- Migration guidance: `MIGRATING.md`
 
-## Getting started (dev)
-1. Clone the repo.
-2. Install Python 3.11+ and dependencies: `pip install -e .[dev]` (or your preferred tooling).
-3. Run tests with coverage: `n3 test-cov` (or `python -m pytest` for a quick run). Use `pytest -m "not slow"` to skip stress tests.
-4. Start the server: `python -m namel3ss.server` or `n3 serve --dry-run` to validate config.
-5. Scaffold: `n3 init app-basic my-app` (templates in `templates/`). Examples live under `examples/`.
-6. Try the CLI: `n3 parse examples/getting_started/app.ai`, `n3 run support --file examples/getting_started/app.ai`, `n3 optimize scan`, or build deploy assets with `n3 build-target server --file examples/getting_started/app.ai --output-dir build/`.
-7. Studio: install Node 18+, run `npm install` then `npm run dev` inside `studio/` to open the panels. VS Code users can install the `vscode-extension/` locally for syntax + parse/diagnostics commands.
-
-Read the architecture + API surface → `docs/architecture.md` and `docs/api-surface.md`
+## Contributing
+Pull requests are welcome. Please run the fast test suite (`pytest -m "not slow"`) and keep docs up to date. For feature additions, ensure observability, security, and ecosystem considerations are covered.

@@ -25,7 +25,7 @@ class MemoryEngine:
         self.spaces: Dict[str, MemorySpaceConfig] = {space.name: space for space in spaces}
         self.trigger_manager = trigger_manager
 
-    def record_conversation(self, space: str, message: str, role: str) -> MemoryItem:
+    def record_conversation(self, space: str, message: str, role: str, namespace=None) -> MemoryItem:
         config = self.spaces.get(space)
         memory_type = config.type if config else MemoryType.CONVERSATION
         item = MemoryItem(
@@ -33,7 +33,7 @@ class MemoryEngine:
             space=space,
             type=memory_type,
             content=message,
-            metadata={"role": role},
+            metadata={"role": role, "namespace": namespace.__dict__ if namespace else None},
         )
         added = self.store.add(item)
         self._notify_triggers(space, added)
@@ -85,7 +85,7 @@ class ShardedMemoryEngine(MemoryEngine):
         self._counter += 1
         return self._stores[shard_idx]
 
-    def record_conversation(self, space: str, message: str, role: str) -> MemoryItem:
+    def record_conversation(self, space: str, message: str, role: str, namespace=None) -> MemoryItem:
         config = self.spaces.get(space)
         memory_type = config.type if config else MemoryType.CONVERSATION
         item_id = str(uuid4())
@@ -94,7 +94,7 @@ class ShardedMemoryEngine(MemoryEngine):
             space=space,
             type=memory_type,
             content=message,
-            metadata={"role": role},
+            metadata={"role": role, "namespace": namespace.__dict__ if namespace else None},
         )
         return self._choose_store(item_id).add(item)
 

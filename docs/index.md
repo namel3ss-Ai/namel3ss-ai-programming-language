@@ -1,17 +1,19 @@
-# Namel3ss V3
+# Namel3ss
 
-Namel3ss is an AI-native programming language and agent OS. It combines a concise DSL with a runtime that ships agents, flows, RAG, memory, plugins, deployment, and an optimizer for self-improving apps.
+Namel3ss is an AI-native programming language and agent OS. It pairs a concise DSL with a runtime that covers models, agents, flows, tools, memory, RAG, security, observability, plugins, and the optimizer so you can ship production AI systems quickly.
 
 ## What you get
-- Stable DSL → AST → IR → runtime graph (no grammar changes in V3).
-- AI layer (dummy + OpenAI), Agents V3, Flows V3 (branching/parallel/error boundaries), RAG V3 (hybrid + cross-store), memory + jobs, plugins, deployment targets, Studio UI, optimizer.
-- Security and observability by default (API key + RBAC, tracing, metrics).
+- Stable DSL, AST, and IR powering apps, pages, agents, flows, memory, and RAG.
+- AI stack with multi-provider routers, retrieval pipelines, and memory/RAG fusion.
+- Agents 2.0 (reflection, debate, planning, evaluation) and Flows 2.0 (parallel, for_each, try/catch/finally, timeouts, metrics).
+- Memory 2.0 (episodic/semantic, retention, summarization worker) plus observability and security by default.
+- Optimizer++, plugins/marketplace, examples catalog, templates, Studio UI, and deployment targets.
 
 ## Stability Promise
-Public surfaces (CLI commands listed in docs/api-surface.md, HTTP endpoints in docs/reference/http-api.md, and Plugin/Deployment/Optimizer APIs) are stable for 12 months starting from v3.0.0. Bug fixes may be shipped, but breaking changes will be deferred to a future major version or announced with migration notes.
+Public surfaces (CLI commands, HTTP endpoints, Plugin/Deployment/Optimizer APIs) are stable for the 3.0.x line. Bug fixes may be shipped, but breaking changes will be announced with migration notes.
 
 ## Getting started fast
 - Install: `pip install -e .[dev]`
 - Explore templates: `n3 init app-basic my-app`
-- Run your first app: `n3 serve --dry-run` then hit the Studio.
-- Read the quickstart guides under docs/quickstart/.
+- Run your first app: `n3 serve --dry-run` then open Studio.
+- Read the quickstart guides under `docs/quickstart/`.

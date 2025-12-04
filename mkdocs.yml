@@ -1,4 +1,4 @@
-site_name: Namel3ss V3
+site_name: Namel3ss
 site_description: AI-native programming language and agent OS
 repo_url: https://github.com/namel3ss-ai/namel3ss-ai-programming-language
 theme:
@@ -31,3 +31,5 @@ nav:
   - Releases:
       - v3.0.0: docs/releases/v3.0.0.md
       - Blog: docs/releases/announcing-namel3ss-v3.md
+  - Changelog: CHANGELOG.md
+  - Migrating: MIGRATING.md

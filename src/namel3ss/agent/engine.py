@@ -4,15 +4,21 @@ Agent execution engine with reflection, planning, and retries.
 
 from __future__ import annotations
 
-from typing import Optional
+from typing import Any, Optional
 
 from ..ai.registry import ModelRegistry
 from ..errors import Namel3ssError
 from ..ir import IRAgent, IRProgram
 from ..runtime.context import ExecutionContext, execute_ai_call_with_registry
 from ..tools.registry import ToolRegistry
+from ..observability.tracing import default_tracer
+from ..observability.metrics import default_metrics
 from .evaluators import AgentStepEvaluator, DeterministicEvaluator, OpenAIEvaluator
+from .models import AgentConfig
 from .plan import AgentExecutionPlan, AgentPlanResult, AgentStep, AgentStepResult
+from .planning import AgentGoal, AgentPlanner, AgentStepPlan
+from .evaluation import AgentEvaluation, AgentEvaluator
+from .reflection import ReflectionConfig, build_critique_prompt, build_improvement_prompt
 
 
 class AgentRunner:
@@ -23,12 +29,16 @@ class AgentRunner:
         tool_registry: ToolRegistry,
         router,
         evaluator: Optional[AgentStepEvaluator] = None,
+        config: Optional[AgentConfig] = None,
     ) -> None:
         self.program = program
         self.model_registry = model_registry
         self.tool_registry = tool_registry
         self.router = router
         self.evaluator = evaluator or DeterministicEvaluator(max_retries=1)
+        self.config = config or AgentConfig()
+        self._planner = AgentPlanner(router=self.router, agent_config=self.config)
+        self._evaluator = AgentEvaluator(router=self.router)
 
     def build_plan(self, agent: IRAgent, page_ai_fallback: Optional[str] = None) -> AgentExecutionPlan:
         steps: list[AgentStep] = []
@@ -60,14 +70,17 @@ class AgentRunner:
         context: ExecutionContext,
         page_ai_fallback: Optional[str] = None,
     ) -> AgentPlanResult:
-        if agent_name not in self.program.agents:
-            raise Namel3ssError(f"Unknown agent '{agent_name}'")
-        agent = self.program.agents[agent_name]
-        plan = self.build_plan(agent, page_ai_fallback=page_ai_fallback)
-        results: list[AgentStepResult] = []
+        span_attrs = {"agent": agent_name, "app": getattr(context, "app_name", None)}
+        with default_tracer.span("agent.run", attributes=span_attrs):
+            if agent_name not in self.program.agents:
+                raise Namel3ssError(f"Unknown agent '{agent_name}'")
+            agent = self.program.agents[agent_name]
+            plan = self.build_plan(agent, page_ai_fallback=page_ai_fallback)
+            results: list[AgentStepResult] = []
+            reflection_cfg = self.config.reflection if self.config else None
 
-        if context.tracer:
-            context.tracer.start_agent(agent.name)
+            if context.tracer:
+                context.tracer.start_agent(agent.name)
 
         # Allow OpenAI-backed evaluator when secrets configured.
         if isinstance(self.evaluator, DeterministicEvaluator) and context.secrets:
@@ -147,7 +160,143 @@ class AgentRunner:
             context.metrics.record_agent_run()
         if getattr(context, "trigger_manager", None):
             context.trigger_manager.notify_agent_signal(agent.name, {"summary": summary})
-        return AgentPlanResult(agent_name=agent.name, steps=results, summary=summary)
+        result = AgentPlanResult(
+            agent_name=agent.name,
+            steps=results,
+            summary=summary,
+            final_output=last_output,
+            final_answer=self._stringify_answer(last_output),
+        )
+        result = self._apply_reflection(agent, context, result, reflection_cfg)
+        default_metrics.record_flow(f"agent:{agent_name}", duration_seconds=len(results), cost=0.0)
+        return result
+
+    def plan(self, goal: AgentGoal, context: ExecutionContext, agent_id: Optional[str] = None) -> AgentStepPlan:
+        agent_identifier = agent_id or goal.description
+        return self._planner.plan(goal, context, agent_identifier)
+
+    def evaluate_answer(
+        self, goal: AgentGoal, answer: str, context: ExecutionContext, agent_id: Optional[str] = None
+    ) -> AgentEvaluation:
+        agent_identifier = agent_id or goal.description
+        return self._evaluator.evaluate_answer(goal, answer, context, agent_identifier)
+
+    def _apply_reflection(
+        self,
+        agent: IRAgent,
+        context: ExecutionContext,
+        result: AgentPlanResult,
+        config: Optional[ReflectionConfig],
+    ) -> AgentPlanResult:
+        if not config or not config.enabled:
+            return result
+        rounds = max(config.max_rounds, 0)
+        answer_text = result.final_answer or ""
+        request_text = context.user_input or agent.goal or ""
+        executed_rounds = 0
+
+        self._record_memory_event(context, agent.name, "agent_initial_answer", answer_text, round_idx=None)
+        if rounds == 0:
+            result.reflection_rounds = 0
+            result.final_output = answer_text
+            result.final_answer = answer_text
+            return result
+
+        for idx in range(rounds):
+            critique_prompt = build_critique_prompt(request_text, answer_text, config)
+            critique_resp = self._invoke_reflection_call(critique_prompt, context)
+            critique_text = self._extract_response_text(critique_resp)
+            result.critiques.append(critique_text)
+            self._record_memory_event(context, agent.name, "agent_critique", critique_text, round_idx=idx)
+
+            improvement_prompt = build_improvement_prompt(request_text, answer_text, critique_text, config)
+            improvement_resp = self._invoke_reflection_call(improvement_prompt, context)
+            improvement_text = self._extract_response_text(improvement_resp)
+            result.improvements.append(improvement_text)
+            self._record_memory_event(context, agent.name, "agent_improved_answer", improvement_text, round_idx=idx)
+
+            answer_text = improvement_text
+            executed_rounds += 1
+
+        result.final_output = answer_text
+        result.final_answer = answer_text
+        result.reflection_rounds = executed_rounds
+        return result
+
+    def _invoke_reflection_call(self, prompt: str, context: ExecutionContext):
+        response = self.router.generate(messages=[{"role": "user", "content": prompt}])
+        self._record_metrics_for_response(response, context)
+        if context.tracer:
+            context.tracer.record_ai(
+                model_name="reflection",
+                prompt=prompt,
+                response_preview=self._extract_response_text(response),
+                provider_name=getattr(response, "provider", None),
+                logical_model_name="reflection",
+            )
+        return response
+
+    def _record_metrics_for_response(self, response: Any, context: ExecutionContext) -> None:
+        if not context.metrics:
+            return
+        provider = getattr(response, "provider", None) or "reflection"
+        cost = getattr(response, "cost", None) or 0.0
+        context.metrics.record_ai_call(provider=provider, cost=cost, tokens_in=0, tokens_out=0)
+
+    def _record_memory_event(
+        self,
+        context: ExecutionContext,
+        agent_name: str,
+        event_type: str,
+        content: str,
+        round_idx: Optional[int],
+    ) -> None:
+        memory_engine = getattr(context, "memory_engine", None)
+        if not memory_engine:
+            return
+        segments = [event_type]
+        if round_idx is not None:
+            segments.append(f"round={round_idx}")
+        message = " | ".join(segments)
+        if content:
+            message = f"{message} | {content}"
+        try:
+            memory_engine.record_conversation(agent_name, message, role="system")
+        except Exception:
+            # Memory hooks should never break agent execution.
+            pass
+
+    def _extract_response_text(self, response: Any) -> str:
+        if response is None:
+            return ""
+        if hasattr(response, "text"):
+            try:
+                return str(getattr(response, "text"))
+            except Exception:
+                return str(response)
+        if isinstance(response, dict):
+            if response.get("text") is not None:
+                return str(response["text"])
+            if response.get("result") is not None:
+                return str(response["result"])
+        if hasattr(response, "get"):
+            candidate = response.get("result")
+            if candidate is not None:
+                return str(candidate)
+        return str(response)
+
+    def _stringify_answer(self, answer: Any) -> Optional[str]:
+        if answer is None:
+            return None
+        if isinstance(answer, dict):
+            provider_result = answer.get("provider_result")
+            if provider_result is not None:
+                extracted = self._extract_response_text(provider_result)
+                if extracted:
+                    return extracted
+            if "value" in answer:
+                return str(answer["value"])
+        return str(answer)
 
     def _run_step(self, step: AgentStep, last_output: Optional[dict], context: ExecutionContext):
         if step.kind == "tool":

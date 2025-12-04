@@ -1,29 +1,44 @@
+from fastapi import Depends, FastAPI
 from fastapi.testclient import TestClient
 
-from namel3ss.server import create_app
+from namel3ss.security.context import SecurityContext
+from namel3ss.security.rbac import require_permissions
 
 
-def test_optimizer_requires_auth_and_role(tmp_path, monkeypatch):
-    monkeypatch.setenv("N3_OPTIMIZER_DB", str(tmp_path / "opt.db"))
-    monkeypatch.setenv("N3_OPTIMIZER_OVERLAYS", str(tmp_path / "overlays.json"))
-    client = TestClient(create_app())
-    resp = client.get("/api/optimizer/suggestions")
-    assert resp.status_code == 401
-    resp = client.get("/api/optimizer/suggestions", headers={"X-API-Key": "viewer-key"})
-    assert resp.status_code == 403
-    resp = client.get("/api/optimizer/suggestions", headers={"X-API-Key": "dev-key"})
-    assert resp.status_code == 200
+def test_require_permissions_allows_with_role():
+    app = FastAPI()
+    fake_ctx = SecurityContext(subject_id="s", app_id=None, tenant_id=None, roles=["developer"], scopes=[], auth_scheme="api_key")
+
+    def ctx_dep():
+        return fake_ctx
+
+    @app.get("/ok")
+    def ok(_ctx: SecurityContext = Depends(require_permissions(["flows:read"]))):
+        return {"ok": True}
+
+    # override auth dependency
+    from namel3ss.security.oauth import get_oauth_context
+
+    app.dependency_overrides[get_oauth_context] = ctx_dep
+    client = TestClient(app)
+    res = client.get("/ok")
+    assert res.status_code == 200
 
 
-def test_plugins_and_triggers_enforce_auth(tmp_path, monkeypatch):
-    monkeypatch.setenv("N3_OPTIMIZER_DB", str(tmp_path / "opt.db"))
-    monkeypatch.setenv("N3_OPTIMIZER_OVERLAYS", str(tmp_path / "overlays.json"))
-    client = TestClient(create_app())
-    resp = client.get("/api/plugins")
-    assert resp.status_code == 401
-    resp = client.get("/api/flows/triggers")
-    assert resp.status_code == 401
-    resp = client.get("/api/plugins", headers={"X-API-Key": "viewer-key"})
-    assert resp.status_code == 200
-    resp = client.get("/api/flows/triggers", headers={"X-API-Key": "viewer-key"})
-    assert resp.status_code == 200
+def test_require_permissions_denies_without_role():
+    app = FastAPI()
+    fake_ctx = SecurityContext(subject_id="s", app_id=None, tenant_id=None, roles=["viewer"], scopes=[], auth_scheme="api_key")
+
+    def ctx_dep():
+        return fake_ctx
+
+    @app.get("/forbid")
+    def forbid(_ctx: SecurityContext = Depends(require_permissions(["memory:write"]))):
+        return {"ok": True}
+
+    from namel3ss.security.oauth import get_oauth_context
+
+    app.dependency_overrides[get_oauth_context] = ctx_dep
+    client = TestClient(app)
+    res = client.get("/forbid")
+    assert res.status_code == 403

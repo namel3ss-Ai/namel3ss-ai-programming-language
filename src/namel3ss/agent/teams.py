@@ -6,13 +6,16 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import List, Tuple
+from typing import List, Tuple, Optional
 
 from ..ir import IRAgent, IRProgram
 from ..runtime.context import ExecutionContext, execute_ai_call_with_registry
 from ..ai.router import ModelRouter
 from ..ai.registry import ModelRegistry
 from ..tools.registry import ToolRegistry
+from .debate import DebateAgentConfig, DebateConfig, DebateEngine, DebateOutcome
+from .models import AgentConfig
+from .planning import AgentGoal, AgentStepPlan
 
 
 class AgentRole(str, Enum):
@@ -47,6 +50,7 @@ class AgentTeamRunner:
         self.model_registry = model_registry
         self.router = router
         self.tool_registry = tool_registry
+        self._debate_engine: Optional[DebateEngine] = None
 
     def run_team(
         self, agent_names: List[str], task: str, context: ExecutionContext
@@ -82,6 +86,40 @@ class AgentTeamRunner:
         if context.metrics:
             context.metrics.record_agent_run(provider="team")
         return TeamResult(messages=messages, summary=summary)
+
+    def run_debate(
+        self,
+        question: str,
+        agent_names: List[str],
+        context: ExecutionContext,
+        debate_config: Optional[DebateConfig] = None,
+        agent_configs: Optional[dict[str, AgentConfig]] = None,
+    ) -> DebateOutcome:
+        debate_agents: List[DebateAgentConfig] = []
+        for name in agent_names:
+            cfg = None
+            if agent_configs:
+                cfg = agent_configs.get(name)
+            debate_agents.append(DebateAgentConfig(id=name, config=cfg or AgentConfig()))
+        if self._debate_engine is None:
+            self._debate_engine = DebateEngine(
+                program=self.program,
+                model_registry=self.model_registry,
+                tool_registry=self.tool_registry,
+                router=self.router,
+            )
+        return self._debate_engine.run_debate(
+            question=question, agents=debate_agents, context=context, config=debate_config
+        )
+
+    def plan_goal(self, goal: AgentGoal, context: ExecutionContext, agent_id: str) -> AgentStepPlan:
+        runner = AgentRunner(
+            program=self.program,
+            model_registry=self.model_registry,
+            tool_registry=self.tool_registry,
+            router=self.router,
+        )
+        return runner.plan(goal, context, agent_id=agent_id)
 
     def _vote(self, candidates: List[Tuple[str, str]]) -> str:
         if not candidates:

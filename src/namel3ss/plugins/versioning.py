@@ -7,7 +7,9 @@ from __future__ import annotations
 import re
 from typing import Tuple
 
-CORE_VERSION = "3.0.0"
+from ..version import __version__
+
+CORE_VERSION = __version__
 
 
 def parse_version(version: str) -> Tuple[int, int, int]:

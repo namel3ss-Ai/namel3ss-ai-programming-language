@@ -1,11 +1,12 @@
 """
-Command-line interface for Namel3ss V3 (n3).
+Command-line interface for Namel3ss (n3).
 """
 
 from __future__ import annotations
 
 import argparse
 import json
+import sys
 from dataclasses import asdict
 from pathlib import Path
 
@@ -18,11 +19,16 @@ from .diagnostics.runner import apply_strict_mode, collect_diagnostics, iter_ai_
 from .lang.formatter import format_source
 from .errors import ParseError
 from .templates.manager import list_templates, scaffold_project
-import sys
+from .version import __version__
 
 
 def build_cli_parser() -> argparse.ArgumentParser:
-    cli = argparse.ArgumentParser(prog="n3", description="Namel3ss V3 CLI")
+    cli = argparse.ArgumentParser(prog="n3", description="Namel3ss CLI")
+    cli.add_argument(
+        "--version",
+        action="version",
+        version=f"Namel3ss {__version__} (Python {sys.version.split()[0]})",
+    )
     sub = cli.add_subparsers(dest="command", required=True)
     commands: list[str] = []
 

@@ -5,7 +5,7 @@ build-backend = "hatchling.build"
 [project]
 name = "namel3ss"
 version = "3.0.0"
-description = "Namel3ss V3 – AI Programming Language"
+description = "Namel3ss AI-native programming language and agent OS"
 readme = "README.md"
 requires-python = ">=3.11"
 license = "MIT"

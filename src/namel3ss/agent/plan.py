@@ -67,3 +67,8 @@ class AgentPlanResult:
     agent_name: str
     steps: list[AgentStepResult] = field(default_factory=list)
     summary: Optional[str] = None
+    final_output: Any | None = None
+    final_answer: Optional[str] = None
+    reflection_rounds: int = 0
+    critiques: list[str] = field(default_factory=list)
+    improvements: list[str] = field(default_factory=list)

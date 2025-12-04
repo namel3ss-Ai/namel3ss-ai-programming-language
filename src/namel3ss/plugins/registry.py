@@ -1,5 +1,5 @@
 """
-Plugin registry with discovery, load, unload, and install helpers.
+Plugin registry and discovery.
 """
 
 from __future__ import annotations
@@ -7,145 +7,186 @@ from __future__ import annotations
 import importlib
 import shutil
 import sys
-from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 
-from ..obs.tracer import Tracer
-from .manifest import PluginManifest
+from .manifest import ManifestError, PluginManifest, load_manifest
 from .models import PluginInfo
-from .sdk import PluginSDK
-from .versioning import CORE_VERSION
-
-
-@dataclass
-class _LoadedPlugin:
-    info: PluginInfo
-    manifest: PluginManifest
+from .versioning import is_compatible, CORE_VERSION
 
 
 class PluginRegistry:
-    def __init__(self, plugins_dir: Path, core_version: str = CORE_VERSION, tracer: Optional[Tracer] = None) -> None:
-        self.plugins_dir = plugins_dir
-        self.core_version = core_version
+    def __init__(
+        self,
+        plugins_dir: Optional[Path] = None,
+        builtins_dir: Optional[Path] = None,
+        user_dir: Optional[Path] = None,
+        core_version: Optional[str] = None,
+        tracer: Any = None,
+    ) -> None:
+        # Support legacy single-argument constructor where the first argument is the user plugins directory.
+        self.user_dir = user_dir or plugins_dir or Path("plugins")
+        default_builtin = Path(__file__).resolve().parents[3] / "plugins"
+        self.builtins_dir = builtins_dir or (default_builtin if default_builtin.exists() else Path(__file__).parent / "builtin")
+        self.core_version = core_version or CORE_VERSION
         self.tracer = tracer
-        self._plugins: Dict[str, _LoadedPlugin] = {}
-        self._discovered: Dict[str, PluginInfo] = {}
+        self._manifests: dict[str, PluginManifest] = {}
+        self._paths: dict[str, Path] = {}
+        self._discover()
 
-    def discover(self) -> List[PluginInfo]:
-        self._discovered = {}
-        if not self.plugins_dir.exists():
-            return []
-        for child in self.plugins_dir.iterdir():
-            manifest_path = child / "plugin.toml"
-            if not manifest_path.exists():
-                continue
+    def _register_manifest(self, manifest: PluginManifest, manifest_path: Path) -> None:
+        plugin_id = manifest.id or manifest.name
+        manifest.extra = manifest.extra or {}
+        manifest.extra.setdefault("manifest_path", str(manifest_path))
+        if manifest.entry_point and not manifest.entrypoints:
+            manifest.entrypoints = {"main": manifest.entry_point}
+        self._manifests[plugin_id] = manifest
+        self._paths[plugin_id] = manifest_path.parent
+
+    def _discover_dir(self, directory: Path) -> None:
+        if not directory.exists():
+            return
+        for manifest_path in directory.rglob("plugin.toml"):
             try:
                 manifest = PluginManifest.from_file(manifest_path)
-                compatible = manifest.is_compatible_with(self.core_version)
-                info = PluginInfo(
-                    id=manifest.id,
-                    name=manifest.name,
-                    description=manifest.description,
-                    version=manifest.version,
-                    author=manifest.author,
-                    compatible=compatible,
-                    enabled=True,
-                    path=str(child),
-                    entrypoints=manifest.entrypoints,
-                )
-                self._discovered[manifest.id] = info
-            except Exception as exc:  # pragma: no cover - invalid plugin path
-                err = PluginInfo(
-                    id=child.name,
-                    name=child.name,
-                    description="Invalid manifest",
-                    compatible=False,
-                    enabled=False,
-                    loaded=False,
-                    errors=[str(exc)],
-                    path=str(child),
-                )
-                self._discovered[child.name] = err
-        return list(self._discovered.values())
+            except Exception:
+                continue
+            self._register_manifest(manifest, manifest_path)
+        for manifest_path in directory.rglob("plugin.json"):
+            try:
+                manifest = load_manifest(manifest_path)
+            except ManifestError:
+                continue
+            self._register_manifest(manifest, manifest_path)
 
-    def list_plugins(self) -> List[PluginInfo]:
-        if not self._discovered:
-            self.discover()
-        return list(self._discovered.values())
+    def _discover(self) -> None:
+        self._manifests.clear()
+        self._paths.clear()
+        self._discover_dir(self.builtins_dir)
+        if self.user_dir != self.builtins_dir:
+            self._discover_dir(self.user_dir)
 
-    def load(self, plugin_id: str, sdk: PluginSDK) -> PluginInfo:
-        if not self._discovered:
-            self.discover()
-        info = self._discovered.get(plugin_id)
-        if not info:
-            raise ValueError(f"Plugin '{plugin_id}' not found")
-        if not info.compatible:
-            info.errors.append("Incompatible with core version")
-            return info
-        if info.loaded:
-            return info
-        manifest_path = Path(info.path or "") / "plugin.toml"
-        manifest = PluginManifest.from_file(manifest_path)
-        # add plugin path to sys.path for imports
-        plugin_root = Path(info.path or ".")
-        sys.path.insert(0, str(plugin_root))
-        src_path = plugin_root / "src"
-        added_src = False
-        if src_path.exists():
-            sys.path.insert(0, str(src_path))
-            added_src = True
-        try:
+    def _ensure_discovered(self) -> None:
+        if not self._manifests:
+            self._discover()
+
+    def list_plugins(self) -> List[PluginManifest]:
+        self._ensure_discovered()
+        return list(self._manifests.values())
+
+    def discover(self) -> List[PluginInfo]:
+        self._discover()
+        infos: List[PluginInfo] = []
+        for plugin_id, manifest in self._manifests.items():
+            entrypoints = manifest.entrypoints or ({"main": manifest.entry_point} if manifest.entry_point else {})
+            compatible = True
+            if manifest.n3_core_version:
+                compatible = is_compatible(self.core_version, manifest.n3_core_version)
+            info = PluginInfo(
+                id=plugin_id,
+                name=manifest.name,
+                description=manifest.description,
+                version=manifest.version,
+                author=manifest.author,
+                compatible=compatible,
+                enabled=getattr(manifest, "enabled", True),
+                loaded=False,
+                path=str(self._paths.get(plugin_id, "")),
+                entrypoints=entrypoints,
+                contributions={},
+            )
+            infos.append(info)
+        return infos
+
+    def get_plugin(self, name: str) -> Optional[PluginManifest]:
+        self._ensure_discovered()
+        return self._manifests.get(name)
+
+    def _call_entrypoint(self, plugin_id: str, target: str, sdk: Any) -> None:
+        plugin_path = self._paths.get(plugin_id)
+        if plugin_path:
+            candidate_paths = [plugin_path / "src", plugin_path]
+            for candidate in candidate_paths:
+                if candidate.exists() and str(candidate) not in sys.path:
+                    sys.path.insert(0, str(candidate))
+        module_path, func_name = target.rsplit(":", 1)
+        module = importlib.import_module(module_path)
+        func = getattr(module, func_name)
+        func(sdk)
+
+    def load(self, plugin_id: str, sdk: Optional[Any] = None) -> PluginInfo:
+        self._ensure_discovered()
+        manifest = self._manifests.get(plugin_id)
+        if not manifest:
+            raise ValueError(f"Unknown plugin '{plugin_id}'")
+        info_list = [p for p in self.discover() if p.id == plugin_id]
+        info = info_list[0] if info_list else PluginInfo(id=plugin_id, name=manifest.name, description=manifest.description, version=manifest.version, author=manifest.author, compatible=True, enabled=True, loaded=False, path=str(self._paths.get(plugin_id, "")), entrypoints=manifest.entrypoints, contributions={})
+        entrypoints = manifest.entrypoints or ({"main": manifest.entry_point} if manifest.entry_point else {})
+        if entrypoints:
+            if sdk is None:
+                raise ValueError("Plugin SDK is required to load plugin entrypoints")
+            for target in entrypoints.values():
+                self._call_entrypoint(plugin_id, target, sdk)
+        elif manifest.entry_point:
+            # Fallback for simple entry point modules that do not use the SDK.
+            module_path, _ = manifest.entry_point.rsplit(":", 1)
+            importlib.import_module(module_path)
+        info.loaded = True
+        if sdk:
             contributions: Dict[str, List[str]] = {}
-            for group, target in manifest.entrypoints.items():
-                module_name, func_name = target.split(":")
-                module = importlib.import_module(module_name)
-                func = getattr(module, func_name)
-                # set default plugin id on sdk before invoking
-                sdk.tools.default_plugin_id = plugin_id
-                sdk.agents.default_plugin_id = plugin_id
-                sdk.flows.default_plugin_id = plugin_id
-                sdk.rag.default_plugin_id = plugin_id
-                func(sdk)
-                contributions.setdefault(group, []).append(target)
-            info.loaded = True
+            for key, attr in [
+                ("tools", "tools"),
+                ("agents", "agents"),
+                ("flows", "flows"),
+                ("rag", "rag"),
+            ]:
+                section = getattr(sdk, attr, None)
+                if section and getattr(section, "contributions", None):
+                    contrib = section.contributions.get(plugin_id, [])
+                    if contrib:
+                        contributions[key] = contrib
             info.contributions = contributions
-            self._plugins[plugin_id] = _LoadedPlugin(info=info, manifest=manifest)
-            if self.tracer:
-                self.tracer.record_flow_event(
-                    "plugin.load", {"plugin_id": plugin_id, "version": manifest.version}
-                )
-        except Exception as exc:
-            info.errors.append(str(exc))
-            info.loaded = False
-        finally:
-            if str(plugin_root) in sys.path:
-                sys.path.remove(str(plugin_root))
-            if added_src and str(src_path) in sys.path:
-                sys.path.remove(str(src_path))
         return info
 
-    def unload(self, plugin_id: str, sdk: Optional[PluginSDK] = None) -> None:
-        info = self._discovered.get(plugin_id)
-        if not info:
-            return
-        info.loaded = False
+    def unload(self, plugin_id: str, sdk: Optional[Any] = None) -> None:
         if sdk:
-            sdk.tools.unregister_contributions(plugin_id)
-            sdk.flows.unregister_contributions(plugin_id)
-            sdk.agents.unregister_contributions(plugin_id)
-            sdk.rag.unregister_contributions(plugin_id)
-        if plugin_id in self._plugins:
-            del self._plugins[plugin_id]
+            for section in ["tools", "agents", "flows", "rag"]:
+                part = getattr(sdk, section, None)
+                if part and hasattr(part, "unregister_contributions"):
+                    part.unregister_contributions(plugin_id)
 
-    def install_from_path(self, source: Path) -> PluginInfo:
-        dest = self.plugins_dir / source.name
-        if dest.exists():
-            shutil.rmtree(dest)
-        shutil.copytree(source, dest)
-        # refresh discovery
-        plugins = self.discover()
-        for p in plugins:
-            if p.id == source.name or p.path == str(dest):
-                return p
-        raise ValueError("Failed to install plugin")
+    def install_from_path(self, path: Path) -> PluginInfo:
+        target_dir = path
+        if path.is_file():
+            target_dir = path.parent
+        manifest_path = None
+        for candidate in ["plugin.toml", "plugin.json"]:
+            candidate_path = target_dir / candidate
+            if candidate_path.exists():
+                manifest_path = candidate_path
+                break
+        if manifest_path is None:
+            raise ValueError(f"No plugin manifest found in {path}")
+        manifest = PluginManifest.from_file(manifest_path)
+        plugin_id = manifest.id or manifest.name
+        destination = self.user_dir / target_dir.name
+        if not destination.exists():
+            shutil.copytree(target_dir, destination)
+        self._register_manifest(manifest, manifest_path)
+        info_list = self.discover()
+        for info in info_list:
+            if info.id == plugin_id:
+                return info
+        return PluginInfo(
+            id=plugin_id,
+            name=manifest.name,
+            description=manifest.description,
+            version=manifest.version,
+            author=manifest.author,
+            compatible=True,
+            enabled=True,
+            loaded=False,
+            path=str(destination),
+            entrypoints=manifest.entrypoints,
+            contributions={},
+        )

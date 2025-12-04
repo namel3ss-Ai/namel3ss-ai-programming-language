@@ -1,13 +1,19 @@
 # Changelog
 
-## 3.0.0
-- Stable DSL + diagnostics V3
-- Agents V3 (planning, reflection, retries, teams)
-- Flows V3 (branching, parallel joins, error boundaries, triggers, shared state)
-- RAG V3 (multi-index, hybrid, cross-store, rewriting, reranking)
-- Plugins V3 (manifests, registry, SDK, Studio panel)
-- Deployment V3 (server/worker, Dockerfiles, AWS Lambda adapter, desktop/mobile skeletons)
-- Optimizer (heuristic + optional AI-assisted suggestions, overlays, CLI/HTTP/Studio)
-- Studio polish across pages, traces, metrics, jobs, RAG, flows, plugins, optimizer
-- VS Code extension (syntax highlighting, parse/diagnostics commands)
-- RC hardening: RBAC tests, trigger hardening, API inventory + deprecation utilities, docs skeleton, coverage defaults
+## [3.0.0] - 2025-12-04
+### Added
+- Stable language, diagnostics, and runtime graph with CLI/HTTP access.
+- Multi-provider model and embeddings routers, retrieval pipelines, and memory/RAG fusion.
+- Flows 2.0 with parallel/for_each/try-catch/finally, timeouts, metrics, and fail-fast controls.
+- Agents 2.0: reflection, debate, planning, evaluation, and team runners with memory hooks.
+- Memory 2.0: episodic + semantic models, retention policies, summarization worker, and fusion APIs.
+- Security 2.0: OAuth/API keys, RBAC, field-level masking, quotas.
+- Observability: tracing, correlated logs, metrics registry, and observability APIs for Studio.
+- Optimizer++: evaluation harness, suggestion engine, store, and accept/reject history.
+- Plugin ecosystem: manifest/registry/SDK, marketplace-ready listing APIs, examples catalog, i18n hooks, Studio integration.
+
+### Fixed
+- Aligned docs, quickstarts, and ecosystem references for the 3.0.x line.
+
+### Notes
+- Public surfaces are stable for the 3.0.x releases; see `MIGRATING.md` for guidance when upgrading from earlier snapshots.

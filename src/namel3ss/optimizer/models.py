@@ -38,3 +38,45 @@ class OptimizationSuggestion:
     target: Dict
     actions: List[Dict]
     metrics_snapshot: Dict = field(default_factory=dict)
+
+
+class TargetType(str, Enum):
+    FLOW = "flow"
+    AGENT = "agent"
+
+
+class SuggestionStatus(str, Enum):
+    PENDING = "pending"
+    ACCEPTED = "accepted"
+    REJECTED = "rejected"
+
+
+@dataclass
+class EvaluationCase:
+    id: str
+    input: Dict[str, Any]
+    expected: Optional[Dict[str, Any]] = None  # optional ground truth
+
+
+@dataclass
+class EvaluationRun:
+    id: str
+    target_type: TargetType
+    target_name: str
+    created_at: datetime
+    cases: List[EvaluationCase]
+    metrics_summary: Dict[str, Any]
+    raw_results: List[Dict[str, Any]]
+
+
+@dataclass
+class Suggestion:
+    id: str
+    target_type: TargetType
+    target_name: str
+    created_at: datetime
+    status: SuggestionStatus
+    description: str
+    change_spec: Dict[str, Any]
+    evaluation_run_id: Optional[str] = None
+    metadata: Dict[str, Any] = None
