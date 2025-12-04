@@ -6,6 +6,7 @@ export interface RunOutputPanelProps {
   lastTrace: TraceDetail | null;
   onRefresh: () => void;
   isRefreshing: boolean;
+  onViewTrace?: (traceId: string) => void;
   className?: string;
 }
 
@@ -14,6 +15,7 @@ export const RunOutputPanel: React.FC<RunOutputPanelProps> = ({
   lastTrace,
   onRefresh,
   isRefreshing,
+  onViewTrace,
   className,
 }) => {
   return (
@@ -45,6 +47,15 @@ export const RunOutputPanel: React.FC<RunOutputPanelProps> = ({
               {lastTrace.kind && <div>Type: {lastTrace.kind}</div>}
               {lastTrace.status && <div>Status: {lastTrace.status}</div>}
               {lastTrace.started_at && <div>Started at: {String(lastTrace.started_at)}</div>}
+              {onViewTrace && (
+                <button
+                  type="button"
+                  className="n3-run-output-view-trace-button"
+                  onClick={() => onViewTrace(lastTrace.id)}
+                >
+                  View full trace
+                </button>
+              )}
             </div>
           )}
         </section>

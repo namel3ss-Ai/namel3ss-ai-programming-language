@@ -5,6 +5,7 @@ import { FileExplorer } from "../components/FileExplorer";
 import { TabBar } from "../components/TabBar";
 import { RunStatus } from "../components/RunStatus";
 import { RunOutputPanel } from "../components/RunOutputPanel";
+import { TraceDetailPanel } from "../components/TraceDetailPanel";
 import {
   createInitialWorkspace,
   setActiveFile,
@@ -25,6 +26,8 @@ export const IDEPanel: React.FC = () => {
   const [lastRunStatus, setLastRunStatus] = useState<string | null>(null);
   const [lastRunMessage, setLastRunMessage] = useState<string | null>(null);
   const [lastRunError, setLastRunError] = useState<string | null>(null);
+  const [isTraceDetailOpen, setIsTraceDetailOpen] = useState(false);
+  const [selectedTraceId, setSelectedTraceId] = useState<string | null>(null);
 
   const activeFile = useMemo(() => {
     if (!workspace.activeFileId) return null;
@@ -93,6 +96,15 @@ export const IDEPanel: React.FC = () => {
     }
   }, []);
 
+  const handleViewTrace = useCallback((traceId: string) => {
+    setSelectedTraceId(traceId);
+    setIsTraceDetailOpen(true);
+  }, []);
+
+  const handleCloseTraceDetail = useCallback(() => {
+    setIsTraceDetailOpen(false);
+  }, []);
+
   return (
     <div className="n3-ide-panel">
       <aside className="n3-ide-sidebar-left">
@@ -135,7 +147,11 @@ export const IDEPanel: React.FC = () => {
           lastTrace={runState.lastTrace}
           onRefresh={handleRefreshRunInfo}
           isRefreshing={isRefreshingRunInfo}
+          onViewTrace={runState.lastTrace ? handleViewTrace : undefined}
         />
+        {isTraceDetailOpen && (
+          <TraceDetailPanel traceId={selectedTraceId} onClose={handleCloseTraceDetail} />
+        )}
       </div>
       <aside className="n3-ide-sidebar-right">
         <IDEPluginsPanel />

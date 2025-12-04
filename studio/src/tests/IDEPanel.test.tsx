@@ -159,4 +159,66 @@ describe("IDEPanel", () => {
     expect(await screen.findByText("ID: trace-2")).toBeInTheDocument();
     expect(fetchLastTraceMock).toHaveBeenCalledTimes(2);
   });
+
+  it("opens TraceDetailPanel when 'View full trace' is clicked", async () => {
+    vi.spyOn(apiClient, "postRunApp").mockResolvedValue({
+      status: "ok",
+      message: "App executed",
+      error: null,
+    } as any);
+    vi.spyOn(apiClient.ApiClient, "fetchLastTrace").mockResolvedValue({
+      id: "trace-1",
+      status: "done",
+      kind: "app_run",
+      started_at: "2025-01-01T00:00:00Z",
+    } as any);
+    vi.spyOn(apiClient.ApiClient, "fetchTraceById").mockResolvedValue({
+      id: "trace-1",
+      status: "done",
+      events: [],
+    } as any);
+
+    render(<IDEPanel />);
+
+    fireEvent.click(screen.getByText("Run app"));
+
+    await screen.findByText("ID: trace-1");
+
+    fireEvent.click(screen.getByText("View full trace"));
+
+    expect(await screen.findByText("Trace Detail")).toBeInTheDocument();
+  });
+
+  it("TraceDetailPanel loads trace detail for selected trace", async () => {
+    vi.spyOn(apiClient, "postRunApp").mockResolvedValue({
+      status: "ok",
+      message: "App executed",
+      error: null,
+    } as any);
+    vi.spyOn(apiClient.ApiClient, "fetchLastTrace").mockResolvedValue({
+      id: "trace-2",
+      status: "done",
+      kind: "app_run",
+      started_at: "2025-01-01T00:00:00Z",
+    } as any);
+
+    const fetchTraceDetailMock = vi
+      .spyOn(apiClient.ApiClient, "fetchTraceById")
+      .mockResolvedValue({
+        id: "trace-2",
+        status: "done",
+        events: [{ id: "step-1", kind: "First step", status: "done" }],
+      } as any);
+
+    render(<IDEPanel />);
+
+    fireEvent.click(screen.getByText("Run app"));
+
+    await screen.findByText("ID: trace-2");
+
+    fireEvent.click(screen.getByText("View full trace"));
+
+    expect(fetchTraceDetailMock).toHaveBeenCalledWith("trace-2");
+    expect(await screen.findByText("First step (done)")).toBeInTheDocument();
+  });
 });

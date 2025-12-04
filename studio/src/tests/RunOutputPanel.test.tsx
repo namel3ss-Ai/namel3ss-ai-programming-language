@@ -53,4 +53,22 @@ describe("RunOutputPanel", () => {
     fireEvent.click(screen.getByText("Refresh"));
     expect(onRefresh).toHaveBeenCalledTimes(1);
   });
+
+  it("calls onViewTrace when 'View full trace' is clicked", () => {
+    const onRefresh = vi.fn();
+    const onViewTrace = vi.fn();
+    render(
+      <RunOutputPanel
+        lastRun={null}
+        lastTrace={trace}
+        onRefresh={onRefresh}
+        isRefreshing={false}
+        onViewTrace={onViewTrace}
+      />
+    );
+
+    fireEvent.click(screen.getByText("View full trace"));
+    expect(onViewTrace).toHaveBeenCalledTimes(1);
+    expect(onViewTrace).toHaveBeenCalledWith("trace-1");
+  });
 });
