@@ -28,6 +28,10 @@ venv/
 # Testing
 .pytest_cache/
 .mypy_cache/
+.coverage
+
+# Node.js
+node_modules/
 
 # Local
 *.log
