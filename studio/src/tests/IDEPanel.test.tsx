@@ -1,14 +1,26 @@
 import React from "react";
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { render, screen, fireEvent } from "@testing-library/react";
 import { IDEPanel } from "../panels/IDEPanel";
 import * as apiClient from "../api/client";
 
 describe("IDEPanel", () => {
+  const originalPlatform = window.navigator.platform;
+  const setPlatform = (value: string) =>
+    Object.defineProperty(window.navigator, "platform", {
+      value,
+      configurable: true,
+    });
+
   beforeEach(() => {
     vi.resetAllMocks();
     vi.spyOn(apiClient.ApiClient, "fetchPlugins").mockResolvedValue([] as any);
     vi.spyOn(apiClient.ApiClient, "fetchLastTrace").mockResolvedValue(null as any);
+    setPlatform("Win32");
+  });
+
+  afterEach(() => {
+    setPlatform(originalPlatform);
   });
 
   it("renders editor and plugin panel", async () => {
@@ -83,6 +95,7 @@ describe("IDEPanel", () => {
     fireEvent.click(screen.getByText("Save"));
 
     expect(screen.getAllByText("main.ai").length).toBeGreaterThan(0);
+    expect(screen.queryByText(/main\.ai\*/)).toBeNull();
   });
 
   it("Run app triggers postRunApp and shows OK status", async () => {
@@ -160,6 +173,93 @@ describe("IDEPanel", () => {
     expect(fetchLastTraceMock).toHaveBeenCalledTimes(2);
   });
 
+  it("opens IDE command palette on Ctrl+P", async () => {
+    render(<IDEPanel />);
+    await screen.findByText("No plugins loaded.");
+
+    fireEvent.keyDown(window, { key: "p", ctrlKey: true });
+
+    expect(screen.getByText("Save & Run current file")).toBeInTheDocument();
+  });
+
+  it("IDE command 'Save & Run current file' saves and runs app", async () => {
+    const runSpy = vi
+      .spyOn(apiClient, "postRunApp")
+      .mockResolvedValue({ status: "ok", message: "App executed", error: null } as any);
+
+    render(<IDEPanel />);
+    await screen.findByText("No plugins loaded.");
+
+    const textarea = screen.getByRole("textbox") as HTMLTextAreaElement;
+    fireEvent.change(textarea, { target: { value: "modified" } });
+    expect(screen.getAllByText("main.ai*").length).toBeGreaterThan(0);
+
+    fireEvent.keyDown(window, { key: "p", ctrlKey: true });
+    fireEvent.mouseDown(screen.getByText("Save & Run current file"));
+
+    await screen.findByText("Last run: OK");
+    expect(runSpy).toHaveBeenCalledTimes(1);
+    const mainEntries = await screen.findAllByText("main.ai");
+    expect(mainEntries.length).toBeGreaterThan(0);
+    expect(screen.queryByText(/main\.ai\*/)).toBeNull();
+  });
+
+  it("IDE command 'Open last trace' opens TraceDetailPanel", async () => {
+    vi.spyOn(apiClient, "postRunApp").mockResolvedValue({
+      status: "ok",
+      message: "App executed",
+      error: null,
+    } as any);
+    vi.spyOn(apiClient.ApiClient, "fetchLastTrace").mockResolvedValue({
+      id: "trace-xyz",
+      status: "done",
+      kind: "app_run",
+      started_at: "2025-01-01T00:00:00Z",
+    } as any);
+    vi.spyOn(apiClient.ApiClient, "fetchTraceById").mockResolvedValue({
+      id: "trace-xyz",
+      status: "done",
+      events: [],
+    } as any);
+
+    render(<IDEPanel />);
+    await screen.findByText("No plugins loaded.");
+
+    fireEvent.click(screen.getByText("Run app"));
+    await screen.findByText("ID: trace-xyz");
+
+    fireEvent.keyDown(window, { key: "p", ctrlKey: true });
+    fireEvent.mouseDown(screen.getByText("Open last trace"));
+
+    await screen.findByText("Trace Detail");
+    expect(apiClient.ApiClient.fetchTraceById).toHaveBeenCalledWith("trace-xyz");
+  });
+
+  it("IDE command 'Run diagnostics on current file' triggers diagnostics", async () => {
+    vi.spyOn(apiClient, "postDiagnostics").mockResolvedValue({
+      diagnostics: [
+        {
+          code: "N3-001",
+          severity: "error",
+          message: "Example diagnostics issue",
+          range: { start: { line: 0, column: 0 }, end: { line: 0, column: 5 } },
+        },
+      ],
+      summary: { errors: 1 },
+      success: false,
+    } as any);
+
+    render(<IDEPanel />);
+    await screen.findByText("No plugins loaded.");
+
+    fireEvent.keyDown(window, { key: "p", ctrlKey: true });
+    fireEvent.mouseDown(screen.getByText("Run diagnostics on current file"));
+
+    await screen.findByText("Errors: 1");
+    expect(apiClient.postDiagnostics).toHaveBeenCalled();
+    expect(await screen.findByText("Example diagnostics issue")).toBeInTheDocument();
+  });
+
   it("opens TraceDetailPanel when 'View full trace' is clicked", async () => {
     vi.spyOn(apiClient, "postRunApp").mockResolvedValue({
       status: "ok",
@@ -179,6 +279,7 @@ describe("IDEPanel", () => {
     } as any);
 
     render(<IDEPanel />);
+    await screen.findByText("No plugins loaded.");
 
     fireEvent.click(screen.getByText("Run app"));
 
@@ -211,6 +312,7 @@ describe("IDEPanel", () => {
       } as any);
 
     render(<IDEPanel />);
+    await screen.findByText("No plugins loaded.");
 
     fireEvent.click(screen.getByText("Run app"));
 

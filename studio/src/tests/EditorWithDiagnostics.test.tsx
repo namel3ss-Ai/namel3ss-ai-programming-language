@@ -237,6 +237,29 @@ describe("EditorWithDiagnostics", () => {
     expect(handleSourceChange).toHaveBeenCalledWith(formatted);
   });
 
+  it("runs diagnostics when externalDiagnosticsRequestId increments", async () => {
+    vi.spyOn(apiClient, "postDiagnostics").mockResolvedValue({
+      diagnostics: [
+        {
+          code: "N3-001",
+          severity: "error",
+          message: "Example issue",
+          range: { start: { line: 0, column: 0 }, end: { line: 0, column: 5 } },
+        },
+      ],
+      summary: { errors: 1 },
+      success: false,
+    } as any);
+
+    const { rerender } = render(
+      <EditorWithDiagnostics initialSource={"app Demo"} externalDiagnosticsRequestId={0} />
+    );
+
+    rerender(<EditorWithDiagnostics initialSource={"app Demo"} externalDiagnosticsRequestId={1} />);
+
+    expect(await screen.findByText("Example issue")).toBeInTheDocument();
+  });
+
   it("loads a template into the editor via TemplateWizard", async () => {
     vi.spyOn(apiClient, "postDiagnostics").mockResolvedValue({
       diagnostics: [],

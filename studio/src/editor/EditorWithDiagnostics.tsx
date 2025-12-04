@@ -1,4 +1,4 @@
-import React, { useCallback, useState } from "react";
+import React, { useCallback, useEffect, useState } from "react";
 import { CodeEditor } from "./CodeEditor";
 import { DiagnosticsOverlay } from "./DiagnosticsOverlay";
 import { postDiagnostics, postFmtPreview } from "../api/client";
@@ -11,9 +11,15 @@ export interface EditorWithDiagnosticsProps {
   initialSource?: string;
   className?: string;
   onSourceChange?: (newSource: string) => void;
+  externalDiagnosticsRequestId?: number;
 }
 
-export const EditorWithDiagnostics: React.FC<EditorWithDiagnosticsProps> = ({ initialSource, className, onSourceChange }) => {
+export const EditorWithDiagnostics: React.FC<EditorWithDiagnosticsProps> = ({
+  initialSource,
+  className,
+  onSourceChange,
+  externalDiagnosticsRequestId,
+}) => {
   const [source, setSource] = useState(initialSource ?? "");
   const [diagnostics, setDiagnostics] = useState<Diagnostic[]>([]);
   const [isRunning, setIsRunning] = useState(false);
@@ -22,6 +28,7 @@ export const EditorWithDiagnostics: React.FC<EditorWithDiagnosticsProps> = ({ in
   const [formatMessage, setFormatMessage] = useState<string | null>(null);
   const [isPaletteOpen, setIsPaletteOpen] = useState(false);
   const [isTemplateWizardOpen, setIsTemplateWizardOpen] = useState(false);
+  const [lastDiagnosticsRequestId, setLastDiagnosticsRequestId] = useState<number>(0);
 
   const handleSourceChange = useCallback(
     (value: string) => {
@@ -131,6 +138,16 @@ export const EditorWithDiagnostics: React.FC<EditorWithDiagnosticsProps> = ({ in
     },
     [handleFormat, isFormatting]
   );
+
+  useEffect(() => {
+    if (
+      typeof externalDiagnosticsRequestId === "number" &&
+      externalDiagnosticsRequestId > lastDiagnosticsRequestId
+    ) {
+      handleRunDiagnostics();
+      setLastDiagnosticsRequestId(externalDiagnosticsRequestId);
+    }
+  }, [externalDiagnosticsRequestId, lastDiagnosticsRequestId, handleRunDiagnostics]);
 
   return (
     <div className={className ?? "n3-editor-with-diagnostics"} onKeyDown={handleKeyDown}>

@@ -1,4 +1,4 @@
-import React, { useCallback, useMemo, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useState } from "react";
 import { EditorWithDiagnostics } from "../editor/EditorWithDiagnostics";
 import { IDEPluginsPanel } from "./IDEPluginsPanel";
 import { FileExplorer } from "../components/FileExplorer";
@@ -6,6 +6,7 @@ import { TabBar } from "../components/TabBar";
 import { RunStatus } from "../components/RunStatus";
 import { RunOutputPanel } from "../components/RunOutputPanel";
 import { TraceDetailPanel } from "../components/TraceDetailPanel";
+import { CommandPalette, CommandPaletteItem } from "../components/CommandPalette";
 import {
   createInitialWorkspace,
   setActiveFile,
@@ -28,11 +29,34 @@ export const IDEPanel: React.FC = () => {
   const [lastRunError, setLastRunError] = useState<string | null>(null);
   const [isTraceDetailOpen, setIsTraceDetailOpen] = useState(false);
   const [selectedTraceId, setSelectedTraceId] = useState<string | null>(null);
+  const [isIDEPaletteOpen, setIsIDEPaletteOpen] = useState(false);
+  const [diagnosticsRequestId, setDiagnosticsRequestId] = useState(0);
 
   const activeFile = useMemo(() => {
     if (!workspace.activeFileId) return null;
     return workspace.files.find((f) => f.id === workspace.activeFileId) ?? null;
   }, [workspace]);
+
+  const ideCommands: CommandPaletteItem[] = useMemo(
+    () => [
+      {
+        id: "ide.saveAndRun",
+        title: "Save & Run current file",
+        description: "Save buffer and run app",
+      },
+      {
+        id: "ide.openLastTrace",
+        title: "Open last trace",
+        description: "Open trace detail for last run",
+      },
+      {
+        id: "ide.runDiagnostics",
+        title: "Run diagnostics on current file",
+        description: "Analyze current buffer for issues",
+      },
+    ],
+    []
+  );
 
   const handleOpenFile = useCallback((fileId: string) => {
     setWorkspace((prev) => setActiveFile(prev, fileId));
@@ -105,6 +129,42 @@ export const IDEPanel: React.FC = () => {
     setIsTraceDetailOpen(false);
   }, []);
 
+  const handleRunIDECommand = useCallback(
+    async (id: string) => {
+      if (id === "ide.saveAndRun") {
+        handleSaveActiveFile();
+        await handleRunApp();
+        return;
+      }
+      if (id === "ide.openLastTrace") {
+        const trace = runState.lastTrace;
+        if (trace?.id) {
+          handleViewTrace(trace.id);
+        }
+        return;
+      }
+      if (id === "ide.runDiagnostics") {
+        setDiagnosticsRequestId((prev) => prev + 1);
+      }
+    },
+    [handleRunApp, handleSaveActiveFile, handleViewTrace, runState.lastTrace]
+  );
+
+  useEffect(() => {
+    function handleKeyDown(event: KeyboardEvent) {
+      const isMacLike = navigator.platform.toLowerCase().includes("mac");
+      const isMeta = isMacLike ? event.metaKey : event.ctrlKey;
+      if (isMeta && (event.key === "p" || event.key === "P")) {
+        event.preventDefault();
+        setIsIDEPaletteOpen(true);
+      }
+    }
+    window.addEventListener("keydown", handleKeyDown);
+    return () => {
+      window.removeEventListener("keydown", handleKeyDown);
+    };
+  }, []);
+
   return (
     <div className="n3-ide-panel">
       <aside className="n3-ide-sidebar-left">
@@ -141,6 +201,7 @@ export const IDEPanel: React.FC = () => {
           key={activeFile?.id ?? "no-file"}
           initialSource={activeFile?.content ?? ""}
           onSourceChange={handleSourceChange}
+          externalDiagnosticsRequestId={diagnosticsRequestId}
         />
         <RunOutputPanel
           lastRun={runState.lastRunResponse}
@@ -152,6 +213,15 @@ export const IDEPanel: React.FC = () => {
         {isTraceDetailOpen && (
           <TraceDetailPanel traceId={selectedTraceId} onClose={handleCloseTraceDetail} />
         )}
+        <CommandPalette
+          isOpen={isIDEPaletteOpen}
+          commands={ideCommands}
+          onClose={() => setIsIDEPaletteOpen(false)}
+          onRunCommand={(id) => {
+            handleRunIDECommand(id);
+            setIsIDEPaletteOpen(false);
+          }}
+        />
       </div>
       <aside className="n3-ide-sidebar-right">
         <IDEPluginsPanel />
