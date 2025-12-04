@@ -1,13 +1,17 @@
 import React from "react";
-import { describe, it, expect, vi } from "vitest";
+import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen, fireEvent } from "@testing-library/react";
 import { IDEPanel } from "../panels/IDEPanel";
 import * as apiClient from "../api/client";
 
 describe("IDEPanel", () => {
-  it("renders editor and plugin panel", async () => {
+  beforeEach(() => {
+    vi.resetAllMocks();
     vi.spyOn(apiClient.ApiClient, "fetchPlugins").mockResolvedValue([] as any);
+    vi.spyOn(apiClient.ApiClient, "fetchLastTrace").mockResolvedValue(null as any);
+  });
 
+  it("renders editor and plugin panel", async () => {
     render(<IDEPanel />);
 
     expect(await screen.findByText("No plugins loaded.")).toBeInTheDocument();
@@ -16,10 +20,9 @@ describe("IDEPanel", () => {
     expect(screen.getByText("Templates")).toBeInTheDocument();
   });
 
-  it("keeps per-file content when switching files", () => {
-    vi.spyOn(apiClient.ApiClient, "fetchPlugins").mockResolvedValue([] as any);
-
+  it("keeps per-file content when switching files", async () => {
     render(<IDEPanel />);
+    await screen.findByText("No plugins loaded.");
 
     const textarea = screen.getByRole("textbox") as HTMLTextAreaElement;
 
@@ -44,10 +47,9 @@ describe("IDEPanel", () => {
     expect(textareaNew.value).toBe("untitled content");
   });
 
-  it("marks active tab and file list entry dirty when edited", () => {
-    vi.spyOn(apiClient.ApiClient, "fetchPlugins").mockResolvedValue([] as any);
-
+  it("marks active tab and file list entry dirty when edited", async () => {
     render(<IDEPanel />);
+    await screen.findByText("No plugins loaded.");
 
     const textarea = screen.getByRole("textbox") as HTMLTextAreaElement;
     fireEvent.change(textarea, { target: { value: "modified" } });
@@ -56,10 +58,9 @@ describe("IDEPanel", () => {
     expect(dirtyEntries.length).toBeGreaterThan(0);
   });
 
-  it("closes a file via tab close", () => {
-    vi.spyOn(apiClient.ApiClient, "fetchPlugins").mockResolvedValue([] as any);
-
+  it("closes a file via tab close", async () => {
     render(<IDEPanel />);
+    await screen.findByText("No plugins loaded.");
 
     fireEvent.click(screen.getByText("+"));
 
@@ -71,10 +72,9 @@ describe("IDEPanel", () => {
     expect(remainingMain.length).toBeGreaterThan(0);
   });
 
-  it("Save marks active file clean and clears dirty indicator", () => {
-    vi.spyOn(apiClient.ApiClient, "fetchPlugins").mockResolvedValue([] as any);
-
+  it("Save marks active file clean and clears dirty indicator", async () => {
     render(<IDEPanel />);
+    await screen.findByText("No plugins loaded.");
 
     const textarea = screen.getByRole("textbox") as HTMLTextAreaElement;
     fireEvent.change(textarea, { target: { value: "modified" } });
@@ -86,13 +86,13 @@ describe("IDEPanel", () => {
   });
 
   it("Run app triggers postRunApp and shows OK status", async () => {
-    vi.spyOn(apiClient.ApiClient, "fetchPlugins").mockResolvedValue([] as any);
     vi.spyOn(apiClient.ApiClient, "fetchLastTrace").mockResolvedValue({ id: "t1" } as any);
     const runSpy = vi
       .spyOn(apiClient, "postRunApp")
       .mockResolvedValue({ status: "ok", message: "App started", error: null } as any);
 
     render(<IDEPanel />);
+    await screen.findByText("No plugins loaded.");
 
     fireEvent.click(screen.getByText("Run app"));
 
@@ -102,11 +102,11 @@ describe("IDEPanel", () => {
   });
 
   it("Run app failure shows error status", async () => {
-    vi.spyOn(apiClient.ApiClient, "fetchPlugins").mockResolvedValue([] as any);
     vi.spyOn(apiClient.ApiClient, "fetchLastTrace").mockResolvedValue({ id: "t1" } as any);
     vi.spyOn(apiClient, "postRunApp").mockRejectedValue(new Error("boom"));
 
     render(<IDEPanel />);
+    await screen.findByText("No plugins loaded.");
 
     fireEvent.click(screen.getByText("Run app"));
 
@@ -115,7 +115,6 @@ describe("IDEPanel", () => {
   });
 
   it("RunOutputPanel shows last run response after running app", async () => {
-    vi.spyOn(apiClient.ApiClient, "fetchPlugins").mockResolvedValue([] as any);
     vi.spyOn(apiClient, "postRunApp").mockResolvedValue({
       status: "ok",
       message: "App executed",
@@ -124,6 +123,7 @@ describe("IDEPanel", () => {
     vi.spyOn(apiClient.ApiClient, "fetchLastTrace").mockResolvedValue(null as any);
 
     render(<IDEPanel />);
+    await screen.findByText("No plugins loaded.");
 
     fireEvent.click(screen.getByText("Run app"));
 
@@ -132,7 +132,6 @@ describe("IDEPanel", () => {
   });
 
   it("RunOutputPanel refresh button refetches last trace", async () => {
-    vi.spyOn(apiClient.ApiClient, "fetchPlugins").mockResolvedValue([] as any);
     vi.spyOn(apiClient, "postRunApp").mockResolvedValue({
       status: "ok",
       message: "App executed",
@@ -149,6 +148,7 @@ describe("IDEPanel", () => {
       } as any);
 
     render(<IDEPanel />);
+    await screen.findByText("No plugins loaded.");
 
     fireEvent.click(screen.getByText("Run app"));
 

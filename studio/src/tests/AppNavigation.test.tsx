@@ -7,6 +7,7 @@ import * as apiClient from "../api/client";
 describe("App navigation", () => {
   it("includes IDE tab and shows IDE panel when selected", async () => {
     vi.spyOn(apiClient.ApiClient, "fetchPlugins").mockResolvedValue([] as any);
+    vi.spyOn(apiClient.ApiClient, "fetchLastTrace").mockResolvedValue(null as any);
 
     render(<App />);
 
@@ -16,6 +17,6 @@ describe("App navigation", () => {
     fireEvent.click(ideTab);
 
     expect(await screen.findByText("Run diagnostics")).toBeInTheDocument();
-    expect(screen.getByRole("heading", { name: "Plugins" })).toBeInTheDocument();
+    expect(await screen.findByRole("heading", { name: "Plugins" })).toBeInTheDocument();
   });
 });
