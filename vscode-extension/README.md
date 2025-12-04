@@ -2,9 +2,8 @@
 
 Features:
 - Recognizes `.ai` files and provides syntax highlighting for the Namel3ss DSL.
-- Commands:
-  - `Namel3ss: Parse current file` (`namel3ss.runParse`)
-  - `Namel3ss: Run diagnostics on current file` (`namel3ss.runDiagnostics`)
+- Starts the built-in Namel3ss language server (`n3 lsp`) to provide diagnostics and formatting.
+- Command: `Namel3ss: Restart Language Server` (`namel3ss.restartServer`).
 
 Install locally:
 ```
@@ -14,4 +13,4 @@ npm run build
 # optional: package with vsce (not included in dev deps)
 ```
 
-Commands shell out to the `n3` CLI; ensure it is on PATH.
+The extension launches `n3 lsp`; ensure the `n3` CLI is on your PATH or configure `namel3ss.lsp.command`/`namel3ss.lsp.args` in settings.

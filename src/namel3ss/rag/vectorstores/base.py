@@ -1,8 +1,9 @@
 from __future__ import annotations
 
-from typing import List, Protocol
+from typing import List, Protocol, Sequence
 
 from ..models import RAGItem, ScoredItem
+from ..retrieval_models import RAGDocument, RetrievalResult
 
 
 class VectorStore(Protocol):
@@ -16,4 +17,11 @@ class VectorStore(Protocol):
         ...
 
     async def a_query(self, query_embedding: List[float], k: int = 10) -> List[ScoredItem]:
+        ...
+
+    # New structured interfaces for retrieval pipelines
+    def index(self, documents: Sequence[RAGDocument], *, embeddings: Sequence[List[float]] | None = None) -> None:
+        ...
+
+    def search_results(self, query_embedding: List[float], *, k: int = 5) -> List[RetrievalResult]:
         ...

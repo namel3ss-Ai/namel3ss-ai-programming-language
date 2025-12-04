@@ -13,6 +13,12 @@ from . import ir, lexer, parser
 from .server import create_app
 from .runtime.engine import Engine
 from .secrets.manager import SecretsManager
+from .diagnostics import Diagnostic
+from .diagnostics.runner import apply_strict_mode, collect_diagnostics, iter_ai_files
+from .lang.formatter import format_source
+from .errors import ParseError
+from .templates.manager import list_templates, scaffold_project
+import sys
 
 
 def build_cli_parser() -> argparse.ArgumentParser:
@@ -68,19 +74,37 @@ def build_cli_parser() -> argparse.ArgumentParser:
     job_status_cmd = register("job-status", help="Check job status")
     job_status_cmd.add_argument("job_id")
 
-    diag_cmd = register("diagnostics", help="Run diagnostics on an .ai file")
-    diag_cmd.add_argument("--file", type=Path, required=True)
+    diag_cmd = register("diagnostics", help="Run diagnostics on files or directories")
+    diag_cmd.add_argument("paths", nargs="*", type=Path, help="Files or directories to analyze")
+    diag_cmd.add_argument("--file", type=Path, help="Legacy single-file flag")
     diag_cmd.add_argument("--strict", action="store_true", help="Treat warnings as errors")
-    diag_cmd.add_argument(
-        "--format",
-        choices=["text", "json"],
-        default="text",
-        help="Diagnostics output format",
-    )
+    diag_cmd.add_argument("--json", action="store_true", help="Emit diagnostics as JSON")
+    diag_cmd.add_argument("--summary-only", action="store_true", help="Only print the summary")
 
     bundle_cmd = register("bundle", help="Create an app bundle")
-    bundle_cmd.add_argument("--file", type=Path, required=True)
-    bundle_cmd.add_argument("--target", choices=["server", "worker"], default="server")
+    bundle_cmd.add_argument("path", nargs="?", type=Path, help="Path to .ai file or project")
+    bundle_cmd.add_argument("--file", type=Path, help="Legacy file flag (equivalent to positional path)")
+    bundle_cmd.add_argument("--output", type=Path, default=Path("dist"), help="Output directory for bundle")
+    bundle_cmd.add_argument("--name", type=str, help="Override bundle name")
+    bundle_cmd.add_argument("--target", choices=["server", "full", "worker", "desktop"], default="server")
+    bundle_cmd.add_argument("--env", action="append", default=[], help="Environment variable to include (KEY=VALUE)")
+    bundle_cmd.add_argument("--dockerfile", action="store_true", help="Also generate Dockerfile for the bundle")
+
+    desktop_cmd = register("desktop", help="Prepare a desktop (Tauri) bundle")
+    desktop_cmd.add_argument("path", nargs="?", type=Path, help="Path to .ai file or project")
+    desktop_cmd.add_argument("--file", type=Path, help="Legacy file flag")
+    desktop_cmd.add_argument("--output", type=Path, default=Path("dist/desktop"), help="Output directory for desktop bundle")
+    desktop_cmd.add_argument("--name", type=str, help="Override bundle name")
+    desktop_cmd.add_argument("--env", action="append", default=[], help="Environment variable to include (KEY=VALUE)")
+    desktop_cmd.add_argument("--dockerfile", action="store_true", help="Also generate Dockerfile for the bundle")
+    desktop_cmd.add_argument("--no-build-tauri", action="store_true", help="Do not run tauri build (only prepare bundle)")
+
+    mobile_cmd = register("mobile", help="Prepare mobile config (Expo)")
+    mobile_cmd.add_argument("path", nargs="?", type=Path, help="Path to .ai file or project")
+    mobile_cmd.add_argument("--file", type=Path, help="Legacy file flag")
+    mobile_cmd.add_argument("--output", type=Path, default=Path("dist/mobile"), help="Output directory for mobile config")
+    mobile_cmd.add_argument("--name", type=str, help="Override app name in config")
+    mobile_cmd.add_argument("--no-expo-scaffold", action="store_true", help="Only emit config, do not scaffold Expo app")
 
     build_cmd = register("build-target", help="Build deployment target assets")
     build_cmd.add_argument("target", choices=["server", "worker", "docker", "serverless-aws", "desktop", "mobile"])
@@ -108,6 +132,19 @@ def build_cli_parser() -> argparse.ArgumentParser:
     init_cmd.add_argument("target_dir", nargs="?", default=".", help="Target directory")
     init_cmd.add_argument("--force", action="store_true", help="Overwrite target directory if non-empty")
 
+    fmt_cmd = register("fmt", help="Format .ai files")
+    fmt_cmd.add_argument("paths", nargs="*", type=Path, help="Files or directories to format")
+    fmt_cmd.add_argument("--check", action="store_true", help="Only check formatting, do not write files")
+    fmt_cmd.add_argument("--stdin", action="store_true", help="Read source from stdin and write to stdout")
+
+    lsp_cmd = register("lsp", help="Start the Namel3ss language server (LSP) over stdio")
+
+    create_cmd = register("create", help="Scaffold a new Namel3ss project from templates")
+    create_cmd.add_argument("project_name", nargs="?", help="Name of the project / target directory")
+    create_cmd.add_argument("--template", default="app-basic", help="Template name to use")
+    create_cmd.add_argument("--force", action="store_true", help="Overwrite target directory if non-empty")
+    create_cmd.add_argument("--list-templates", action="store_true", help="List available templates and exit")
+
     cli._n3_commands = commands
     return cli
 
@@ -116,6 +153,19 @@ def load_module_from_file(path: Path):
     source = path.read_text(encoding="utf-8")
     tokens = lexer.Lexer(source, filename=str(path)).tokenize()
     return parser.Parser(tokens).parse_module()
+
+
+def _format_diagnostic(diag: Diagnostic) -> str:
+    loc_parts = []
+    if diag.file:
+        loc_parts.append(str(diag.file))
+    if diag.line is not None:
+        loc_parts.append(str(diag.line))
+    if diag.column is not None:
+        loc_parts.append(str(diag.column))
+    location = ":".join(loc_parts)
+    prefix = f"{location} " if location else ""
+    return f"{prefix}[{diag.severity}] ({diag.code} {diag.category}) {diag.message}"
 
 
 def main(argv: list[str] | None = None) -> None:
@@ -243,45 +293,205 @@ def main(argv: list[str] | None = None) -> None:
         return
 
     if args.command == "diagnostics":
-        from namel3ss.diagnostics.pipeline import run_diagnostics
-        from namel3ss.diagnostics.models import has_effective_errors
+        input_paths = list(args.paths)
+        if args.file:
+            input_paths.append(args.file)
+        ai_files = iter_ai_files(input_paths)
+        if not ai_files:
+            print("No .ai files found.")
+            return
 
-        module = load_module_from_file(args.file)
-        program = ir.ast_to_ir(module)
-        diags = run_diagnostics(program, available_plugins=set())
-        summary = {
-            "error_count": sum(1 for d in diags if (d.severity or d.level) == "error"),
-            "warning_count": sum(1 for d in diags if (d.severity or d.level) == "warning"),
-            "strict": bool(args.strict),
-        }
-        if args.format == "json":
+        all_diags, summary = collect_diagnostics(ai_files, args.strict)
+        success = summary["errors"] == 0
+
+        if args.json:
             payload = {
+                "success": success,
+                "diagnostics": [] if args.summary_only else [d.to_dict() for d in all_diags],
                 "summary": summary,
-                "diagnostics": [d.to_dict() for d in diags],
             }
             print(json.dumps(payload, indent=2))
         else:
-            if not diags:
-                print("No diagnostics found.")
-            for diag in diags:
-                loc = f" {diag.location}" if diag.location else ""
-                hint = f" (hint: {diag.hint})" if diag.hint else ""
-                print(f"[{diag.severity}][{diag.code}]{loc} - {diag.message}{hint}")
-            print(f"Summary: errors={summary['error_count']} warnings={summary['warning_count']} strict={summary['strict']}")
-        exit_code = 1 if has_effective_errors(diags, args.strict) else 0
-        if exit_code != 0:
-            raise SystemExit(exit_code)
+            if not args.summary_only:
+                if not all_diags:
+                    print("No diagnostics found.")
+                for diag in all_diags:
+                    print(_format_diagnostic(diag))
+                    if diag.hint:
+                        print(f"  hint: {diag.hint}")
+            print(f"Summary: {summary['errors']} errors, {summary['warnings']} warnings, {summary['infos']} infos across {len(ai_files)} files.")
+
+        if not success:
+            raise SystemExit(1)
+        return
+
+    if args.command == "fmt":
+        if args.stdin:
+            src = sys.stdin.read()
+            try:
+                formatted = format_source(src)
+            except ParseError as err:
+                print(f"stdin:{err.line}:{err.column}: parse error: {err.message}")
+                raise SystemExit(1)
+            if args.check:
+                if formatted != src:
+                    raise SystemExit(1)
+                return
+            sys.stdout.write(formatted)
+            return
+
+        input_paths = args.paths or [Path(".")]
+        ai_files = iter_ai_files(input_paths)
+        if not ai_files:
+            print("No .ai files found.")
+            return
+        failed = False
+        changed = False
+        for path in ai_files:
+            src = path.read_text(encoding="utf-8")
+            try:
+                formatted = format_source(src, filename=str(path))
+            except ParseError as err:
+                print(f"{path}:{err.line}:{err.column}: parse error: {err.message}")
+                failed = True
+                continue
+            if args.check:
+                if formatted != src:
+                    print(f"{path} would be reformatted.")
+                    changed = True
+            else:
+                if formatted != src:
+                    path.write_text(formatted, encoding="utf-8")
+        if failed or (args.check and changed):
+            raise SystemExit(1)
+        return
+
+    if args.command == "lsp":
+        from namel3ss.langserver import LanguageServer
+
+        server = LanguageServer()
+        server.run_stdio()
+        return
+
+    if args.command == "create":
+        if args.list_templates:
+            for name in list_templates():
+                print(name)
+            return
+        if not args.project_name:
+            raise SystemExit("project_name is required")
+        target_dir = Path(args.project_name)
+        template = args.template.replace("_", "-")
+        try:
+            scaffold_project(template, target_dir, project_name=target_dir.name, force=args.force)
+        except FileExistsError as exc:
+            print(str(exc))
+            raise SystemExit(1)
+        # Auto-format any .ai files in the new project
+        for ai_file in target_dir.rglob("*.ai"):
+            formatted = format_source(ai_file.read_text(encoding="utf-8"), filename=str(ai_file))
+            ai_file.write_text(formatted, encoding="utf-8")
+        print(f"Project created at {target_dir}")
+        print("Next steps:")
+        print(f"  cd {target_dir}")
+        print("  n3 diagnostics .")
         return
 
     if args.command == "bundle":
-        from namel3ss.packaging.bundler import Bundler, make_server_bundle, make_worker_bundle
+        from namel3ss.packaging.bundler import Bundler
+        from namel3ss.deploy.docker import generate_dockerfile
+        from namel3ss.deploy.desktop import generate_tauri_config, write_tauri_config
 
-        module = load_module_from_file(args.file)
-        program = ir.ast_to_ir(module)
+        env_dict = {}
+        for item in args.env or []:
+            if "=" not in item:
+                raise SystemExit(f"Invalid env value '{item}', expected KEY=VALUE")
+            key, value = item.split("=", 1)
+            env_dict[key] = value
+        bundle_path = args.path or args.file
+        if not bundle_path:
+            raise SystemExit("A path to the app (.ai) is required")
         bundler = Bundler()
-        bundle = bundler.from_ir(program)
-        wrapped = make_worker_bundle(bundle) if args.target == "worker" else make_server_bundle(bundle)
-        print(json.dumps(wrapped, indent=2))
+        try:
+            bundle_root = bundler.build_bundle(
+                bundle_path,
+                target=args.target,
+                output_dir=args.output,
+                name=args.name,
+                env=env_dict,
+                include_studio=args.target == "full",
+            )
+        except Exception as exc:
+            raise SystemExit(f"Failed to build bundle: {exc}") from exc
+        manifest_path = bundle_root / "manifest.json"
+        print(
+            json.dumps(
+                {"status": "ok", "bundle": str(bundle_root), "manifest": str(manifest_path), "type": args.target},
+                indent=2,
+            )
+        )
+        if args.dockerfile:
+            from namel3ss.packaging.models import BundleManifest
+            manifest = BundleManifest(**json.loads(manifest_path.read_text(encoding="utf-8")))
+            dockerfile = generate_dockerfile(manifest)
+            (bundle_root / "Dockerfile").write_text(dockerfile, encoding="utf-8")
+        if args.target == "desktop":
+            from namel3ss.packaging.models import BundleManifest
+            manifest = BundleManifest(**json.loads(manifest_path.read_text(encoding="utf-8")))
+            config = generate_tauri_config(manifest)
+            write_tauri_config(config, bundle_root / "tauri.conf.json")
+        return
+
+    if args.command == "desktop":
+        # Convenience wrapper for desktop bundles
+        bundle_args = ["bundle"]
+        if args.path:
+            bundle_args.append(str(args.path))
+        if args.file:
+            bundle_args.extend(["--file", str(args.file)])
+        bundle_args.extend(["--output", str(args.output)])
+        bundle_args.extend(["--target", "desktop"])
+        if args.name:
+            bundle_args.extend(["--name", args.name])
+        for env_item in args.env or []:
+            bundle_args.extend(["--env", env_item])
+        bundle_args.append("--dockerfile" if args.dockerfile else "")
+        bundle_args = [arg for arg in bundle_args if arg]
+        main(bundle_args)
+        if not args.no_build_tauri:
+            print(
+                "Desktop bundle prepared. To build a native binary, install Tauri toolchain and run:\n"
+                "  cd desktop && npm install && npm run tauri build"
+            )
+        return
+
+    if args.command == "mobile":
+        from namel3ss.deploy.mobile import generate_mobile_config, write_mobile_config
+        from namel3ss.packaging.bundler import Bundler
+        from namel3ss.packaging.models import BundleManifest
+
+        bundle_path = args.path or args.file
+        if not bundle_path:
+            raise SystemExit("A path to the app (.ai) is required")
+        out_dir = args.output
+        out_dir.mkdir(parents=True, exist_ok=True)
+        # Build a server bundle to derive manifest (no studio by default)
+        bundler = Bundler()
+        bundle_root = bundler.build_bundle(bundle_path, target="server", output_dir=out_dir, name=args.name)
+        manifest_path = bundle_root / "manifest.json"
+        manifest = BundleManifest(**json.loads(manifest_path.read_text(encoding="utf-8")))
+        config = generate_mobile_config(manifest)
+        config_path = out_dir / "namel3ss.config.json"
+        write_mobile_config(config, config_path)
+        print(json.dumps({"status": "ok", "config": str(config_path), "bundle": str(bundle_root)}, indent=2))
+        if not args.no_expo_scaffold:
+            print(
+                "Mobile config prepared. To run the Expo app, install Expo CLI and then:\n"
+                "  cd mobile\n"
+                "  npm install\n"
+                "  npm start\n"
+                "Configure the app to load namel3ss.config.json for the base URL."
+            )
         return
 
     if args.command == "build-target":
@@ -363,12 +573,15 @@ def main(argv: list[str] | None = None) -> None:
         raise SystemExit(pytest.main(pytest_args))
 
     if args.command == "init":
-        from namel3ss.templates import init_template, list_templates
-
         available = list_templates()
         if args.template not in available:
             raise SystemExit(f"Unknown template '{args.template}'. Available: {', '.join(available)}")
-        dest = init_template(args.template, Path(args.target_dir), force=args.force)
+        dest = Path(args.target_dir)
+        try:
+            scaffold_project(args.template, dest, project_name=dest.name, force=args.force)
+        except FileExistsError as exc:
+            print(str(exc))
+            raise SystemExit(1)
         print(json.dumps({"status": "ok", "template": args.template, "path": str(dest)}, indent=2))
         return
 

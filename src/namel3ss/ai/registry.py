@@ -9,9 +9,15 @@ from typing import Dict, Optional
 
 from ..errors import Namel3ssError
 from ..secrets.manager import SecretsManager
-from .http_json_provider import HTTPJsonProvider
-from .openai_provider import OpenAIProvider
 from .providers import DummyProvider, ModelProvider
+from .providers.anthropic import AnthropicProvider
+from .providers.gemini import GeminiProvider
+from .providers.generic_http import GenericHTTPProvider
+from .providers.http_json import HTTPJsonProvider
+from .providers.lmstudio import LMStudioProvider
+from .providers.ollama import OllamaProvider
+from .providers.openai import OpenAIProvider
+from .providers.openai_compatible import OpenAICompatibleProvider
 
 
 @dataclass
@@ -48,7 +54,8 @@ class ModelRegistry:
         self.providers[model_name] = self._create_provider(model_config)
 
     def _create_provider(self, cfg: ModelConfig) -> ModelProvider:
-        if cfg.provider == "openai":
+        provider_name = cfg.provider
+        if provider_name == "openai":
             api_key = self.secrets.get("N3_OPENAI_API_KEY") or ""
             base_url = cfg.base_url or self.secrets.get("N3_OPENAI_BASE_URL")
             if api_key:
@@ -59,7 +66,50 @@ class ModelRegistry:
                     default_model=cfg.model,
                 )
             return DummyProvider("dummy-openai", default_model=cfg.model)
-        if cfg.provider == "http_json":
+        if provider_name == "anthropic":
+            api_key = self.secrets.get("N3_ANTHROPIC_API_KEY") or ""
+            if api_key:
+                return AnthropicProvider(
+                    name="anthropic",
+                    api_key=api_key,
+                    base_url=cfg.base_url or self.secrets.get("N3_ANTHROPIC_BASE_URL"),
+                    default_model=cfg.model,
+                )
+            return DummyProvider("dummy-anthropic", default_model=cfg.model)
+        if provider_name == "gemini":
+            api_key = self.secrets.get("N3_GEMINI_API_KEY") or ""
+            if api_key:
+                return GeminiProvider(
+                    name="gemini",
+                    api_key=api_key,
+                    base_url=cfg.base_url or self.secrets.get("N3_GEMINI_BASE_URL"),
+                    default_model=cfg.model,
+                )
+            return DummyProvider("dummy-gemini", default_model=cfg.model)
+        if provider_name == "ollama":
+            base_url = cfg.base_url or self.secrets.get("N3_OLLAMA_URL") or "http://localhost:11434"
+            return OllamaProvider(name="ollama", base_url=base_url, default_model=cfg.model)
+        if provider_name == "lmstudio":
+            base_url = cfg.base_url or self.secrets.get("N3_LMSTUDIO_URL")
+            if not base_url:
+                raise Namel3ssError("LMStudio provider requires base_url (N3_LMSTUDIO_URL)")
+            return LMStudioProvider(base_url=base_url, default_model=cfg.model)
+        if provider_name in {"http", "generic"}:
+            base_url = cfg.base_url or self.secrets.get("N3_GENERIC_AI_URL")
+            api_key = self.secrets.get("N3_GENERIC_AI_API_KEY")
+            if not base_url:
+                raise Namel3ssError(f"HTTP provider for model '{cfg.name}' requires base_url")
+            return GenericHTTPProvider(base_url=base_url, api_key=api_key, default_model=cfg.model)
+        if provider_name == "openai_compat":
+            if not cfg.base_url:
+                raise Namel3ssError("OpenAI-compatible provider requires base_url")
+            return OpenAICompatibleProvider(
+                name="http",
+                base_url=cfg.base_url,
+                api_key=cfg.options.get("api_key") if cfg.options else None,
+                default_model=cfg.model,
+            )
+        if provider_name == "http_json":
             if not cfg.base_url:
                 raise Namel3ssError(f"HTTP JSON provider for model '{cfg.name}' requires base_url")
             if not cfg.response_path:

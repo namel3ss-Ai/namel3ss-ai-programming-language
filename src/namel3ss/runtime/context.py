@@ -101,7 +101,7 @@ def execute_ai_call_with_registry(
     result = execute_ai_call(ai_call, context)
     result.update(
         {
-            "provider_result": invocation,
+            "provider_result": invocation.to_dict() if hasattr(invocation, "to_dict") else invocation,
             "resolved_model": selection.model_name,
             "provider_name": selection.provider_name,
         }
@@ -117,7 +117,7 @@ def execute_ai_call_with_registry(
         context.tracer.record_ai(
             model_name=ai_call.model_name or "unknown",
             prompt=ai_call.input_source or "",
-            response_preview=str(invocation.get("result", "")),
+            response_preview=str(invocation.get("result", "") if hasattr(invocation, "get") else ""),
             provider_name=selection.provider_name,
             logical_model_name=ai_call.model_name,
         )

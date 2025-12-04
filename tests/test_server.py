@@ -1,3 +1,6 @@
+import tempfile
+from pathlib import Path
+
 from fastapi.testclient import TestClient
 
 from namel3ss.server import create_app
@@ -143,6 +146,7 @@ def test_diagnostics_and_bundle_endpoints():
     code = (
         'page "home":\n'
         '  title "Home"\n'
+        '  route "/"\n'
         'flow "pipeline":\n'
         '  step "call":\n'
         '    kind "ai"\n'
@@ -152,8 +156,13 @@ def test_diagnostics_and_bundle_endpoints():
         'ai "summarise_message":\n'
         '  model "default"\n'
     )
+    tmp = Path(tempfile.mkdtemp())
+    program_file = tmp / "program.ai"
+    program_file.write_text(code, encoding="utf-8")
     client = TestClient(create_app())
-    diag_resp = client.post("/api/diagnostics", json={"code": code}, headers={"X-API-Key": "dev-key"})
+    diag_resp = client.post(
+        "/api/diagnostics", json={"paths": [str(program_file)]}, headers={"X-API-Key": "dev-key"}
+    )
     assert diag_resp.status_code == 200
     assert "diagnostics" in diag_resp.json()
     bundle_resp = client.post(

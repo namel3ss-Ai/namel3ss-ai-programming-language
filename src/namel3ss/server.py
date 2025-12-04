@@ -33,8 +33,7 @@ from .distributed.scheduler import JobScheduler
 from .distributed.workers import Worker
 from .metrics.tracker import MetricsTracker
 from .studio.engine import StudioEngine
-from .diagnostics.pipeline import run_diagnostics
-from .diagnostics.models import has_effective_errors
+from .diagnostics.runner import collect_diagnostics, iter_ai_files
 from .packaging.bundler import Bundler, make_server_bundle, make_worker_bundle
 from .secrets.manager import SecretsManager
 from .plugins.registry import PluginRegistry
@@ -69,7 +68,9 @@ class PageUIRequest(BaseModel):
 
 
 class DiagnosticsRequest(BaseModel):
-    code: str
+    paths: list[str]
+    strict: bool = False
+    summary_only: bool = False
 
 
 class BundleRequest(BaseModel):
@@ -255,35 +256,19 @@ def create_app() -> FastAPI:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     @app.post("/api/diagnostics")
-    def api_diagnostics(
-        payload: DiagnosticsRequest,
-        strict: bool = False,
-        format: str = "json",
-        principal: Principal = Depends(get_principal),
-    ) -> Dict[str, Any]:
+    def api_diagnostics(payload: DiagnosticsRequest, principal: Principal = Depends(get_principal)) -> Dict[str, Any]:
         if principal.role not in {Role.ADMIN, Role.DEVELOPER}:
             raise HTTPException(status_code=403, detail="Forbidden")
         try:
-            ir_program = _parse_source_to_ir(payload.code)
-            diagnostics = run_diagnostics(ir_program, available_plugins=set())
-            summary = {
-                "error_count": sum(1 for d in diagnostics if (d.severity or d.level) == "error"),
-                "warning_count": sum(1 for d in diagnostics if (d.severity or d.level) == "warning"),
-                "strict": bool(strict),
-                "has_errors": has_effective_errors(diagnostics, strict),
-            }
-            payload_out = {
+            paths = [Path(p) for p in payload.paths]
+            ai_files = iter_ai_files(paths)
+            diags, summary = collect_diagnostics(ai_files, payload.strict)
+            success = summary["errors"] == 0
+            return {
+                "success": success,
+                "diagnostics": [] if payload.summary_only else [d.to_dict() for d in diags],
                 "summary": summary,
-                "diagnostics": [d.to_dict() for d in diagnostics],
             }
-            if format == "text":
-                text_lines = []
-                for d in diagnostics:
-                    loc = f" {d.location}" if d.location else ""
-                    hint = f" (hint: {d.hint})" if d.hint else ""
-                    text_lines.append(f"[{d.severity}][{d.code}]{loc} - {d.message}{hint}")
-                payload_out["text"] = "\n".join(text_lines)
-            return payload_out
         except Exception as exc:  # pragma: no cover
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 

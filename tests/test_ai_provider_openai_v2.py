@@ -19,8 +19,8 @@ def test_openai_provider_invokes_with_messages_and_params():
         http_client=fake_client,
     )
     res = provider.invoke(messages=[{"role": "user", "content": "hi"}], temperature=0.2)
-    assert res["result"] == "response"
-    assert res["provider"] == "openai"
+    assert res.text == "response"
+    assert res.provider == "openai"
     assert calls
 
 
@@ -37,5 +37,5 @@ def test_openai_streaming_yields_delta():
         http_stream=fake_stream,
     )
     chunks = list(provider.invoke_stream(messages=[{"role": "user", "content": "hi"}]))
-    assert chunks[0]["delta"] == "chunk1"
-    assert chunks[1]["delta"] == "chunk2"
+    assert chunks[0].delta == "chunk1"
+    assert chunks[1].delta == "chunk2"

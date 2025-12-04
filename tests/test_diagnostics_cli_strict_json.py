@@ -21,16 +21,16 @@ PROGRAM_WITH_WARN = (
 
 def test_cli_diagnostics_json_output(tmp_path, capsys):
     path = _write(tmp_path, PROGRAM_WITH_WARN)
-    main(["diagnostics", "--file", str(path), "--format", "json"])
+    main(["diagnostics", str(path), "--json"])
     data = json.loads(capsys.readouterr().out)
     assert "summary" in data
     assert "diagnostics" in data
-    assert data["summary"]["warning_count"] >= 1
+    assert data["summary"]["warnings"] >= 1
     assert any("code" in d for d in data["diagnostics"])
 
 
 def test_cli_diagnostics_strict_exit(tmp_path):
     path = _write(tmp_path, PROGRAM_WITH_WARN)
     with pytest.raises(SystemExit) as excinfo:
-        main(["diagnostics", "--file", str(path), "--strict"])
+        main(["diagnostics", str(path), "--strict"])
     assert excinfo.value.code == 1

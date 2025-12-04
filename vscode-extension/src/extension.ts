@@ -1,48 +1,89 @@
 import * as vscode from "vscode";
-import { exec } from "child_process";
-import { promisify } from "util";
+import {
+  LanguageClient,
+  LanguageClientOptions,
+  ServerOptions,
+  TransportKind,
+} from "vscode-languageclient/node";
 
-const execAsync = promisify(exec);
+let client: LanguageClient | undefined;
 
-async function runCommand(cmd: string, filePath: string) {
-  const terminal = vscode.window.createOutputChannel("Namel3ss");
-  terminal.appendLine(`Running: ${cmd} ${filePath}`);
-  try {
-    const { stdout, stderr } = await execAsync(`${cmd} ${filePath}`);
-    terminal.append(stdout);
-    if (stderr) terminal.append(stderr);
-    vscode.window.showInformationMessage(`${cmd} succeeded`);
-  } catch (err: any) {
-    terminal.appendLine(String(err));
-    vscode.window.showErrorMessage(`${cmd} failed: ${err?.message || err}`);
+function createClient(): LanguageClient {
+  const config = vscode.workspace.getConfiguration("namel3ss");
+  const command = config.get<string>("lsp.command", "n3");
+  const args = config.get<string[]>("lsp.args", ["lsp"]);
+  const trace = config.get<string>("lsp.trace.server", "off");
+
+  const serverOptions: ServerOptions = {
+    command,
+    args,
+    transport: TransportKind.stdio,
+  };
+
+  const clientOptions: LanguageClientOptions = {
+    documentSelector: [{ scheme: "file", language: "namel3ss" }],
+    synchronize: {
+      configurationSection: "namel3ss",
+    },
+    traceOutputChannel:
+      trace === "off"
+        ? undefined
+        : vscode.window.createOutputChannel("Namel3ss LSP Trace"),
+  };
+
+  const lc = new LanguageClient(
+    "namel3ss",
+    "Namel3ss Language Server",
+    serverOptions,
+    clientOptions
+  );
+
+  return lc;
+}
+
+async function startClient() {
+  if (client) {
+    return client;
   }
-  terminal.show(true);
+  client = createClient();
+  try {
+    await client.start();
+  } catch (err: any) {
+    vscode.window.showErrorMessage(
+      `Failed to start Namel3ss language server: ${err?.message || err}`
+    );
+    client = undefined;
+    throw err;
+  }
+  return client;
 }
 
-export function activate(context: vscode.ExtensionContext) {
-  const parse = vscode.commands.registerCommand("namel3ss.runParse", async () => {
-    const doc = vscode.window.activeTextEditor?.document;
-    if (!doc) {
-      vscode.window.showWarningMessage("No active .ai file to parse");
-      return;
-    }
-    await doc.save();
-    await runCommand("n3 parse", doc.fileName);
-  });
-
-  const diagnostics = vscode.commands.registerCommand("namel3ss.runDiagnostics", async () => {
-    const doc = vscode.window.activeTextEditor?.document;
-    if (!doc) {
-      vscode.window.showWarningMessage("No active .ai file to diagnose");
-      return;
-    }
-    await doc.save();
-    await runCommand("n3 diagnostics --file", doc.fileName);
-  });
-
-  context.subscriptions.push(parse, diagnostics);
+async function restartClient() {
+  if (client) {
+    await client.stop();
+    client = undefined;
+  }
+  return startClient();
 }
 
-export function deactivate() {
-  // nothing to clean up
+export async function activate(context: vscode.ExtensionContext) {
+  await startClient();
+
+  const restart = vscode.commands.registerCommand("namel3ss.restartServer", async () => {
+    try {
+      await restartClient();
+      vscode.window.showInformationMessage("Namel3ss language server restarted.");
+    } catch {
+      // error already surfaced
+    }
+  });
+
+  context.subscriptions.push(restart, { dispose: () => client?.stop() });
+}
+
+export async function deactivate() {
+  if (client) {
+    await client.stop();
+    client = undefined;
+  }
 }

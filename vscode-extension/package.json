@@ -1,18 +1,14 @@
 {
-  "name": "namel3ss-v3",
-  "displayName": "Namel3ss V3",
-  "description": "Syntax highlighting and basic commands for Namel3ss .ai programs.",
+  "name": "namel3ss",
+  "displayName": "Namel3ss",
+  "description": "Language support for Namel3ss .ai programs (LSP client + formatting).",
   "version": "0.1.0",
   "publisher": "namel3ss",
   "engines": {
     "vscode": "^1.80.0"
   },
-  "categories": [
-    "Programming Languages"
-  ],
-  "activationEvents": [
-    "onLanguage:namel3ss"
-  ],
+  "categories": ["Programming Languages"],
+  "activationEvents": ["onLanguage:namel3ss", "onCommand:namel3ss.restartServer"],
   "main": "./dist/extension.js",
   "contributes": {
     "languages": [
@@ -32,22 +28,49 @@
     ],
     "commands": [
       {
-        "command": "namel3ss.runParse",
-        "title": "Namel3ss: Parse current file"
-      },
-      {
-        "command": "namel3ss.runDiagnostics",
-        "title": "Namel3ss: Run diagnostics on current file"
+        "command": "namel3ss.restartServer",
+        "title": "Namel3ss: Restart Language Server"
       }
-    ]
+    ],
+    "configuration": {
+      "type": "object",
+      "title": "Namel3ss",
+      "properties": {
+        "namel3ss.lsp.command": {
+          "type": "string",
+          "default": "n3",
+          "description": "Command used to launch the Namel3ss language server."
+        },
+        "namel3ss.lsp.args": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": ["lsp"],
+          "description": "Arguments passed to the Namel3ss language server."
+        },
+        "namel3ss.lsp.trace.server": {
+          "type": "string",
+          "enum": ["off", "messages", "verbose"],
+          "default": "off",
+          "description": "Language server trace level."
+        }
+      }
+    }
   },
   "scripts": {
     "lint": "echo \"No lint configured\"",
     "test": "node ./test/validate.js",
-    "build": "tsc -p ."
+    "build": "tsc -p .",
+    "compile": "npm run build",
+    "watch": "tsc -p . -w",
+    "vscode:prepublish": "npm run build"
   },
   "devDependencies": {
+    "@types/node": "^20.0.0",
+    "@types/vscode": "^1.80.0",
     "typescript": "^5.4.0",
-    "@types/node": "^20.0.0"
+    "vscode-languageclient": "^9.0.1",
+    "vscode-languageserver-protocol": "^3.17.5"
   }
 }

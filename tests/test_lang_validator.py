@@ -35,6 +35,6 @@ def test_validator_catches_missing_fields_and_refs():
     program = ir.ast_to_ir(parse_source(invalid_source))
     diags = validate_module(program)
     codes = {d.code for d in diags}
-    assert "N3-LANG-010" in codes  # missing required field (route/model_name)
+    assert "N3-1001" in codes  # missing required field (route/model_name)
     assert "N3-LANG-002" in codes  # flow has no steps
     assert any(d.hint for d in diags)

@@ -8,7 +8,8 @@ from typing import Dict, Optional
 
 from ..errors import Namel3ssError
 from ..secrets.manager import SecretsManager
-from .embeddings import EmbeddingProvider
+from ..ai.embedding_router import EmbeddingRouter
+from .embeddings import EmbeddingProvider, RouterEmbeddingProvider
 from .embeddings_deterministic import DeterministicEmbeddingProvider
 from .embeddings_http_json import HTTPJsonEmbeddingProvider
 from .embeddings_openai import OpenAIEmbeddingProvider
@@ -18,6 +19,7 @@ class EmbeddingProviderRegistry:
     def __init__(self, secrets: Optional[SecretsManager] = None) -> None:
         self.secrets = secrets or SecretsManager()
         self.providers: Dict[str, EmbeddingProvider] = {}
+        self.router = EmbeddingRouter(self.secrets)
         self.default_provider: EmbeddingProvider = self._create_default()
 
     def _create_default(self) -> EmbeddingProvider:
@@ -36,6 +38,8 @@ class EmbeddingProviderRegistry:
                 return DeterministicEmbeddingProvider()
             model = self.secrets.get_embedding_model()
             return HTTPJsonEmbeddingProvider(base_url=base_url, response_path=response_path, model=model)
+        if provider_name in {"router", "auto"}:
+            return RouterEmbeddingProvider(router=self.router, model=self.secrets.get_embedding_model())
         return DeterministicEmbeddingProvider()
 
     def get_default_provider(self) -> EmbeddingProvider:
