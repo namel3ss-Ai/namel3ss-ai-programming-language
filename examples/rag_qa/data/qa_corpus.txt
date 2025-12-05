@@ -1,0 +1,4 @@
+Namel3ss supports agents, flows, and RAG pipelines for building AI-native apps.
+Flows orchestrate AI calls, tools, and agents in a deterministic order.
+Datasets can be indexed and queried through rag_pipeline definitions.
+Use the Studio IDE to inspect traces of flows, agents, and retrieval steps.

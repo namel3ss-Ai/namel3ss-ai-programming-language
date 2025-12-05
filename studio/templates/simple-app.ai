@@ -1,6 +1,10 @@
-app "Simple App" {
-  page main:
-    title: "Hello, Namel3ss"
-    section:
-      text: "Welcome to your first app."
-}
+app "Simple App":
+  starts at page "main"
+  description "Minimal page with a welcome message."
+
+page "main":
+  found at route "/"
+  titled "Hello, Namel3ss"
+  section "welcome":
+    show text:
+      "Welcome to your first app."

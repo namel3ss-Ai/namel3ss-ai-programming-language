@@ -1,0 +1,39 @@
+remember conversation as "debate_memory"
+
+use model "debate-llm" provided by "openai"
+
+agent "pro_agent":
+  the goal is "Argue in favor of the topic with concise reasoning."
+  the personality is "optimistic and evidence-focused"
+
+agent "con_agent":
+  the goal is "Argue against the topic highlighting risks or gaps."
+  the personality is "skeptical and pragmatic"
+
+agent "judge_agent":
+  the goal is "Listen to both sides and deliver a balanced verdict."
+  the personality is "neutral and structured"
+
+flow "debate_flow":
+  description "Coordinate a short debate with pro, con, and judge roles."
+  this flow will:
+    first step "pro_turn":
+      do agent "pro_agent"
+    then step "con_turn":
+      do agent "con_agent"
+    finally step "judge_verdict":
+      do agent "judge_agent"
+
+app "debate_app":
+  starts at page "debate"
+  description "Multi-agent debate system with a judge rendering verdicts."
+
+page "debate":
+  found at route "/debate"
+  titled "Debate Console"
+  section "context":
+    show text:
+      "Use debate_flow to run a structured pro/con discussion with a judge verdict."
+  section "actions":
+    show text:
+      "Trigger debate_flow to start the conversation."

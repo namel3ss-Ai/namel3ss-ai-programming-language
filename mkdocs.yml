@@ -20,6 +20,8 @@ nav:
       - Deployment: docs/reference/deployment.md
       - Optimizer: docs/reference/optimizer.md
       - VS Code: docs/reference/vscode-extension.md
+      - English Syntax: docs/language/english_syntax.md
+      - Examples: docs/reference/examples.md
   - Concepts:
       - AI: docs/concepts/ai.md
       - Language: docs/concepts/language.md

@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import Sidebar from "./components/Sidebar";
 import CodeInput from "./components/CodeInput";
 import PagesPanel from "./panels/PagesPanel";
@@ -47,8 +47,24 @@ const PANELS = [
 const App: React.FC = () => {
   const [panel, setPanel] = useState<string>("Pages");
   const [code, setCode] = useState<string>(DEFAULT_CODE);
+  const [initialExample, setInitialExample] = useState<string | null>(null);
+  const [initialTraceId, setInitialTraceId] = useState<string | null>(null);
 
   const client = useMemo(() => ApiClient, []);
+
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const example = params.get("example");
+    const trace = params.get("trace");
+    if (example) {
+      setInitialExample(example);
+      setPanel("IDE");
+    }
+    if (trace) {
+      setInitialTraceId(trace);
+      setPanel("IDE");
+    }
+  }, []);
 
   const renderPanel = () => {
     switch (panel) {
@@ -75,7 +91,7 @@ const App: React.FC = () => {
       case "Diagnostics":
         return <DiagnosticsPanel code={code} client={client} />;
       case "IDE":
-        return <IDEPanel />;
+        return <IDEPanel initialExampleName={initialExample} initialTraceId={initialTraceId} />;
       default:
         return null;
     }

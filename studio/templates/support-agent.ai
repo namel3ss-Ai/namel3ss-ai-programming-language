@@ -1,0 +1,43 @@
+remember conversation as "support_memory"
+
+use model "support-llm" provided by "openai"
+
+ai "classify_issue":
+  when called:
+    use model "support-llm"
+    input comes from user_input
+    describe task as "Classify the user's support request."
+
+ai "kb_reader":
+  when called:
+    use model "support-llm"
+    input comes from user_input
+    describe task as "Suggest a KB snippet or next action."
+
+agent "support_agent":
+  the goal is "Assist users by classifying issues, retrieving KB snippets, and advising next steps."
+  the personality is "reassuring and efficient"
+
+flow "support_flow":
+  description "Classify the request, check ticket status, consult KB, and respond."
+  this flow will:
+    first step "categorize":
+      do ai "classify_issue"
+    then step "status_lookup":
+      do tool "get_ticket_status" with message:
+        "Lookup current ticket status."
+    then step "kb_suggestion":
+      do ai "kb_reader"
+    finally step "respond":
+      do agent "support_agent"
+
+app "support_app":
+  starts at page "support"
+  description "AI support assistant with tool calls and KB lookup."
+
+page "support":
+  found at route "/support"
+  titled "Support Assistant"
+  section "intro":
+    show text:
+      "Run support_flow to categorize tickets, check status, and suggest resolutions."

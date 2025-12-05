@@ -33,6 +33,10 @@ class Parser:
         if token.type != "KEYWORD":
             raise self.error("Expected a declaration", token)
 
+        if token.value == "remember":
+            return self.parse_english_memory()
+        if token.value == "use" and self.peek_offset(1).value == "model":
+            return self.parse_english_model()
         if token.value == "use":
             return self.parse_use()
         if token.value == "app":
@@ -59,6 +63,32 @@ class Parser:
         self.optional_newline()
         return ast_nodes.UseImport(path=path.value or "", span=self._span(start))
 
+    def parse_english_memory(self) -> ast_nodes.MemoryDecl:
+        start = self.consume("KEYWORD", "remember")
+        self.consume("KEYWORD", "conversation")
+        self.consume("KEYWORD", "as")
+        name = self.consume("STRING")
+        self.optional_newline()
+        return ast_nodes.MemoryDecl(
+            name=name.value or "",
+            memory_type="conversation",
+            span=self._span(start),
+        )
+
+    def parse_english_model(self) -> ast_nodes.ModelDecl:
+        start = self.consume("KEYWORD", "use")
+        self.consume("KEYWORD", "model")
+        name = self.consume("STRING")
+        self.consume("KEYWORD", "provided")
+        self.consume("KEYWORD", "by")
+        provider = self.consume("STRING")
+        self.optional_newline()
+        return ast_nodes.ModelDecl(
+            name=name.value or "",
+            provider=provider.value,
+            span=self._span(start),
+        )
+
     def parse_app(self) -> ast_nodes.AppDecl:
         start = self.consume("KEYWORD", "app")
         name = self.consume("STRING")
@@ -70,6 +100,17 @@ class Parser:
         entry_page = None
 
         while not self.check("DEDENT"):
+            if self.match("NEWLINE"):
+                continue
+            field_token = self.peek()
+            if field_token.value == "starts":
+                self.consume("KEYWORD", "starts")
+                self.consume("KEYWORD", "at")
+                self.consume("KEYWORD", "page")
+                entry_token = self.consume("STRING")
+                entry_page = entry_token.value
+                self.optional_newline()
+                continue
             field_token = self.consume("KEYWORD")
             if field_token.value == "description":
                 desc_token = self.consume("STRING")
@@ -117,6 +158,35 @@ class Parser:
             "section",
         }
         while not self.check("DEDENT"):
+            if self.match("NEWLINE"):
+                continue
+            field_token = self.peek()
+            if field_token.value == "found":
+                self.consume("KEYWORD", "found")
+                self.consume("KEYWORD", "at")
+                self.consume("KEYWORD", "route")
+                value_token = self.consume("STRING")
+                value = value_token.value or ""
+                route = value
+                properties.append(
+                    ast_nodes.PageProperty(
+                        key="route", value=value, span=self._span(value_token)
+                    )
+                )
+                self.optional_newline()
+                continue
+            if field_token.value == "titled":
+                self.consume("KEYWORD", "titled")
+                value_token = self.consume("STRING")
+                value = value_token.value or ""
+                title = value
+                properties.append(
+                    ast_nodes.PageProperty(
+                        key="title", value=value, span=self._span(value_token)
+                    )
+                )
+                self.optional_newline()
+                continue
             field_token = self.consume("KEYWORD")
             if field_token.value not in allowed_fields:
                 raise self.error(
@@ -218,20 +288,50 @@ class Parser:
 
         model_name = None
         input_source = None
+        description = None
         while not self.check("DEDENT"):
-            field_token = self.consume("KEYWORD")
+            if self.match("NEWLINE"):
+                continue
+            field_token = self.peek()
             if field_token.value == "model":
+                self.advance()
                 model_tok = self.consume("STRING")
                 model_name = model_tok.value
+                self.optional_newline()
             elif field_token.value == "input":
+                self.advance()
                 self.consume("KEYWORD", "from")
-                source_tok = self.consume_any({"IDENT", "STRING"})
+                source_tok = self.consume_any({"IDENT", "STRING", "KEYWORD"})
                 input_source = source_tok.value
+                self.optional_newline()
+            elif field_token.value == "when":
+                self.consume("KEYWORD", "when")
+                self.consume("KEYWORD", "called")
+                self.consume("COLON")
+                self.consume("NEWLINE")
+                self.consume("INDENT")
+                model_name, input_source, description = self.parse_ai_called_block(
+                    model_name, input_source, description
+                )
+                self.consume("DEDENT")
+                self.optional_newline()
+            elif field_token.value == "describe":
+                self.consume("KEYWORD", "describe")
+                self.consume("KEYWORD", "task")
+                self.consume("KEYWORD", "as")
+                desc_token = self.consume("STRING")
+                description = desc_token.value
+                self.optional_newline()
+            elif field_token.value == "description":
+                self.advance()
+                desc_token = self.consume("STRING")
+                description = desc_token.value
+                self.optional_newline()
             else:
+                self.consume("KEYWORD")  # raise if unexpected
                 raise self.error(
                     f"Unexpected field '{field_token.value}' in ai block", field_token
                 )
-            self.optional_newline()
         self.consume("DEDENT")
         self.optional_newline()
 
@@ -239,8 +339,46 @@ class Parser:
             name=name.value or "",
             model_name=model_name,
             input_source=input_source,
+            description=description,
             span=self._span(start),
         )
+
+    def parse_ai_called_block(
+        self,
+        model_name: str | None,
+        input_source: str | None,
+        description: str | None,
+    ) -> tuple[str | None, str | None, str | None]:
+        while not self.check("DEDENT"):
+            if self.match("NEWLINE"):
+                continue
+            token = self.peek()
+            if token.value == "use":
+                self.consume("KEYWORD", "use")
+                self.consume("KEYWORD", "model")
+                model_tok = self.consume("STRING")
+                model_name = model_tok.value
+                self.optional_newline()
+            elif token.value == "input":
+                self.consume("KEYWORD", "input")
+                self.consume("KEYWORD", "comes")
+                self.consume("KEYWORD", "from")
+                source_tok = self.consume_any({"IDENT", "STRING", "KEYWORD"})
+                input_source = source_tok.value
+                self.optional_newline()
+            elif token.value == "describe":
+                self.consume("KEYWORD", "describe")
+                self.consume("KEYWORD", "task")
+                self.consume("KEYWORD", "as")
+                desc_token = self.consume("STRING")
+                description = desc_token.value
+                self.optional_newline()
+            else:
+                self.consume("KEYWORD")
+                raise self.error(
+                    f"Unexpected field '{token.value}' in ai block", token
+                )
+        return model_name, input_source, description
 
     def parse_agent(self) -> ast_nodes.AgentDecl:
         start = self.consume("KEYWORD", "agent")
@@ -253,6 +391,25 @@ class Parser:
         personality = None
         allowed_fields: Set[str] = {"goal", "personality"}
         while not self.check("DEDENT"):
+            if self.match("NEWLINE"):
+                continue
+            field_token = self.peek()
+            if field_token.value == "the":
+                self.consume("KEYWORD", "the")
+                gp_token = self.consume("KEYWORD")
+                self.consume("KEYWORD", "is")
+                value_token = self.consume("STRING")
+                if gp_token.value == "goal":
+                    goal = value_token.value
+                elif gp_token.value == "personality":
+                    personality = value_token.value
+                else:
+                    raise self.error(
+                        f"Unexpected field '{gp_token.value}' in agent block",
+                        gp_token,
+                    )
+                self.optional_newline()
+                continue
             field_token = self.consume("KEYWORD")
             if field_token.value not in allowed_fields:
                 raise self.error(
@@ -314,6 +471,32 @@ class Parser:
             self.consume("INDENT")
             allowed_fields: Set[str] = {"description", "step"}
             while not self.check("DEDENT"):
+                if self.match("NEWLINE"):
+                    continue
+                field_token = self.peek()
+                if field_token.value == "this":
+                    self.consume("KEYWORD", "this")
+                    self.consume("KEYWORD", "flow")
+                    self.consume("KEYWORD", "will")
+                    self.consume("COLON")
+                    self.consume("NEWLINE")
+                    self.consume("INDENT")
+                    while not self.check("DEDENT"):
+                        if self.match("NEWLINE"):
+                            continue
+                        prefix = None
+                        if self.peek().value in {"first", "then", "finally"}:
+                            prefix = self.consume("KEYWORD").value
+                        steps.append(self.parse_english_flow_step(prefix))
+                    self.consume("DEDENT")
+                    self.optional_newline()
+                    continue
+
+                if field_token.value in {"first", "then", "finally"}:
+                    prefix = self.consume("KEYWORD").value
+                    steps.append(self.parse_english_flow_step(prefix))
+                    continue
+
                 field_token = self.consume("KEYWORD")
                 if field_token.value not in allowed_fields:
                     raise self.error(
@@ -373,12 +556,19 @@ class Parser:
         self.consume("INDENT")
         components: List[ast_nodes.ComponentDecl] = []
         while not self.check("DEDENT"):
-            token = self.consume("KEYWORD")
-            if token.value != "component":
+            if self.match("NEWLINE"):
+                continue
+            token = self.peek()
+            if token.value == "component":
+                self.consume("KEYWORD", "component")
+                components.append(self.parse_component())
+            elif token.value == "show":
+                components.append(self.parse_english_component())
+            else:
+                token = self.consume("KEYWORD")
                 raise self.error(
                     f"Unexpected field '{token.value}' in section block", token
                 )
-            components.append(self.parse_component())
         self.consume("DEDENT")
         self.optional_newline()
         return ast_nodes.SectionDecl(
@@ -410,6 +600,34 @@ class Parser:
             type=comp_type_token.value or "",
             props=props,
             span=self._span(comp_type_token),
+        )
+
+    def parse_english_component(self) -> ast_nodes.ComponentDecl:
+        show_token = self.consume("KEYWORD", "show")
+        comp_type = self.consume_any({"KEYWORD", "IDENT"})
+        if comp_type.value not in {"text", "form"}:
+            raise self.error(
+                f"Unsupported component type '{comp_type.value}'", comp_type
+            )
+        if comp_type.value == "form" and self.peek().value == "asking":
+            self.consume("KEYWORD", "asking")
+        self.consume("COLON")
+        self.consume("NEWLINE")
+        self.consume("INDENT")
+        value_token = self.consume("STRING")
+        self.optional_newline()
+        self.consume("DEDENT")
+        self.optional_newline()
+        return ast_nodes.ComponentDecl(
+            type=comp_type.value or "",
+            props=[
+                ast_nodes.PageProperty(
+                    key="value",
+                    value=value_token.value or "",
+                    span=self._span(value_token),
+                )
+            ],
+            span=self._span(show_token),
         )
 
     def parse_flow_step(self) -> ast_nodes.FlowStepDecl:
@@ -445,6 +663,50 @@ class Parser:
             kind=kind,
             target=target,
             span=self._span(step_name_token),
+        )
+
+    def parse_english_flow_step(self, prefix: str | None) -> ast_nodes.FlowStepDecl:
+        if prefix:
+            # Prefix already consumed; used only for readability.
+            self.consume("KEYWORD", "step")
+        else:
+            self.consume("KEYWORD", "step")
+        step_name_token = self.consume("STRING")
+        self.consume("COLON")
+        self.consume("NEWLINE")
+        self.consume("INDENT")
+        self.consume("KEYWORD", "do")
+        kind_token = self.consume_any({"KEYWORD", "IDENT"})
+        if kind_token.value not in {"ai", "agent", "tool"}:
+            raise self.error(
+                f"Unsupported step kind '{kind_token.value}'", kind_token
+            )
+        target_token = self.consume("STRING")
+        message = None
+        if kind_token.value == "tool" and self.peek().value == "with":
+            self.consume("KEYWORD", "with")
+            self.consume("KEYWORD", "message")
+            if self.check("COLON"):
+                self.consume("COLON")
+                self.consume("NEWLINE")
+                self.consume("INDENT")
+                msg_token = self.consume("STRING")
+                message = msg_token.value
+                self.optional_newline()
+                self.consume("DEDENT")
+            else:
+                msg_token = self.consume("STRING")
+                message = msg_token.value
+        while self.match("NEWLINE"):
+            continue
+        self.consume("DEDENT")
+        self.optional_newline()
+        return ast_nodes.FlowStepDecl(
+            name=step_name_token.value or "",
+            kind=kind_token.value,
+            target=target_token.value or "",
+            span=self._span(step_name_token),
+            message=message,
         )
 
     def optional_newline(self) -> None:
@@ -483,6 +745,10 @@ class Parser:
 
     def peek(self) -> Token:
         return self.tokens[self.position]
+
+    def peek_offset(self, offset: int) -> Token:
+        idx = min(self.position + offset, len(self.tokens) - 1)
+        return self.tokens[idx]
 
     def advance(self) -> Token:
         token = self.tokens[self.position]

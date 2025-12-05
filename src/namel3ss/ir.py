@@ -43,6 +43,7 @@ class IRAiCall:
     name: str
     model_name: str | None = None
     input_source: str | None = None
+    description: str | None = None
 
 
 @dataclass
@@ -63,6 +64,7 @@ class IRFlowStep:
     name: str
     kind: Literal["ai", "agent", "tool"]
     target: str
+    message: str | None = None
 
 
 @dataclass
@@ -167,6 +169,7 @@ def ast_to_ir(module: ast_nodes.Module) -> IRProgram:
                 name=decl.name,
                 model_name=decl.model_name,
                 input_source=decl.input_source,
+                description=getattr(decl, "description", None),
             )
         elif isinstance(decl, ast_nodes.AgentDecl):
             if decl.name in program.agents:
@@ -201,7 +204,12 @@ def ast_to_ir(module: ast_nodes.Module) -> IRProgram:
                         f"Unsupported step kind '{step.kind}'", step.span and step.span.line
                     )
                 flow_steps.append(
-                    IRFlowStep(name=step.name, kind=step.kind, target=step.target)
+                    IRFlowStep(
+                        name=step.name,
+                        kind=step.kind,
+                        target=step.target,
+                        message=getattr(step, "message", None),
+                    )
                 )
             program.flows[decl.name] = IRFlow(
                 name=decl.name, description=decl.description, steps=flow_steps

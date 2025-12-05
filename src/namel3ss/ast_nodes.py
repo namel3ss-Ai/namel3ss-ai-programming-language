@@ -73,6 +73,7 @@ class AICallDecl:
     name: str
     model_name: Optional[str] = None
     input_source: Optional[str] = None
+    description: Optional[str] = None
     span: Optional[Span] = None
 
 
@@ -162,6 +163,7 @@ class FlowStepDecl:
     name: str
     kind: str
     target: str
+    message: Optional[str] = None
     span: Optional[Span] = None
 
 

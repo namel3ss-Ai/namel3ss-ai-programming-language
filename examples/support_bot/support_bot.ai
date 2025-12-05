@@ -1,0 +1,38 @@
+remember conversation as "support_history"
+
+use model "support-llm" provided by "openai"
+
+ai "classify_issue":
+  when called:
+    use model "support-llm"
+    input comes from user_input
+    describe task as "Classify the user's support request."
+
+agent "support_agent":
+  the goal is "Provide helpful support answers using the classification and history."
+  the personality is "patient and pragmatic"
+
+flow "support_flow":
+  description "Classify the request, respond, and log the interaction."
+  this flow will:
+    first step "classify":
+      do ai "classify_issue"
+    then step "respond":
+      do agent "support_agent"
+    finally step "log":
+      do tool "echo" with message:
+        "User request was processed and logged."
+
+app "support_bot_app":
+  starts at page "support_home"
+  description "Support assistant with memory and a simple logging tool."
+
+page "support_home":
+  found at route "/support"
+  titled "Support Bot"
+  section "intro":
+    show text:
+      "Submit a support request and view the assistant response."
+  section "chat":
+    show form asking:
+      "Describe your issue (login, billing, errors)."

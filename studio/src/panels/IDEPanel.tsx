@@ -7,6 +7,7 @@ import { RunStatus } from "../components/RunStatus";
 import { RunOutputPanel } from "../components/RunOutputPanel";
 import { TraceDetailPanel } from "../components/TraceDetailPanel";
 import { CommandPalette, CommandPaletteItem } from "../components/CommandPalette";
+import { fetchExampleSource } from "../api/examples";
 import {
   createInitialWorkspace,
   setActiveFile,
@@ -19,7 +20,17 @@ import {
 import { createInitialRunState, applyRunResponse, applyLastTrace, type IDERunState } from "../ide/runState";
 import { ApiClient, postRunApp } from "../api/client";
 
-export const IDEPanel: React.FC = () => {
+export interface IDEPanelProps {
+  initialExampleName?: string | null;
+  initialTraceId?: string | null;
+  exampleLoader?: (name: string) => Promise<{ name: string; path: string; source: string }>;
+}
+
+export const IDEPanel: React.FC<IDEPanelProps> = ({
+  initialExampleName = null,
+  initialTraceId = null,
+  exampleLoader,
+}) => {
   const [workspace, setWorkspace] = useState<WorkspaceState>(() => createInitialWorkspace());
   const [runState, setRunState] = useState<IDERunState>(() => createInitialRunState());
   const [isRunningApp, setIsRunningApp] = useState(false);
@@ -31,6 +42,8 @@ export const IDEPanel: React.FC = () => {
   const [selectedTraceId, setSelectedTraceId] = useState<string | null>(null);
   const [isIDEPaletteOpen, setIsIDEPaletteOpen] = useState(false);
   const [diagnosticsRequestId, setDiagnosticsRequestId] = useState(0);
+  const [loadedExampleName, setLoadedExampleName] = useState<string | null>(null);
+  const [exampleError, setExampleError] = useState<string | null>(null);
 
   const activeFile = useMemo(() => {
     if (!workspace.activeFileId) return null;
@@ -165,6 +178,54 @@ export const IDEPanel: React.FC = () => {
     };
   }, []);
 
+  useEffect(() => {
+    if (initialTraceId) {
+      setSelectedTraceId(initialTraceId);
+      setIsTraceDetailOpen(true);
+    }
+  }, [initialTraceId]);
+
+  useEffect(() => {
+    let cancelled = false;
+    async function loadExample() {
+      if (!initialExampleName || loadedExampleName === initialExampleName) {
+        return;
+      }
+      const loader = exampleLoader ?? fetchExampleSource;
+      try {
+        const example = await loader(initialExampleName);
+        if (cancelled) return;
+        const fileId = `example-${example.name}`;
+        setWorkspace({
+          files: [
+            {
+              id: fileId,
+              name: example.path,
+              content: example.source,
+              isDirty: false,
+              lastCleanContent: example.source,
+            },
+          ],
+          activeFileId: fileId,
+        });
+        setExampleError(null);
+      } catch (err) {
+        if (!cancelled) {
+          const message = err instanceof Error ? err.message : String(err);
+          setExampleError(`Failed to load example '${initialExampleName}': ${message}`);
+        }
+      } finally {
+        if (!cancelled) {
+          setLoadedExampleName(initialExampleName);
+        }
+      }
+    }
+    loadExample();
+    return () => {
+      cancelled = true;
+    };
+  }, [exampleLoader, initialExampleName, loadedExampleName]);
+
   return (
     <div className="n3-ide-panel">
       <aside className="n3-ide-sidebar-left">
@@ -177,6 +238,7 @@ export const IDEPanel: React.FC = () => {
         />
       </aside>
       <div className="n3-ide-main">
+        {exampleError && <div className="n3-example-error">{exampleError}</div>}
         <div className="n3-ide-toolbar">
           <button type="button" onClick={handleSaveActiveFile} disabled={!workspace.activeFileId}>
             Save

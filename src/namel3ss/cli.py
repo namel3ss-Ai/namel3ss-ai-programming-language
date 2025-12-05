@@ -7,10 +7,14 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+from urllib.error import HTTPError, URLError
+from urllib.parse import urljoin
+from urllib.request import Request, urlopen
 from dataclasses import asdict
 from pathlib import Path
 
 from . import ir, lexer, parser
+from . import ast_nodes
 from .server import create_app
 from .runtime.engine import Engine
 from .secrets.manager import SecretsManager
@@ -19,6 +23,7 @@ from .diagnostics.runner import apply_strict_mode, collect_diagnostics, iter_ai_
 from .lang.formatter import format_source
 from .errors import ParseError
 from .templates.manager import list_templates, scaffold_project
+from .examples.manager import list_examples, resolve_example_path
 from .version import __version__
 
 
@@ -138,6 +143,15 @@ def build_cli_parser() -> argparse.ArgumentParser:
     init_cmd.add_argument("target_dir", nargs="?", default=".", help="Target directory")
     init_cmd.add_argument("--force", action="store_true", help="Overwrite target directory if non-empty")
 
+    example_cmd = register("example", help="Work with bundled examples")
+    example_sub = example_cmd.add_subparsers(dest="example_command", required=True)
+    example_sub.add_parser("list", help="List available examples")
+    example_run_cmd = example_sub.add_parser("run", help="Run an example via /api/run-app")
+    example_run_cmd.add_argument("name", help="Example name (folder and file name)")
+    example_run_cmd.add_argument(
+        "--api-base", default="http://localhost:8000", help="Base URL for the Namel3ss API"
+    )
+
     fmt_cmd = register("fmt", help="Format .ai files")
     fmt_cmd.add_argument("paths", nargs="*", type=Path, help="Files or directories to format")
     fmt_cmd.add_argument("--check", action="store_true", help="Only check formatting, do not write files")
@@ -172,6 +186,26 @@ def _format_diagnostic(diag: Diagnostic) -> str:
     location = ":".join(loc_parts)
     prefix = f"{location} " if location else ""
     return f"{prefix}[{diag.severity}] ({diag.code} {diag.category}) {diag.message}"
+
+
+def _infer_app_name(source: str, filename: str, default: str) -> str:
+    try:
+        tokens = lexer.Lexer(source, filename=filename).tokenize()
+        module = parser.Parser(tokens).parse_module()
+        for decl in module.declarations:
+            if isinstance(decl, ast_nodes.AppDecl):
+                return decl.name
+    except Exception:
+        return default
+    return default
+
+
+def _post_run_app(source: str, app_name: str, api_base: str) -> dict:
+    payload = json.dumps({"source": source, "app_name": app_name}).encode("utf-8")
+    url = urljoin(api_base.rstrip("/") + "/", "api/run-app")
+    req = Request(url, data=payload, headers={"Content-Type": "application/json"})
+    with urlopen(req) as resp:  # nosec - controlled by api_base
+        return json.loads(resp.read().decode("utf-8"))
 
 
 def main(argv: list[str] | None = None) -> None:
@@ -330,6 +364,43 @@ def main(argv: list[str] | None = None) -> None:
         if not success:
             raise SystemExit(1)
         return
+
+    if args.command == "example":
+        if args.example_command == "list":
+            for name in list_examples():
+                print(name)
+            return
+        if args.example_command == "run":
+            try:
+                path = resolve_example_path(args.name)
+            except FileNotFoundError as exc:
+                raise SystemExit(str(exc)) from exc
+            source = path.read_text(encoding="utf-8")
+            app_name = _infer_app_name(source, str(path), args.name)
+            try:
+                raw_result = _post_run_app(source, app_name, args.api_base)
+            except HTTPError as exc:
+                detail = exc.read().decode("utf-8") if hasattr(exc, "read") else str(exc)
+                raise SystemExit(f"Request failed ({exc.code}): {detail}") from exc
+            except URLError as exc:
+                raise SystemExit(f"Unable to reach API at {args.api_base}: {exc}") from exc
+            result_block = raw_result.get("result") or {}
+            trace = raw_result.get("trace") or result_block.get("trace")
+            trace_id = trace.get("id") if isinstance(trace, dict) else None
+            message = None
+            if isinstance(result_block, dict):
+                app_info = result_block.get("app")
+                if isinstance(app_info, dict):
+                    message = app_info.get("message")
+            if not message:
+                message = raw_result.get("message") or "Run completed"
+            status = raw_result.get("status") or result_block.get("status") or "ok"
+            payload = {"status": status, "message": message, "trace_id": trace_id}
+            print(json.dumps(payload, indent=2))
+            if trace_id:
+                base = args.api_base.rstrip("/")
+                print(f"\nOpen in Studio (trace):\n{base}/studio?trace={trace_id}")
+            return
 
     if args.command == "fmt":
         if args.stdin:

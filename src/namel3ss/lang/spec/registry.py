@@ -63,7 +63,9 @@ _CONTRACTS: Dict[str, BlockContract] = {
             _req("model_name", "string", "Model reference"),
             _req("input_source", "string", "Input source"),
         ),
-        optional_fields=(),
+        optional_fields=(
+            _opt("description", "string", "AI call description"),
+        ),
         allowed_children=(),
         unique_name_scope="ai",
     ),

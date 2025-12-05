@@ -86,6 +86,8 @@ def _format_decl(decl: ast_nodes.Declaration, level: int) -> List[str]:
             body.append(_indent(level + 1, f"model {_q(decl.model_name)}"))
         if decl.input_source:
             body.append(_indent(level + 1, f"input from {_q(decl.input_source)}"))
+        if getattr(decl, "description", None):
+            body.append(_indent(level + 1, f"description {_q(decl.description or '')}"))
         return [_indent(level, f"ai {_q(decl.name)}:")] + body
     if isinstance(decl, ast_nodes.AgentDecl):
         body: List[str] = []
@@ -134,4 +136,6 @@ def _format_flow_step(step: ast_nodes.FlowStepDecl, level: int) -> List[str]:
     lines = [_indent(level, f"step {_q(step.name)}:")]
     lines.append(_indent(level + 1, f"kind {_q(step.kind)}"))
     lines.append(_indent(level + 1, f"target {_q(step.target)}"))
+    if getattr(step, "message", None):
+        lines.append(_indent(level + 1, f"message {_q(step.message or '')}"))
     return lines

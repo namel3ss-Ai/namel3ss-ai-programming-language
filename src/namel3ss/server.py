@@ -48,6 +48,7 @@ from .optimizer.storage import OptimizerStorage
 from .optimizer.overlays import OverlayStore
 from .optimizer.engine import OptimizerEngine
 from .optimizer.apply import SuggestionApplier
+from .examples.manager import resolve_example_path, get_examples_root
 
 BASE_DIR = Path(__file__).resolve().parents[2]
 STUDIO_STATIC_DIR = BASE_DIR / "studio" / "static"
@@ -285,6 +286,19 @@ def create_app() -> FastAPI:
             return {"result": result, "trace": result.get("trace")}
         except Exception as exc:  # pragma: no cover
             raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    @app.get("/api/example-source")
+    def api_example_source(name: str) -> Dict[str, Any]:
+        try:
+            path = resolve_example_path(name)
+        except FileNotFoundError:
+            raise HTTPException(status_code=404, detail=f"Example '{name}' not found")
+        source = path.read_text(encoding="utf-8")
+        try:
+            rel_path = str(path.relative_to(get_examples_root().parent))
+        except ValueError:
+            rel_path = str(path)
+        return {"name": name, "path": rel_path, "source": source}
 
     @app.get("/studio", response_class=HTMLResponse)
     def studio() -> HTMLResponse:
