@@ -1,6 +1,8 @@
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import type { TraceDetail, TraceEvent } from "../api/types";
 import { ApiClient } from "../api/client";
+import { ConditionList } from "./ConditionList";
+import { normalizeConditions } from "../trace/conditions";
 
 export interface TraceDetailPanelProps {
   traceId: string | null;
@@ -59,6 +61,7 @@ export const TraceDetailPanel: React.FC<TraceDetailPanelProps> = ({ traceId, onC
     name: event.kind || event.message || event.id,
   }));
   const selectedStep = steps.find((s) => s.id === selectedStepId) ?? (steps[0] ?? null);
+  const conditions = useMemo(() => normalizeConditions(detail?.events ?? []), [detail]);
 
   return (
     <div className="n3-trace-detail-panel">
@@ -118,6 +121,7 @@ export const TraceDetailPanel: React.FC<TraceDetailPanelProps> = ({ traceId, onC
               )}
             </div>
           </div>
+          <ConditionList conditions={conditions} />
         </div>
       )}
     </div>

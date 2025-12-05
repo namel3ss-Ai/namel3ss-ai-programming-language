@@ -24,6 +24,9 @@ describe("TraceDetailPanel", () => {
           id: "step-1",
           kind: "step",
           status: "done",
+          event: "condition.eval",
+          condition: "x > 1",
+          result: true,
         },
       ],
     } as any);
@@ -35,6 +38,7 @@ describe("TraceDetailPanel", () => {
     const idText = await screen.findByText("ID: trace-1");
     expect(idText).toBeInTheDocument();
     expect(screen.getByText("step (done)")).toBeInTheDocument();
+    expect(screen.getByText("Conditions")).toBeInTheDocument();
   });
 
   it("shows error message when loading fails", async () => {

@@ -120,14 +120,69 @@ export interface FlowGraph {
   edges: FlowEdge[];
 }
 
-export interface TraceEvent {
+export type TraceScope = "flow" | "agent" | string;
+
+export interface BaseTraceEvent {
   id: string;
-  node_id: string;
+  node_id?: string;
   timestamp?: string;
-  kind: string;
+  kind?: string;
   message?: string;
+  event?: string;
+  scope?: TraceScope;
   [key: string]: any;
 }
+
+export interface ConditionEvalEvent extends BaseTraceEvent {
+  event: "condition.eval" | "flow.condition.eval" | "agent.condition.eval";
+  scope?: "flow" | "agent";
+  condition?: string;
+  expression?: string;
+  result?: boolean;
+  evaluated?: boolean;
+  taken?: boolean;
+  branch?: string | null;
+  binding?: { name?: string; value?: unknown };
+  macro?: string;
+}
+
+export interface PatternConditionEvalEvent extends BaseTraceEvent {
+  event: "condition.pattern.eval" | "agent.condition.pattern.eval" | "flow.condition.pattern.eval";
+  scope?: "flow" | "agent";
+  condition?: string;
+  result?: boolean;
+  evaluated?: boolean;
+  taken?: boolean;
+  branch?: string | null;
+  binding?: { name?: string; value?: unknown };
+  pattern?: Record<string, unknown>;
+}
+
+export interface RuleGroupConditionEvalEvent extends BaseTraceEvent {
+  event: "condition.rulegroup.eval" | "agent.condition.rulegroup.eval" | "flow.condition.rulegroup.eval";
+  scope?: "flow" | "agent";
+  rulegroup?: string;
+  condition?: string;
+  results?: Record<string, boolean>;
+  result?: boolean;
+  evaluated?: boolean;
+  taken?: boolean;
+}
+
+export interface FlowGotoEvent extends BaseTraceEvent {
+  event: "flow.goto";
+  from_flow?: string;
+  to_flow?: string;
+  step?: string;
+  reason?: string;
+}
+
+export type TraceEvent =
+  | ConditionEvalEvent
+  | PatternConditionEvalEvent
+  | RuleGroupConditionEvalEvent
+  | FlowGotoEvent
+  | BaseTraceEvent;
 
 export interface TraceDetail {
   id: string;
