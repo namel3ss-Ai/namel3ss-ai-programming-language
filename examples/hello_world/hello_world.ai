@@ -1,24 +1,24 @@
-use model "hello-llm" provided by "openai"
+model "hello-llm":
+  provider "openai"
 
 ai "echo":
-  when called:
-    use model "hello-llm"
-    input comes from user_input
-    describe task as "Echo a friendly greeting back to the user."
+  model "hello-llm"
+  input from "user_input"
+  description "Echo a friendly greeting back to the user."
 
 flow "hello_flow":
   description "Echo back a greeting."
-  this flow will:
-    first step "reply":
-      do ai "echo"
+  step "reply":
+    kind "ai"
+    target "echo"
 
 app "hello-world":
-  starts at page "home"
+  entry_page "home"
   description "Hello world sample that echoes user text."
 
 page "home":
-  found at route "/"
-  titled "Hello World"
+  route "/"
+  title "Hello World"
   section "greeting":
-    show text:
-      "Hello from Namel3ss!"
+    component "text":
+      value "Hello from Namel3ss!"

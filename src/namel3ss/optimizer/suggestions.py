@@ -6,11 +6,10 @@ from __future__ import annotations
 
 import json
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import List
 
-from ..ai.models import ModelResponse
-from .models import EvaluationRun, Suggestion, SuggestionStatus, TargetType
+from .models import EvaluationRun, Suggestion, SuggestionStatus
 
 
 class SuggestionEngine:
@@ -36,7 +35,7 @@ class SuggestionEngine:
                     id=str(uuid.uuid4()),
                     target_type=run.target_type,
                     target_name=run.target_name,
-                    created_at=datetime.utcnow(),
+                    created_at=datetime.now(timezone.utc),
                     status=SuggestionStatus.PENDING,
                     description=entry.get("description") or "Improvement",
                     change_spec=entry.get("change_spec") or {},

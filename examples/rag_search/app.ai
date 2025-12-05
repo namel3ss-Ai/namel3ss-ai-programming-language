@@ -15,7 +15,7 @@ model "default":
 
 ai "rewrite":
   model "default"
-  input from user_input
+  input from "user_input"
 
 flow "answer":
   step "rewrite":

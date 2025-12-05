@@ -96,7 +96,13 @@ def flow_ir_to_graph(flow: IRFlow) -> FlowGraph:
         node = FlowNode(
             id=node_id,
             kind=step.kind,
-            config={"target": step.target, "step_name": step.name},
+            config={
+                "target": step.target,
+                "step_name": step.name,
+                "branches": getattr(step, "conditional_branches", None),
+                "message": getattr(step, "message", None),
+                "reason": "unconditional" if step.kind == "goto_flow" else None,
+            },
             next_ids=[],
         )
         nodes[node_id] = node

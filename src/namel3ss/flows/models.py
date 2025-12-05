@@ -22,6 +22,7 @@ class FlowStepResult:
     node_id: Optional[str] = None
     duration_seconds: float = 0.0
     cost: float = 0.0
+    redirect_to: Optional[str] = None
 
 
 @dataclass
@@ -40,3 +41,4 @@ class FlowRunResult:
     step_metrics: Dict[str, FlowStepMetrics] = field(default_factory=dict)
     total_cost: float = 0.0
     total_duration_seconds: float = 0.0
+    redirect_to: Optional[str] = None

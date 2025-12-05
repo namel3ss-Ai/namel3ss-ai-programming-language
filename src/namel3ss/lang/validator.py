@@ -6,7 +6,7 @@ from __future__ import annotations
 
 from typing import List, Optional
 
-from ..diagnostics import structured_to_legacy, create_diagnostic
+from ..diagnostics import create_diagnostic, structured_to_legacy
 from ..diagnostics.models import Diagnostic
 from ..ir import IRFlow, IRProgram
 from .spec.validator import validate_ir as validate_contracts

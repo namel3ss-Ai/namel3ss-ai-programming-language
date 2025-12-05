@@ -1,10 +1,10 @@
 app "Simple App":
-  starts at page "main"
+  entry_page "main"
   description "Minimal page with a welcome message."
 
 page "main":
-  found at route "/"
-  titled "Hello, Namel3ss"
+  route "/"
+  title "Hello, Namel3ss"
   section "welcome":
-    show text:
-      "Welcome to your first app."
+    component "text":
+      value "Welcome to your first app."

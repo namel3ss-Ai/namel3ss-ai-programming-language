@@ -64,3 +64,43 @@ page "support_home":
 The existing syntax (e.g., `memory "m":\n  type "conversation"`) remains fully supported. Formatter output continues to use the original concise style, and both styles can be mixed in the same file.
 
 Use whichever style fits your team; new projects are encouraged to adopt the English-style syntax for readability.
+
+## Conditions (Phase 1)
+
+Flow steps can branch using English-style `if / otherwise` chains or simple `when` checks:
+
+```ai
+flow "support_flow":
+  step "route to handler":
+    if result.category is "billing":
+      do agent "billing_agent"
+    otherwise if result.category is "technical":
+      do agent "technical_agent"
+    otherwise:
+      do agent "general_agent"
+
+  step "maybe escalate":
+    when result.priority is "high":
+      do agent "escalation_agent"
+```
+
+See `docs/language/conditions.md` for the full set of supported operators, macros, rulegroups, patterns, bindings, and flow redirection.
+
+## Conditional Flow Redirection
+
+Inside a flow step (including inside condition branches), you can jump to another flow using plain English:
+
+```ai
+flow "main_flow":
+  step "route":
+    if result.category is "billing":
+      go to flow "billing_flow"
+    otherwise:
+      go to flow "fallback_flow"
+
+flow "billing_flow":
+  step "finish":
+    do tool "echo"
+```
+
+`go to flow "name"` ends the current flow and continues execution in the target flow. When used inside a conditional branch, only the selected branch's redirect runs, and subsequent steps in the current flow are skipped. Traces include a `flow.goto` event showing the source step and destination flow.

@@ -5,7 +5,7 @@ Tracing models.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import List, Optional, Any
+from typing import Any, List, Optional
 
 
 @dataclass
@@ -52,6 +52,7 @@ class AgentStepTrace:
 class AgentTrace:
     agent_name: str
     steps: List[AgentStepTrace] = field(default_factory=list)
+    events: List[Any] = field(default_factory=list)
     summary: Optional[str] = None
 
 

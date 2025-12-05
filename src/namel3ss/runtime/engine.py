@@ -13,29 +13,29 @@ from uuid import uuid4
 from .. import ir, lexer, parser
 from ..agent.engine import AgentRunner
 from ..agent.teams import AgentTeamRunner
+from ..ai.config import default_global_ai_config
 from ..ai.registry import ModelRegistry
 from ..ai.router import ModelRouter
+from ..distributed.queue import JobQueue, global_job_queue
+from ..distributed.scheduler import JobScheduler
 from ..errors import Namel3ssError
+from ..flows.engine import FlowEngine
+from ..flows.triggers import TriggerManager
 from ..ir import IRProgram
 from ..memory.engine import MemoryEngine, PersistentMemoryEngine, ShardedMemoryEngine
 from ..memory.models import MemorySpaceConfig, MemoryType
+from ..metrics.tracker import MetricsTracker
 from ..obs.tracer import Tracer
+from ..optimizer.apply import SuggestionApplier
+from ..optimizer.engine import OptimizerEngine
+from ..optimizer.overlays import OverlayStore
+from ..optimizer.storage import OptimizerStorage
+from ..plugins.registry import PluginRegistry
 from ..rag.engine import RAGEngine
-from ..flows.engine import FlowEngine
-from ..flows.triggers import TriggerManager
-from ..ui.renderer import UIRenderer
+from ..secrets.manager import SecretsManager
 from ..tools.builtin import register_builtin_tools
 from ..tools.registry import ToolRegistry
-from ..plugins.registry import PluginRegistry
-from ..optimizer.storage import OptimizerStorage
-from ..optimizer.overlays import OverlayStore
-from ..optimizer.engine import OptimizerEngine
-from ..optimizer.apply import SuggestionApplier
-from ..ai.config import default_global_ai_config
-from ..distributed.queue import JobQueue, global_job_queue
-from ..distributed.scheduler import JobScheduler
-from ..metrics.tracker import MetricsTracker
-from ..secrets.manager import SecretsManager
+from ..ui.renderer import UIRenderer
 from .context import (
     ExecutionContext,
     execute_app,

@@ -1,18 +1,19 @@
-use model "helper-llm" provided by "openai"
+model "helper-llm":
+  provider "openai"
 
 agent "helper":
-  the goal is "Offer concise, useful replies to user questions."
-  the personality is "friendly and direct"
+  goal "Offer concise, useful replies to user questions."
+  personality "friendly and direct"
 
 ai "echo_intent":
-  when called:
-    use model "helper-llm"
-    input comes from user_input
-    describe task as "Restate the user's request to clarify intent."
+  model "helper-llm"
+  input from "user_input"
+  description "Restate the user's request to clarify intent."
 
 flow "ask_helper":
-  this flow will:
-    first step "clarify":
-      do ai "echo_intent"
-    then step "respond":
-      do agent "helper"
+  step "clarify":
+    kind "ai"
+    target "echo_intent"
+  step "respond":
+    kind "agent"
+    target "helper"

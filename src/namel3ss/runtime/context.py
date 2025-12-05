@@ -9,13 +9,13 @@ from typing import Any, Dict, Optional
 
 from ..ai.registry import ModelRegistry
 from ..ai.router import ModelRouter
-from ..metrics.tracker import MetricsTracker
-from ..secrets.manager import SecretsManager
-from ..ir import IRApp, IRAgent, IRAiCall, IRMemory, IRPage, IRProgram
-from ..tools.registry import ToolRegistry
+from ..ir import IRAgent, IRAiCall, IRApp, IRMemory, IRPage, IRProgram
 from ..memory.engine import MemoryEngine
+from ..metrics.tracker import MetricsTracker
 from ..obs.tracer import Tracer
 from ..rag.engine import RAGEngine
+from ..secrets.manager import SecretsManager
+from ..tools.registry import ToolRegistry
 
 
 @dataclass

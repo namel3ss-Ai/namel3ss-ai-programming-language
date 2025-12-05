@@ -1,43 +1,43 @@
-use model "retriever" provided by "openai"
+model "retriever":
+  provider "openai"
 
 ai "rewrite_question":
-  when called:
-    use model "retriever"
-    input comes from user_input
-    describe task as "Rewrite the question to be concise and retrieval-friendly."
+  model "retriever"
+  input from "user_input"
+  description "Rewrite the question to be concise and retrieval-friendly."
 
 ai "lookup_context":
-  when called:
-    use model "retriever"
-    input comes from user_input
-    describe task as "Locate the most relevant context for the rewritten question."
+  model "retriever"
+  input from "user_input"
+  description "Locate the most relevant context for the rewritten question."
 
 ai "compose_answer":
-  when called:
-    use model "retriever"
-    input comes from user_input
-    describe task as "Compose a short answer grounded in the retrieved context."
+  model "retriever"
+  input from "user_input"
+  description "Compose a short answer grounded in the retrieved context."
 
 flow "qa_flow":
   description "Rewrite the question, fetch context, and compose an answer."
-  this flow will:
-    first step "rewrite":
-      do ai "rewrite_question"
-    then step "fetch":
-      do ai "lookup_context"
-    finally step "answer":
-      do ai "compose_answer"
+  step "rewrite":
+    kind "ai"
+    target "rewrite_question"
+  step "fetch":
+    kind "ai"
+    target "lookup_context"
+  step "answer":
+    kind "ai"
+    target "compose_answer"
 
 app "rag_qa_app":
-  starts at page "qa_home"
+  entry_page "qa_home"
   description "RAG-style Q&A over a small built-in knowledge note."
 
 page "qa_home":
-  found at route "/rag-qa"
-  titled "RAG Q&A"
+  route "/rag-qa"
+  title "RAG Q&A"
   section "prompt":
-    show text:
-      "Ask a question about Namel3ss capabilities."
+    component "text":
+      value "Ask a question about Namel3ss capabilities."
   section "ask":
-    show form asking:
-      "Enter your question and run qa_flow."
+    component "form":
+      value "Enter your question and run qa_flow."

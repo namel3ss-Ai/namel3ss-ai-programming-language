@@ -26,4 +26,4 @@ flow "orchestrate":
 
 ai "decide":
   model "default"
-  input from user_input
+  input from "user_input"

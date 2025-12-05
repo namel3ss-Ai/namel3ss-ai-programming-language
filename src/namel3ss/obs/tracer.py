@@ -4,7 +4,7 @@ Simple tracer for Namel3ss executions.
 
 from __future__ import annotations
 
-from typing import Optional, List
+from typing import List, Optional
 
 from .models import (
     AgentStepTrace,
@@ -14,9 +14,9 @@ from .models import (
     FlowStepTrace,
     FlowTrace,
     JobTrace,
-    TeamTrace,
-    RAGTrace,
     PageTrace,
+    RAGTrace,
+    TeamTrace,
 )
 
 
@@ -64,7 +64,7 @@ class Tracer:
 
     def start_agent(self, agent_name: str) -> None:
         if not self._current_page:
-            return
+            self.start_page("agent")
         agent_trace = AgentTrace(agent_name=agent_name)
         self._current_page.agents.append(agent_trace)
         self._current_agent = agent_trace
@@ -92,7 +92,35 @@ class Tracer:
                 output_preview=output_preview,
                 evaluation_score=evaluation_score,
                 verdict=verdict,
-            )
+        )
+        )
+
+    def record_agent_condition_eval(
+        self,
+        agent_name: str,
+        condition: str,
+        result: bool,
+        branch_label: str | None = None,
+        binding: Optional[dict] = None,
+        pattern: Optional[dict] = None,
+        macro: Optional[str] = None,
+        results: Optional[dict] = None,
+        event: Optional[str] = None,
+    ) -> None:
+        if not self._current_agent:
+            return
+        self._current_agent.events.append(
+            {
+                "event": event or "agent.condition.eval",
+                "agent": agent_name,
+                "condition": condition,
+                "result": result,
+                "branch": branch_label,
+                **({"binding": binding} if binding else {}),
+                **({"pattern": pattern} if pattern else {}),
+                **({"macro": macro} if macro else {}),
+                **({"results": results} if results else {}),
+            }
         )
 
     def end_agent(self, summary: Optional[str]) -> None:

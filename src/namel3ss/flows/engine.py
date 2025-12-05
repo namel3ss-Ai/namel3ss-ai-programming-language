@@ -11,19 +11,27 @@ from dataclasses import asdict
 from typing import Any, Callable, Optional
 from uuid import uuid4
 
+from .. import ast_nodes
 from ..agent.engine import AgentRunner
 from ..ai.registry import ModelRegistry
 from ..ai.router import ModelRouter
 from ..errors import Namel3ssError
 from ..ir import IRFlow, IRProgram
 from ..metrics.tracker import MetricsTracker
+from ..observability.metrics import default_metrics
+from ..observability.tracing import default_tracer
 from ..runtime.context import ExecutionContext, execute_ai_call_with_registry
 from ..secrets.manager import SecretsManager
 from ..tools.registry import ToolRegistry
-from .graph import FlowError, FlowGraph, FlowNode, FlowRuntimeContext, FlowState, flow_ir_to_graph
+from .graph import (
+    FlowError,
+    FlowGraph,
+    FlowNode,
+    FlowRuntimeContext,
+    FlowState,
+    flow_ir_to_graph,
+)
 from .models import FlowRunResult, FlowStepMetrics, FlowStepResult
-from ..observability.tracing import default_tracer
-from ..observability.metrics import default_metrics
 
 
 class FlowEngine:
@@ -72,11 +80,6 @@ class FlowEngine:
     async def run_flow_async(
         self, flow: IRFlow, context: ExecutionContext, initial_state: Optional[dict[str, Any]] = None
     ) -> FlowRunResult:
-        graph = flow_ir_to_graph(flow)
-        if context.tracer:
-            context.tracer.start_flow(flow.name)
-            context.tracer.record_flow_graph_build(flow.name, graph)
-
         runtime_ctx = self._build_runtime_context(context)
         state = FlowState(
             data=initial_state or {},
@@ -86,16 +89,48 @@ class FlowEngine:
                 "app": context.app_name,
             },
         )
+        tracer = context.tracer
+        step_results: list[FlowStepResult] = []
+        current_flow = flow
+        result: FlowRunResult | None = None
 
-        result = await self.a_run_flow(graph, state, runtime_ctx, flow_name=flow.name)
-        if context.tracer:
-            context.tracer.end_flow()
-        return result
+        while True:
+            graph = flow_ir_to_graph(current_flow)
+            if tracer:
+                tracer.start_flow(current_flow.name)
+                tracer.record_flow_graph_build(current_flow.name, graph)
+            state.context["flow_name"] = current_flow.name
+            state.context.pop("__redirect_flow__", None)
+            result = await self.a_run_flow(
+                graph,
+                state,
+                runtime_ctx,
+                flow_name=current_flow.name,
+                step_results=step_results,
+            )
+            if tracer:
+                tracer.end_flow()
+            redirect_to = result.redirect_to
+            if not redirect_to:
+                break
+            next_flow = runtime_ctx.program.flows.get(redirect_to)
+            if not next_flow:
+                raise Namel3ssError(f"Flow '{current_flow.name}' redirects to missing flow '{redirect_to}'")
+            current_flow = next_flow
+            state = result.state or state
+
+        return result or FlowRunResult(flow_name=flow.name)
 
     async def a_run_flow(
-        self, graph: FlowGraph, state: FlowState, runtime_ctx: FlowRuntimeContext, flow_name: str | None = None
+        self,
+        graph: FlowGraph,
+        state: FlowState,
+        runtime_ctx: FlowRuntimeContext,
+        flow_name: str | None = None,
+        step_results: list[FlowStepResult] | None = None,
     ) -> FlowRunResult:
-        step_results: list[FlowStepResult] = []
+        if step_results is None:
+            step_results = []
         tracer = runtime_ctx.tracer
         runtime_ctx.step_results = step_results
         flow_start = time.monotonic()
@@ -151,6 +186,10 @@ class FlowEngine:
                     return await run_node(boundary_for_children, current_state, None, stop_at)
                 raise
 
+            # Stop execution if a redirect has been requested.
+            if current_state.context.get("__redirect_flow__"):
+                return current_state
+
             # Branch evaluation
             if node.kind == "branch":
                 next_id = self._evaluate_branch(node, current_state, runtime_ctx)
@@ -194,6 +233,7 @@ class FlowEngine:
         }
         total_cost = sum(r.cost for r in step_results)
         default_tracer.finish_span(root_span)
+        redirect_to = final_state.context.get("__redirect_flow__")
         return FlowRunResult(
             flow_name=flow_name or graph.entry_id,
             steps=step_results,
@@ -202,6 +242,7 @@ class FlowEngine:
             step_metrics=step_metrics,
             total_cost=total_cost,
             total_duration_seconds=total_duration,
+            redirect_to=redirect_to,
         )
 
     async def _run_branch_with_limit(
@@ -354,6 +395,8 @@ class FlowEngine:
                 sub_state = state.copy()
                 result = await self.a_run_flow(graph, sub_state, runtime_ctx, flow_name=target)
                 output = {"subflow": target, "state": result.state.data if result.state else {}}
+            elif node.kind == "condition":
+                output = await self._run_condition_node(node, state, runtime_ctx)
             elif node.kind == "function":
                 func = node.config.get("callable")
                 if not callable(func):
@@ -365,6 +408,23 @@ class FlowEngine:
                 output = await self._execute_for_each(node, state, runtime_ctx)
             elif node.kind == "try":
                 output = await self._execute_try_catch(node, state, runtime_ctx)
+            elif node.kind == "goto_flow":
+                target_flow = node.config.get("target")
+                reason = node.config.get("reason", "unconditional")
+                if not target_flow:
+                    raise Namel3ssError("'go to flow' requires a target flow name")
+                state.context["__redirect_flow__"] = target_flow
+                output = {"goto_flow": target_flow}
+                if tracer:
+                    tracer.record_flow_event(
+                        "flow.goto",
+                        {
+                            "from_flow": state.context.get("flow_name"),
+                            "to_flow": target_flow,
+                            "step": node.config.get("step_name", node.id),
+                            "reason": reason,
+                        },
+                    )
             else:
                 raise Namel3ssError(f"Unsupported flow step kind '{node.kind}'")
 
@@ -386,6 +446,7 @@ class FlowEngine:
             success=True,
             output=output,
             node_id=node.id,
+            redirect_to=state.context.get("__redirect_flow__"),
         )
 
     async def _execute_parallel_block(self, node: FlowNode, state: FlowState, runtime_ctx: FlowRuntimeContext):
@@ -492,6 +553,8 @@ class FlowEngine:
         for idx, step in enumerate(steps):
             step_id = step.get("id") or step.get("name") or f"{prefix}.step{idx}"
             state = await self._run_inline_step(step_id, step, state, runtime_ctx)
+            if state.context.get("__redirect_flow__"):
+                break
         return state
 
     async def _execute_with_timing(
@@ -539,10 +602,284 @@ class FlowEngine:
                         return 0.0
         if hasattr(output, "cost"):
             try:
-                return float(getattr(output, "cost"))
+                return float(output.cost)
             except Exception:
                 return 0.0
         return 0.0
+
+    # -------- Condition helpers --------
+    def _expr_to_str(self, expr: ast_nodes.Expr | None) -> str:
+        if expr is None:
+            return "<otherwise>"
+        if isinstance(expr, ast_nodes.Identifier):
+            return expr.name
+        if isinstance(expr, ast_nodes.Literal):
+            return repr(expr.value)
+        if isinstance(expr, ast_nodes.UnaryOp):
+            return f"{expr.op} {self._expr_to_str(expr.operand)}"
+        if isinstance(expr, ast_nodes.BinaryOp):
+            return f"{self._expr_to_str(expr.left)} {expr.op} {self._expr_to_str(expr.right)}"
+        if isinstance(expr, ast_nodes.PatternExpr):
+            pairs = ", ".join(f"{p.key}: {self._expr_to_str(p.value)}" for p in expr.pairs)
+            return f"{expr.subject.name} matches {{{pairs}}}"
+        if isinstance(expr, ast_nodes.RuleGroupRefExpr):
+            if expr.condition_name:
+                return f"{expr.group_name}.{expr.condition_name}"
+            return expr.group_name
+        return str(expr)
+
+    def _resolve_identifier(self, name: str, state: FlowState) -> Any:
+        parts = name.split(".")
+        value: Any = state.get(parts[0])
+        for part in parts[1:]:
+            if isinstance(value, dict):
+                value = value.get(part)
+            else:
+                value = getattr(value, part, None)
+        return value
+
+    def _eval_rulegroup(self, expr: ast_nodes.RuleGroupRefExpr, state: FlowState, runtime_ctx: FlowRuntimeContext) -> tuple[bool, Any]:
+        groups = getattr(runtime_ctx.program, "rulegroups", {}) if runtime_ctx else {}
+        rules = groups.get(expr.group_name) or {}
+        tracer = runtime_ctx.tracer if runtime_ctx else None
+        if expr.condition_name:
+            rule_expr = rules.get(expr.condition_name)
+            if rule_expr is None:
+                return False, None
+            result = bool(self._eval_expr(rule_expr, state, runtime_ctx))
+            if tracer:
+                tracer.record_flow_event(
+                    "condition.rulegroup.eval",
+                    {
+                        "rulegroup": expr.group_name,
+                        "condition": expr.condition_name,
+                        "result": result,
+                        "evaluated": result,
+                        "taken": result,
+                    },
+                )
+            return result, result
+        results_map: dict[str, bool] = {}
+        all_true = True
+        for name, rule_expr in rules.items():
+            val = bool(self._eval_expr(rule_expr, state, runtime_ctx))
+            results_map[name] = val
+            if not val:
+                all_true = False
+        if tracer:
+            tracer.record_flow_event(
+                "condition.rulegroup.eval",
+                {
+                    "rulegroup": expr.group_name,
+                    "mode": "all",
+                    "results": results_map,
+                    "evaluated": all_true,
+                    "taken": all_true,
+                },
+            )
+        return all_true, all_true
+
+    def _eval_expr(self, expr: ast_nodes.Expr, state: FlowState, runtime_ctx: FlowRuntimeContext | None = None) -> Any:
+        if isinstance(expr, ast_nodes.Literal):
+            return expr.value
+        if isinstance(expr, ast_nodes.Identifier):
+            return self._resolve_identifier(expr.name, state)
+        if isinstance(expr, ast_nodes.RuleGroupRefExpr):
+            if runtime_ctx is None or runtime_ctx.program is None:
+                return False
+            res, _ = self._eval_rulegroup(expr, state, runtime_ctx)
+            return res
+        if isinstance(expr, ast_nodes.UnaryOp):
+            val = self._eval_expr(expr.operand, state, runtime_ctx) if expr.operand else None
+            if expr.op == "not":
+                return not bool(val)
+            raise Namel3ssError(f"Unsupported unary operator '{expr.op}'")
+        if isinstance(expr, ast_nodes.BinaryOp):
+            left = self._eval_expr(expr.left, state, runtime_ctx) if expr.left else None
+            right = self._eval_expr(expr.right, state, runtime_ctx) if expr.right else None
+            try:
+                if expr.op == "and":
+                    return bool(left) and bool(right)
+                if expr.op == "or":
+                    return bool(left) or bool(right)
+                if expr.op == "is":
+                    return left == right
+                if expr.op == "is not":
+                    return left != right
+                if expr.op == "<":
+                    return left < right
+                if expr.op == ">":
+                    return left > right
+                if expr.op == "<=":
+                    return left <= right
+                if expr.op == ">=":
+                    return left >= right
+            except Exception:
+                return False
+            raise Namel3ssError(f"Unsupported operator '{expr.op}'")
+        raise Namel3ssError("Unsupported expression")
+
+    def _match_pattern(self, pattern: ast_nodes.PatternExpr, state: FlowState, runtime_ctx: FlowRuntimeContext) -> tuple[bool, Any]:
+        subject = self._resolve_identifier(pattern.subject.name, state)
+        if not isinstance(subject, dict):
+            return False, None
+        for pair in pattern.pairs:
+            subject_val = subject.get(pair.key)
+            val_expr = pair.value
+            if isinstance(val_expr, ast_nodes.BinaryOp) and isinstance(val_expr.left, ast_nodes.Identifier):
+                left_val = subject_val if val_expr.left.name == pair.key else self._eval_expr(val_expr.left, state, runtime_ctx)
+                right_val = self._eval_expr(val_expr.right, state, runtime_ctx) if val_expr.right else None
+                op = val_expr.op
+                try:
+                    if op == "and":
+                        if not (bool(left_val) and bool(right_val)):
+                            return False, None
+                    elif op == "or":
+                        if not (bool(left_val) or bool(right_val)):
+                            return False, None
+                    elif op == "is":
+                        if left_val != right_val:
+                            return False, None
+                    elif op == "is not":
+                        if left_val == right_val:
+                            return False, None
+                    elif op == "<":
+                        if not (left_val < right_val):
+                            return False, None
+                    elif op == ">":
+                        if not (left_val > right_val):
+                            return False, None
+                    elif op == "<=":
+                        if not (left_val <= right_val):
+                            return False, None
+                    elif op == ">=":
+                        if not (left_val >= right_val):
+                            return False, None
+                except Exception:
+                    return False, None
+                continue
+            expected = self._eval_expr(val_expr, state, runtime_ctx)
+            if subject_val != expected:
+                return False, None
+        return True, subject
+
+    def _pattern_to_repr(self, pattern: ast_nodes.PatternExpr) -> dict:
+        return {pair.key: self._expr_to_str(pair.value) for pair in pattern.pairs}
+
+    def _eval_condition_with_binding(self, expr: ast_nodes.Expr | None, state: FlowState, runtime_ctx: FlowRuntimeContext) -> tuple[bool, Any]:
+        if expr is None:
+            return True, None
+        if isinstance(expr, ast_nodes.PatternExpr):
+            match, subject_val = self._match_pattern(expr, state, runtime_ctx)
+            return match, subject_val
+        if isinstance(expr, ast_nodes.RuleGroupRefExpr):
+            res, val = self._eval_rulegroup(expr, state, runtime_ctx)
+            return res, val
+        if isinstance(expr, ast_nodes.BinaryOp):
+            left = self._eval_expr(expr.left, state, runtime_ctx) if expr.left else None
+            right = self._eval_expr(expr.right, state, runtime_ctx) if expr.right else None
+            result = False
+            try:
+                if expr.op == "and":
+                    result = bool(left) and bool(right)
+                elif expr.op == "or":
+                    result = bool(left) or bool(right)
+                elif expr.op == "is":
+                    result = left == right
+                elif expr.op == "is not":
+                    result = left != right
+                elif expr.op == "<":
+                    result = left < right
+                elif expr.op == ">":
+                    result = left > right
+                elif expr.op == "<=":
+                    result = left <= right
+                elif expr.op == ">=":
+                    result = left >= right
+            except Exception:
+                result = False
+            return result, right
+        if isinstance(expr, ast_nodes.UnaryOp) and expr.op == "not":
+            val = self._eval_expr(expr.operand, state) if expr.operand else None
+            return (not bool(val)), not bool(val)
+        value = self._eval_expr(expr, state)
+        return bool(value), value
+
+    async def _run_condition_node(self, node: FlowNode, state: FlowState, runtime_ctx: FlowRuntimeContext) -> dict:
+        tracer = runtime_ctx.tracer
+        branches = node.config.get("branches") or []
+        selected = None
+        selected_label = None
+        binding_value = None
+        binding_name = None
+        for idx, br in enumerate(branches):
+            condition_expr = getattr(br, "condition", None)
+            is_pattern = isinstance(condition_expr, ast_nodes.PatternExpr)
+            if is_pattern:
+                result, candidate_binding = self._eval_condition_with_binding(condition_expr, state, runtime_ctx)
+            else:
+                result, candidate_binding = self._eval_condition_with_binding(condition_expr, state, runtime_ctx)
+            expr_display = self._expr_to_str(condition_expr)
+            if getattr(br, "label", None) == "unless":
+                result = not result
+                expr_display = f"unless {expr_display}"
+            if tracer:
+                payload = {
+                    "node_id": node.id,
+                    "condition": expr_display,
+                    "result": result,
+                    "branch_index": idx,
+                }
+                if getattr(br, "macro_origin", None):
+                    payload["macro"] = getattr(br, "macro_origin", None)
+                if result and getattr(br, "binding", None):
+                    payload["binding"] = {"name": getattr(br, "binding", None), "value": candidate_binding}
+                if is_pattern and isinstance(condition_expr, ast_nodes.PatternExpr):
+                    payload.update(
+                        {
+                            "subject": condition_expr.subject.name,
+                            "pattern": self._pattern_to_repr(condition_expr),
+                        }
+                    )
+                    tracer.record_flow_event("condition.pattern.eval", payload)
+                else:
+                    tracer.record_flow_event("flow.condition.eval", payload)
+            if result:
+                selected = br
+                selected_label = br.label or f"branch-{idx}"
+                binding_name = getattr(br, "binding", None)
+                binding_value = candidate_binding
+                break
+        if selected is None:
+            return {"condition": "no-branch"}
+
+        # apply binding locally for the chosen branch
+        previous_binding = None
+        had_prev = False
+        if binding_name:
+            if binding_name in state.data:
+                had_prev = True
+                previous_binding = state.data[binding_name]
+            state.set(binding_name, binding_value)
+
+        inline_steps = []
+        for action in selected.actions:
+            cfg = {
+                "kind": action.kind,
+                "target": action.target,
+                "step_name": f"{node.id}.{action.target}",
+                "reason": "conditional",
+            }
+            if action.message:
+                cfg["params"] = {"message": action.message}
+            inline_steps.append(cfg)
+        await self._run_inline_sequence(node.id, inline_steps, state, runtime_ctx)
+        if binding_name:
+            if had_prev:
+                state.set(binding_name, previous_binding)
+            else:
+                state.data.pop(binding_name, None)
+        return {"condition": selected_label}
 
 
 class TimedStepError(Exception):

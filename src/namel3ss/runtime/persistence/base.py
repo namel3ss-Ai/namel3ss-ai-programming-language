@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Protocol, List, Optional
+from typing import List, Optional, Protocol
 
 from ...distributed.models import Job
 

@@ -6,16 +6,15 @@ from __future__ import annotations
 
 import time
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any, Dict, List
 
-from ..runtime.context import ExecutionContext
-from ..observability.metrics import default_metrics
-from .models import EvaluationCase, EvaluationRun, TargetType
 from ..agent.engine import AgentRunner
-from ..flows.engine import FlowEngine
-from ..memory.models import MemoryNamespace
 from ..agent.planning import AgentGoal
+from ..flows.engine import FlowEngine
+from ..observability.metrics import default_metrics
+from ..runtime.context import ExecutionContext
+from .models import EvaluationCase, EvaluationRun, TargetType
 
 
 class OptimizerEvaluator:
@@ -66,7 +65,7 @@ class OptimizerEvaluator:
             id=str(uuid.uuid4()),
             target_type=TargetType.FLOW,
             target_name=flow_name,
-            created_at=datetime.utcnow(),
+            created_at=datetime.now(timezone.utc),
             cases=cases,
             metrics_summary=metrics,
             raw_results=results,
@@ -109,7 +108,7 @@ class OptimizerEvaluator:
             id=str(uuid.uuid4()),
             target_type=TargetType.AGENT,
             target_name=agent_name,
-            created_at=datetime.utcnow(),
+            created_at=datetime.now(timezone.utc),
             cases=cases,
             metrics_summary=metrics,
             raw_results=results,

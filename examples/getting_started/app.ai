@@ -14,7 +14,7 @@ model "default":
 
 ai "greet":
   model "default"
-  input from user_input
+  input from "user_input"
 
 flow "pipeline":
   step "call":

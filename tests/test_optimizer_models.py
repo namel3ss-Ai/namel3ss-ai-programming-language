@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import datetime, timezone
 
 from namel3ss.optimizer.models import (
     EvaluationCase,
@@ -15,7 +15,7 @@ def test_models_instantiation():
         id="r1",
         target_type=TargetType.AGENT,
         target_name="helper",
-        created_at=datetime.utcnow(),
+        created_at=datetime.now(timezone.utc),
         cases=[case],
         metrics_summary={"avg_latency": 0.1},
         raw_results=[],
@@ -24,7 +24,7 @@ def test_models_instantiation():
         id="s1",
         target_type=TargetType.AGENT,
         target_name="helper",
-        created_at=datetime.utcnow(),
+        created_at=datetime.now(timezone.utc),
         status=SuggestionStatus.PENDING,
         description="Improve prompt",
         change_spec={"type": "prompt_update"},

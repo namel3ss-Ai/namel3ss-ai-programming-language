@@ -3,23 +3,14 @@ from __future__ import annotations
 from dataclasses import fields, is_dataclass
 from typing import Any, Iterable, List, Optional
 
-from .registry import get_contract
+from ...diagnostics import create_diagnostic, structured_to_legacy
 from ...diagnostics.models import Diagnostic
-from ...diagnostics import structured_to_legacy, create_diagnostic
 from ...ir import (
-    IRApp,
-    IRPage,
-    IRModel,
-    IRAiCall,
-    IRAgent,
-    IRFlow,
-    IRFlowStep,
     IRMemory,
-    IRPlugin,
-    IRSection,
-    IRComponent,
+    IRPage,
     IRProgram,
 )
+from .registry import get_contract
 
 
 def _diag(code: str, severity: str, message: str, location: Optional[str], hint: Optional[str] = None, category: str = "lang-spec"):

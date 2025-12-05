@@ -6,19 +6,24 @@ from __future__ import annotations
 
 from typing import Any, Optional
 
+from .. import ast_nodes
 from ..ai.registry import ModelRegistry
 from ..errors import Namel3ssError
 from ..ir import IRAgent, IRProgram
+from ..observability.metrics import default_metrics
+from ..observability.tracing import default_tracer
 from ..runtime.context import ExecutionContext, execute_ai_call_with_registry
 from ..tools.registry import ToolRegistry
-from ..observability.tracing import default_tracer
-from ..observability.metrics import default_metrics
+from .evaluation import AgentEvaluation, AgentEvaluator
 from .evaluators import AgentStepEvaluator, DeterministicEvaluator, OpenAIEvaluator
 from .models import AgentConfig
 from .plan import AgentExecutionPlan, AgentPlanResult, AgentStep, AgentStepResult
 from .planning import AgentGoal, AgentPlanner, AgentStepPlan
-from .evaluation import AgentEvaluation, AgentEvaluator
-from .reflection import ReflectionConfig, build_critique_prompt, build_improvement_prompt
+from .reflection import (
+    ReflectionConfig,
+    build_critique_prompt,
+    build_improvement_prompt,
+)
 
 
 class AgentRunner:
@@ -80,6 +85,8 @@ class AgentRunner:
             reflection_cfg = self.config.reflection if self.config else None
 
             if context.tracer:
+                if not context.tracer.last_trace:
+                    context.tracer.start_app(context.app_name or "unknown")
                 context.tracer.start_agent(agent.name)
 
         # Allow OpenAI-backed evaluator when secrets configured.
@@ -94,6 +101,23 @@ class AgentRunner:
         last_output: Optional[dict] = None
         stopped = False
         while True:
+            if getattr(agent, "conditional_branches", None):
+                cond_result = self._run_agent_conditions(agent, context)
+                branch_label = cond_result.get("branch")
+                branch_condition = cond_result.get("condition_text")
+                summary = f"Agent {agent.name} ran conditional branch {branch_label}"
+                if branch_condition:
+                    summary = f"{summary} ({branch_condition})"
+                result = AgentPlanResult(
+                    agent_name=agent.name,
+                    steps=cond_result.get("steps", []),
+                    summary=summary,
+                    final_output=cond_result.get("last_output"),
+                    final_answer=self._stringify_answer(cond_result.get("last_output")),
+                )
+                if context.tracer:
+                    context.tracer.end_agent(summary=summary)
+                return result
             step = plan.next_step()
             if not step or stopped:
                 break
@@ -271,7 +295,7 @@ class AgentRunner:
             return ""
         if hasattr(response, "text"):
             try:
-                return str(getattr(response, "text"))
+                return str(response.text)
             except Exception:
                 return str(response)
         if isinstance(response, dict):
@@ -317,3 +341,271 @@ class AgentRunner:
                 raise Namel3ssError(f"Sub-agent '{step.target}' not found")
             return {"subagent": step.target}
         raise Namel3ssError(f"Unsupported step kind '{step.kind}'")
+
+    # ---------- Conditional execution for agents ----------
+    def _expr_to_str(self, expr: ast_nodes.Expr | None) -> str:
+        if expr is None:
+            return "<otherwise>"
+        if isinstance(expr, ast_nodes.Identifier):
+            return expr.name
+        if isinstance(expr, ast_nodes.Literal):
+            return repr(expr.value)
+        if isinstance(expr, ast_nodes.UnaryOp):
+            return f"{expr.op} {self._expr_to_str(expr.operand)}"
+        if isinstance(expr, ast_nodes.BinaryOp):
+            return f"{self._expr_to_str(expr.left)} {expr.op} {self._expr_to_str(expr.right)}"
+        if isinstance(expr, ast_nodes.PatternExpr):
+            pairs = ", ".join(f"{p.key}: {self._expr_to_str(p.value)}" for p in expr.pairs)
+            return f"{expr.subject.name} matches {{{pairs}}}"
+        if isinstance(expr, ast_nodes.RuleGroupRefExpr):
+            if expr.condition_name:
+                return f"{expr.group_name}.{expr.condition_name}"
+            return expr.group_name
+        return str(expr)
+
+    def _resolve_identifier(self, name: str, context: ExecutionContext) -> Any:
+        parts = name.split(".")
+        current: Any = None
+        meta = getattr(context, "metadata", None) or {}
+        if parts[0] in meta:
+            current = meta.get(parts[0])
+        elif hasattr(context, parts[0]):
+            current = getattr(context, parts[0], None)
+        for part in parts[1:]:
+            if isinstance(current, dict):
+                current = current.get(part)
+            else:
+                current = getattr(current, part, None)
+        return current
+
+    def _eval_rulegroup(self, expr: ast_nodes.RuleGroupRefExpr, context: ExecutionContext) -> tuple[bool, Any]:
+        groups = getattr(self.program, "rulegroups", {}) if self.program else {}
+        rules = groups.get(expr.group_name) or {}
+        tracer = context.tracer
+        if expr.condition_name:
+            rule_expr = rules.get(expr.condition_name)
+            if rule_expr is None:
+                return False, None
+            result = bool(self._eval_expr(rule_expr, context))
+            if tracer:
+                tracer.record_agent_condition_eval(
+                    agent_name=getattr(context, "agent_name", ""),
+                    condition=f"{expr.group_name}.{expr.condition_name}",
+                    result=result,
+                    branch_label=None,
+                    macro=None,
+                    pattern=None,
+                    binding=None,
+                    event="agent.condition.rulegroup.eval",
+                )
+            return result, result
+        results_map: dict[str, bool] = {}
+        all_true = True
+        for name, rule_expr in rules.items():
+            val = bool(self._eval_expr(rule_expr, context))
+            results_map[name] = val
+            if not val:
+                all_true = False
+        if tracer:
+            tracer.record_agent_condition_eval(
+                agent_name=getattr(context, "agent_name", ""),
+                condition=expr.group_name,
+                result=all_true,
+                branch_label=None,
+                macro=None,
+                pattern=None,
+                binding=None,
+                results=results_map,
+                event="agent.condition.rulegroup.eval",
+            )
+        return all_true, all_true
+
+    def _eval_expr(self, expr: ast_nodes.Expr, context: ExecutionContext) -> Any:
+        if isinstance(expr, ast_nodes.Literal):
+            return expr.value
+        if isinstance(expr, ast_nodes.Identifier):
+            return self._resolve_identifier(expr.name, context)
+        if isinstance(expr, ast_nodes.RuleGroupRefExpr):
+            res, _ = self._eval_rulegroup(expr, context)
+            return res
+        if isinstance(expr, ast_nodes.UnaryOp):
+            val = self._eval_expr(expr.operand, context) if expr.operand else None
+            if expr.op == "not":
+                return not bool(val)
+            raise Namel3ssError(f"Unsupported unary operator '{expr.op}'")
+        if isinstance(expr, ast_nodes.BinaryOp):
+            left = self._eval_expr(expr.left, context) if expr.left else None
+            right = self._eval_expr(expr.right, context) if expr.right else None
+            try:
+                if expr.op == "and":
+                    return bool(left) and bool(right)
+                if expr.op == "or":
+                    return bool(left) or bool(right)
+                if expr.op == "is":
+                    return left == right
+                if expr.op == "is not":
+                    return left != right
+                if expr.op == "<":
+                    return left < right
+                if expr.op == ">":
+                    return left > right
+                if expr.op == "<=":
+                    return left <= right
+                if expr.op == ">=":
+                    return left >= right
+            except Exception:
+                return False
+            raise Namel3ssError(f"Unsupported operator '{expr.op}'")
+        raise Namel3ssError("Unsupported expression")
+
+    def _match_pattern(self, pattern: ast_nodes.PatternExpr, context: ExecutionContext) -> tuple[bool, Any]:
+        subject = self._resolve_identifier(pattern.subject.name, context)
+        if not isinstance(subject, dict):
+            return False, None
+        for pair in pattern.pairs:
+            subject_val = subject.get(pair.key)
+            val_expr = pair.value
+            if isinstance(val_expr, ast_nodes.BinaryOp) and isinstance(val_expr.left, ast_nodes.Identifier):
+                left_val = subject_val if val_expr.left.name == pair.key else self._eval_expr(val_expr.left, context)
+                right_val = self._eval_expr(val_expr.right, context) if val_expr.right else None
+                op = val_expr.op
+                try:
+                    if op == "and":
+                        if not (bool(left_val) and bool(right_val)):
+                            return False, None
+                    elif op == "or":
+                        if not (bool(left_val) or bool(right_val)):
+                            return False, None
+                    elif op == "is":
+                        if left_val != right_val:
+                            return False, None
+                    elif op == "is not":
+                        if left_val == right_val:
+                            return False, None
+                    elif op == "<":
+                        if not (left_val < right_val):
+                            return False, None
+                    elif op == ">":
+                        if not (left_val > right_val):
+                            return False, None
+                    elif op == "<=":
+                        if not (left_val <= right_val):
+                            return False, None
+                    elif op == ">=":
+                        if not (left_val >= right_val):
+                            return False, None
+                except Exception:
+                    return False, None
+                continue
+            expected = self._eval_expr(val_expr, context)
+            if subject_val != expected:
+                return False, None
+        return True, subject
+
+    def _eval_condition_with_binding(self, expr: ast_nodes.Expr | None, context: ExecutionContext) -> tuple[bool, Any]:
+        if expr is None:
+            return True, None
+        if isinstance(expr, ast_nodes.PatternExpr):
+            return self._match_pattern(expr, context)
+        if isinstance(expr, ast_nodes.RuleGroupRefExpr):
+            return self._eval_rulegroup(expr, context)
+        if isinstance(expr, ast_nodes.BinaryOp):
+            left = self._eval_expr(expr.left, context) if expr.left else None
+            right = self._eval_expr(expr.right, context) if expr.right else None
+            result = False
+            try:
+                if expr.op == "and":
+                    result = bool(left) and bool(right)
+                elif expr.op == "or":
+                    result = bool(left) or bool(right)
+                elif expr.op == "is":
+                    result = left == right
+                elif expr.op == "is not":
+                    result = left != right
+                elif expr.op == "<":
+                    result = left < right
+                elif expr.op == ">":
+                    result = left > right
+                elif expr.op == "<=":
+                    result = left <= right
+                elif expr.op == ">=":
+                    result = left >= right
+            except Exception:
+                result = False
+            return result, right
+        if isinstance(expr, ast_nodes.UnaryOp) and expr.op == "not":
+            val = self._eval_expr(expr.operand, context) if expr.operand else None
+            return (not bool(val)), not bool(val)
+        value = self._eval_expr(expr, context)
+        return bool(value), value
+
+    def _run_agent_conditions(self, agent: IRAgent, context: ExecutionContext) -> dict:
+        branches = agent.conditional_branches or []
+        selected = None
+        selected_label = None
+        selected_expr_display = None
+        binding_value = None
+        binding_name = None
+        for idx, br in enumerate(branches):
+            cond = br.condition
+            result, candidate_binding = self._eval_condition_with_binding(cond, context)
+            expr_display = self._expr_to_str(cond)
+            if br.label == "unless":
+                result = not result
+                expr_display = f"unless {expr_display}"
+            if context.tracer:
+                event_name = "agent.condition.pattern.eval" if isinstance(cond, ast_nodes.PatternExpr) else "agent.condition.eval"
+                context.tracer.record_agent_condition_eval(
+                    agent_name=agent.name,
+                    condition=expr_display,
+                    result=result,
+                    branch_label=br.label or f"branch-{idx}",
+                    binding={"name": getattr(br, "binding", None), "value": candidate_binding} if result and getattr(br, "binding", None) else None,
+                    pattern={"subject": cond.subject.name, "pattern": {p.key: self._expr_to_str(p.value) for p in cond.pairs}} if isinstance(cond, ast_nodes.PatternExpr) else None,
+                    macro=getattr(br, "macro_origin", None),
+                    event=event_name,
+                )
+            if result:
+                selected = br
+                selected_label = br.label or f"branch-{idx}"
+                selected_expr_display = expr_display
+                binding_name = getattr(br, "binding", None)
+                binding_value = candidate_binding
+                break
+        if selected is None:
+            return {"branch": "none", "steps": [], "last_output": None, "condition_text": None}
+
+        steps_results: list[AgentStepResult] = []
+        last_output = None
+        cond_text = selected_expr_display or (self._expr_to_str(selected.condition) if selected and selected.condition else None)
+        previous_binding = None
+        had_prev = False
+        if binding_name:
+            if binding_name in context.metadata:
+                had_prev = True
+                previous_binding = context.metadata.get(binding_name)
+            context.metadata[binding_name] = binding_value
+        for action in selected.actions:
+            step = AgentStep(kind=action.kind if action.kind != "agent" else "subagent", target=action.target)
+            output = self._run_step(step, last_output if isinstance(last_output, dict) else None, context)
+            steps_results.append(
+                AgentStepResult(
+                    step_id=step.id,
+                    input={"previous": last_output},
+                    output=output if isinstance(output, dict) else {"value": output},
+                    success=True,
+                    error=None,
+                )
+            )
+            last_output = output
+        if binding_name:
+            if had_prev:
+                context.metadata[binding_name] = previous_binding
+            else:
+                context.metadata.pop(binding_name, None)
+        return {
+            "branch": selected_label,
+            "steps": steps_results,
+            "last_output": last_output,
+            "condition_text": cond_text,
+        }

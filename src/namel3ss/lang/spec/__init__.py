@@ -7,8 +7,8 @@ original module prior to introducing the contract registry). External code that
 still imports these names can continue to do so.
 """
 
-from .contracts import FieldSpec, BlockContract
-from .registry import get_contract, all_contracts
+from .contracts import BlockContract, FieldSpec
+from .registry import all_contracts, get_contract
 from .validator import validate_ir
 
 # Backwards-compatible aliases used by older code paths.

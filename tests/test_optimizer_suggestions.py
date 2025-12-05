@@ -1,12 +1,17 @@
 import asyncio
+from datetime import datetime, timezone
 
-from namel3ss.optimizer.models import EvaluationRun, EvaluationCase, SuggestionStatus, TargetType
-from namel3ss.optimizer.suggestions import SuggestionEngine
-from datetime import datetime
+from namel3ss.ai.models import ModelResponse
+from namel3ss.ai.providers import ModelProvider
 from namel3ss.ai.registry import ModelRegistry
 from namel3ss.ai.router import ModelRouter
-from namel3ss.ai.providers import ModelProvider
-from namel3ss.ai.models import ModelResponse
+from namel3ss.optimizer.models import (
+    EvaluationCase,
+    EvaluationRun,
+    SuggestionStatus,
+    TargetType,
+)
+from namel3ss.optimizer.suggestions import SuggestionEngine
 
 
 class FakeProvider(ModelProvider):
@@ -34,7 +39,7 @@ def test_suggestion_engine_parses_json():
         id="r1",
         target_type=TargetType.FLOW,
         target_name="demo",
-        created_at=datetime.utcnow(),
+        created_at=datetime.now(timezone.utc),
         cases=[EvaluationCase(id="c1", input={})],
         metrics_summary={"avg_latency": 1.0},
         raw_results=[],

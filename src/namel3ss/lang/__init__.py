@@ -3,16 +3,17 @@ Language specification utilities (non-parsing).
 """
 
 from .spec import (
-    FieldSpec,
+    LANG_SPEC,
     BlockContract,
     BlockKind,
-    LANG_SPEC,
-    get_contract,
+    FieldSpec,
     all_contracts,
+    get_contract,
     validate_ir,
     validate_ir_module,
 )
 from .validator import validate_module
+
 __all__ = [
     "FieldSpec",
     "BlockContract",

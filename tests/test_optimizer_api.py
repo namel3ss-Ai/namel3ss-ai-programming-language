@@ -1,12 +1,16 @@
-import asyncio
-from datetime import datetime
-from typing import List
+from datetime import datetime, timezone
 
 from fastapi import Depends, FastAPI
 from fastapi.testclient import TestClient
 
 from namel3ss.optimizer.evaluator import OptimizerEvaluator
-from namel3ss.optimizer.models import EvaluationCase, EvaluationRun, SuggestionStatus, Suggestion, TargetType
+from namel3ss.optimizer.models import (
+    EvaluationCase,
+    EvaluationRun,
+    Suggestion,
+    SuggestionStatus,
+    TargetType,
+)
 from namel3ss.optimizer.store import OptimizerStore
 from namel3ss.optimizer.suggestions import SuggestionEngine
 from namel3ss.security.context import SecurityContext
@@ -61,7 +65,7 @@ def test_optimizer_api_flow():
                 id="run1",
                 target_type=TargetType.AGENT,
                 target_name=agent_name,
-                created_at=datetime.utcnow(),
+                created_at=datetime.now(timezone.utc),
                 cases=cases,
                 metrics_summary={},
                 raw_results=[],
@@ -74,7 +78,7 @@ def test_optimizer_api_flow():
                     id="sug1",
                     target_type=run.target_type,
                     target_name=run.target_name,
-                    created_at=datetime.utcnow(),
+                    created_at=datetime.now(timezone.utc),
                     status=SuggestionStatus.PENDING,
                     description="d",
                     change_spec={},

@@ -1,40 +1,40 @@
-use model "retriever" provided by "openai"
+model "retriever":
+  provider "openai"
 
 ai "rewrite_query":
-  when called:
-    use model "retriever"
-    input comes from user_input
-    describe task as "Rewrite the query to be concise and retrieval-friendly."
+  model "retriever"
+  input from "user_input"
+  description "Rewrite the query to be concise and retrieval-friendly."
 
 ai "fetch_context":
-  when called:
-    use model "retriever"
-    input comes from user_input
-    describe task as "Identify relevant snippets for the rewritten query."
+  model "retriever"
+  input from "user_input"
+  description "Identify relevant snippets for the rewritten query."
 
 ai "compose_answer":
-  when called:
-    use model "retriever"
-    input comes from user_input
-    describe task as "Compose a short answer based on retrieved snippets."
+  model "retriever"
+  input from "user_input"
+  description "Compose a short answer based on retrieved snippets."
 
 flow "search_pipeline":
   description "Rewrite the query, retrieve context, and compose an answer."
-  this flow will:
-    first step "rewrite":
-      do ai "rewrite_query"
-    then step "retrieve":
-      do ai "fetch_context"
-    finally step "answer":
-      do ai "compose_answer"
+  step "rewrite":
+    kind "ai"
+    target "rewrite_query"
+  step "retrieve":
+    kind "ai"
+    target "fetch_context"
+  step "answer":
+    kind "ai"
+    target "compose_answer"
 
 app "RAG Demo":
-  starts at page "search"
+  entry_page "search"
   description "RAG-flavored pipeline answering questions over a small note."
 
 page "search":
-  found at route "/rag"
-  titled "RAG Knowledge Search"
+  route "/rag"
+  title "RAG Knowledge Search"
   section "query":
-    show text:
-      "Ask questions using search_pipeline to rewrite and answer."
+    component "text":
+      value "Ask questions using search_pipeline to rewrite and answer."

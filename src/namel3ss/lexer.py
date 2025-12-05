@@ -10,6 +10,10 @@ from typing import List, Optional
 from .errors import LexError
 
 KEYWORDS = {
+    "if",
+    "otherwise",
+    "unless",
+    "matches",
     "use",
     "app",
     "page",
@@ -45,6 +49,9 @@ KEYWORDS = {
     "as",
     "provided",
     "by",
+    "not",
+    "and",
+    "or",
     "when",
     "called",
     "comes",
@@ -57,6 +64,8 @@ KEYWORDS = {
     "first",
     "then",
     "finally",
+    "go",
+    "to",
     "starts",
     "at",
     "found",
@@ -68,6 +77,9 @@ KEYWORDS = {
     "do",
     "with",
     "message",
+    "define",
+    "condition",
+    "rulegroup",
 }
 
 
@@ -147,6 +159,20 @@ class Lexer:
                 i += 1
                 column += 1
                 continue
+            if char.isdigit():
+                start_col = column
+                num_chars = [char]
+                i += 1
+                column += 1
+                dot_used = False
+                while i < len(line) and (line[i].isdigit() or (line[i] == "." and not dot_used)):
+                    if line[i] == ".":
+                        dot_used = True
+                    num_chars.append(line[i])
+                    i += 1
+                    column += 1
+                tokens.append(Token("NUMBER", "".join(num_chars), line_no, start_col))
+                continue
             if char == '"':
                 start_col = column
                 i += 1
@@ -169,7 +195,7 @@ class Lexer:
                 ident_chars = [char]
                 i += 1
                 column += 1
-                while i < len(line) and (line[i].isalnum() or line[i] == "_"):
+                while i < len(line) and (line[i].isalnum() or line[i] in {"_", "."}):
                     ident_chars.append(line[i])
                     i += 1
                     column += 1
@@ -177,8 +203,34 @@ class Lexer:
                 token_type = "KEYWORD" if ident in KEYWORDS else "IDENT"
                 tokens.append(Token(token_type, ident, line_no, start_col))
                 continue
+            if char in {"<", ">"}:
+                start_col = column
+                if i + 1 < len(line) and line[i + 1] == "=":
+                    tokens.append(Token("OP", char + "=", line_no, start_col))
+                    i += 2
+                    column += 2
+                else:
+                    tokens.append(Token("OP", char, line_no, start_col))
+                    i += 1
+                    column += 1
+                continue
             if char == ":":
                 tokens.append(Token("COLON", ":", line_no, column))
+                i += 1
+                column += 1
+                continue
+            if char == "{":
+                tokens.append(Token("LBRACE", "{", line_no, column))
+                i += 1
+                column += 1
+                continue
+            if char == "}":
+                tokens.append(Token("RBRACE", "}", line_no, column))
+                i += 1
+                column += 1
+                continue
+            if char == ",":
+                tokens.append(Token("COMMA", ",", line_no, column))
                 i += 1
                 column += 1
                 continue

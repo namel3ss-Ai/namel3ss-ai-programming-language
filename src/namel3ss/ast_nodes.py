@@ -117,6 +117,7 @@ class AgentDecl:
     name: str
     goal: Optional[str] = None
     personality: Optional[str] = None
+    conditional_branches: Optional[List["ConditionalBranch"]] = None
     span: Optional[Span] = None
 
 
@@ -164,6 +165,7 @@ class FlowStepDecl:
     kind: str
     target: str
     message: Optional[str] = None
+    conditional_branches: Optional[list["ConditionalBranch"]] = None
     span: Optional[Span] = None
 
 
@@ -177,6 +179,95 @@ class FlowDecl:
     span: Optional[Span] = None
 
 
+# Expressions for conditions
+@dataclass
+class Expr:
+    span: Optional[Span] = None
+
+
+@dataclass
+class Identifier(Expr):
+    name: str = ""
+
+
+@dataclass
+class Literal(Expr):
+    value: object = None
+
+
+@dataclass
+class UnaryOp(Expr):
+    op: str = ""
+    operand: Expr | None = None
+
+
+@dataclass
+class BinaryOp(Expr):
+    left: Expr | None = None
+    op: str = ""
+    right: Expr | None = None
+
+
+@dataclass
+class PatternPair:
+    key: str
+    value: Expr
+
+
+@dataclass
+class PatternExpr(Expr):
+    subject: Identifier = field(default_factory=Identifier)
+    pairs: List[PatternPair] = field(default_factory=list)
+
+
+@dataclass
+class RuleGroupRefExpr(Expr):
+    group_name: str = ""
+    condition_name: Optional[str] = None
+
+
+@dataclass
+class FlowAction:
+    kind: str
+    target: str
+    message: Optional[str] = None
+    span: Optional[Span] = None
+
+
+@dataclass
+class ConditionalBranch:
+    condition: Optional[Expr]
+    actions: List[FlowAction] = field(default_factory=list)
+    label: Optional[str] = None
+    binding: Optional[str] = None
+    span: Optional[Span] = None
+
+
+@dataclass
+class ConditionMacroDecl:
+    """define condition "name" as: <expr>"""
+
+    name: str
+    expr: Expr
+    span: Optional[Span] = None
+
+
+@dataclass
+class RuleGroupCondition:
+    name: str
+    expr: Expr
+    span: Optional[Span] = None
+
+
+@dataclass
+class RuleGroupDecl:
+    """define rulegroup "name": group of named conditions."""
+
+    name: str
+    conditions: List[RuleGroupCondition] = field(default_factory=list)
+    span: Optional[Span] = None
+
+
 Declaration = Union[
     UseImport,
     AppDecl,
@@ -187,4 +278,6 @@ Declaration = Union[
     MemoryDecl,
     FlowDecl,
     PluginDecl,
+    ConditionMacroDecl,
+    RuleGroupDecl,
 ]
