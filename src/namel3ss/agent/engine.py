@@ -4,12 +4,32 @@ Agent execution engine with reflection, planning, and retries.
 
 from __future__ import annotations
 
+import time
 from typing import Any, Optional
 
 from .. import ast_nodes
 from ..ai.registry import ModelRegistry
 from ..errors import Namel3ssError
-from ..ir import IRAction, IRAgent, IRIf, IRLet, IRProgram, IRSet, IRStatement
+from ..ir import (
+    IRAction,
+    IRAskUser,
+    IRCheckpoint,
+    IRAgent,
+    IRForEach,
+    IRForm,
+    IRIf,
+    IRLet,
+    IRLog,
+    IRMatch,
+    IRMatchBranch,
+    IRNote,
+    IRProgram,
+    IRRepeatUpTo,
+    IRRetry,
+    IRReturn,
+    IRSet,
+    IRStatement,
+)
 from ..observability.metrics import default_metrics
 from ..observability.tracing import default_tracer
 from ..runtime.context import ExecutionContext, execute_ai_call_with_registry
@@ -368,6 +388,18 @@ class AgentRunner:
         env = getattr(context, "_env", None)
         if env and env.has(name):
             return True, env.resolve(name)
+        if env and "." in name:
+            parts = name.split(".")
+            if env.has(parts[0]):
+                value: Any = env.resolve(parts[0])
+                for part in parts[1:]:
+                    if isinstance(value, dict) and part in value:
+                        value = value.get(part)
+                    elif hasattr(value, part):
+                        value = getattr(value, part, None)
+                    else:
+                        return False, None
+                return True, value
         parts = name.split(".")
         current: Any = None
         meta = getattr(context, "metadata", None) or {}
@@ -388,6 +420,152 @@ class AgentRunner:
                 return False, None
         return True, current
 
+    def _call_helper(self, name: str, args: list[Any], context: ExecutionContext) -> Any:
+        helper = self.program.helpers.get(name) if self.program else None
+        if not helper:
+            raise Namel3ssError(f"N3-6000: unknown helper '{name}'")
+        if len(args) != len(helper.params):
+            raise Namel3ssError("N3-6001: wrong number of arguments for helper")
+        env = getattr(context, "_env", None) or VariableEnvironment(context.variables)
+        env = env.clone()
+        saved_env = getattr(context, "_env", None)
+        for param, arg in zip(helper.params, args):
+            if env.has(param):
+                env.assign(param, arg)
+            else:
+                env.declare(param, arg)
+            context.metadata[param] = arg
+        context._env = env
+        context.variables = env.values
+        evaluator = self._build_evaluator(context)
+        try:
+            for stmt in helper.body:
+                if isinstance(stmt, IRLet):
+                    val = evaluator.evaluate(stmt.expr) if stmt.expr is not None else None
+                    env.declare(stmt.name, val)
+                    context.metadata[stmt.name] = val
+                    context.variables = env.values
+                elif isinstance(stmt, IRSet):
+                    if not env.has(stmt.name):
+                        raise Namel3ssError(f"Variable '{stmt.name}' is not defined")
+                    val = evaluator.evaluate(stmt.expr) if stmt.expr is not None else None
+                    env.assign(stmt.name, val)
+                    context.metadata[stmt.name] = val
+                    context.variables = env.values
+                elif isinstance(stmt, IRReturn):
+                    return evaluator.evaluate(stmt.expr) if stmt.expr is not None else None
+                else:
+                    raise Namel3ssError("Helper bodies support let/set/return statements in this phase")
+        finally:
+            context._env = saved_env
+        return None
+
+    def _is_error_result(self, value: Any) -> bool:
+        if isinstance(value, Exception):
+            return True
+        if isinstance(value, dict):
+            if value.get("error") is not None:
+                return True
+            if "success" in value and value.get("success") is False:
+                return True
+        return False
+
+    def _extract_success_payload(self, value: Any) -> Any:
+        if isinstance(value, dict):
+            if "result" in value:
+                return value.get("result")
+            if "value" in value:
+                return value.get("value")
+        return value
+
+    def _extract_error_payload(self, value: Any) -> Any:
+        if isinstance(value, dict) and "error" in value:
+            return value.get("error")
+        return value
+
+    def _match_branch(self, br: IRMatchBranch, target_val: Any, evaluator: ExpressionEvaluator, context: ExecutionContext) -> bool:
+        pattern = br.pattern
+        env = getattr(context, "_env", None) or VariableEnvironment(context.variables)
+        if isinstance(pattern, ast_nodes.SuccessPattern):
+            if self._is_error_result(target_val):
+                return False
+            if pattern.binding:
+                if env.has(pattern.binding):
+                    env.assign(pattern.binding, self._extract_success_payload(target_val))
+                else:
+                    env.declare(pattern.binding, self._extract_success_payload(target_val))
+                context.metadata[pattern.binding] = self._extract_success_payload(target_val)
+            return True
+        if isinstance(pattern, ast_nodes.ErrorPattern):
+            if not self._is_error_result(target_val):
+                return False
+            if pattern.binding:
+                if env.has(pattern.binding):
+                    env.assign(pattern.binding, self._extract_error_payload(target_val))
+                else:
+                    env.declare(pattern.binding, self._extract_error_payload(target_val))
+                context.metadata[pattern.binding] = self._extract_error_payload(target_val)
+            return True
+        if pattern is None:
+            return True
+        try:
+            pat_val = evaluator.evaluate(pattern)
+        except Exception as exc:
+            raise Namel3ssError(str(exc))
+        if isinstance(pat_val, bool):
+            return bool(pat_val)
+        return target_val == pat_val
+
+    def _resolve_provided_input(self, name: str, context: ExecutionContext) -> Any:
+        env = getattr(context, "_env", None) or VariableEnvironment(context.variables)
+        if env.has(name):
+            try:
+                return env.resolve(name)
+            except Exception:
+                return None
+        inputs = {}
+        if isinstance(context.metadata.get("inputs"), dict):
+            inputs = context.metadata.get("inputs", {})
+        if name in inputs:
+            return inputs.get(name)
+        return None
+
+    def _assign_variable(self, name: str, value: Any, context: ExecutionContext) -> None:
+        env = getattr(context, "_env", None) or VariableEnvironment(context.variables)
+        if env.has(name):
+            env.assign(name, value)
+        else:
+            env.declare(name, value)
+        context.variables[name] = value
+        context._env = env
+
+    def _validation_to_dict(self, validation: ast_nodes.InputValidation | None, evaluator: ExpressionEvaluator) -> dict | None:
+        if not validation:
+            return None
+        data: dict[str, Any] = {}
+        if validation.field_type:
+            data["type"] = validation.field_type
+        if validation.min_expr is not None:
+            try:
+                data["min"] = evaluator.evaluate(validation.min_expr)
+            except Exception:
+                data["min"] = None
+        if validation.max_expr is not None:
+            try:
+                data["max"] = evaluator.evaluate(validation.max_expr)
+            except Exception:
+                data["max"] = None
+        return data or None
+
+    def _build_log_entry(self, level: str, message: str, metadata: Any) -> dict:
+        return {"timestamp": time.time(), "level": level, "message": message, "metadata": metadata}
+
+    def _build_note_entry(self, message: str) -> dict:
+        return {"timestamp": time.time(), "message": message}
+
+    def _build_checkpoint_entry(self, label: str) -> dict:
+        return {"timestamp": time.time(), "label": label}
+
     def _build_evaluator(self, context: ExecutionContext) -> ExpressionEvaluator:
         env = getattr(context, "_env", None) or VariableEnvironment(context.variables)
         context._env = env
@@ -395,6 +573,7 @@ class AgentRunner:
             env,
             resolver=lambda name: self._resolve_identifier(name, context),
             rulegroup_resolver=lambda expr: self._eval_rulegroup(expr, context),
+            helper_resolver=lambda name, args: self._call_helper(name, args, context),
         )
 
     def _eval_rulegroup(self, expr: ast_nodes.RuleGroupRefExpr, context: ExecutionContext) -> tuple[bool, Any]:
@@ -541,7 +720,7 @@ class AgentRunner:
                     context.metadata.pop(br.binding, None)
             break
 
-    def _execute_statement(self, stmt: IRStatement, context: ExecutionContext) -> Any:
+    def _execute_statement(self, stmt: IRStatement, context: ExecutionContext, allow_return: bool = False) -> Any:
         env = getattr(context, "_env", None) or VariableEnvironment(context.variables)
         context._env = env
         evaluator = self._build_evaluator(context)
@@ -563,6 +742,120 @@ class AgentRunner:
             return value
         if isinstance(stmt, IRIf):
             self._execute_ir_if(stmt, context)
+            return context.metadata.get("last_output")
+        if isinstance(stmt, IRForEach):
+            iterable_val = evaluator.evaluate(stmt.iterable) if stmt.iterable is not None else None
+            if not isinstance(iterable_val, list):
+                raise Namel3ssError("N3-3400: for-each loop requires a list value")
+            had_prev = env.has(stmt.var_name)
+            prev_val = env.resolve(stmt.var_name) if had_prev else None
+            declared_new = not had_prev
+            for idx, item in enumerate(iterable_val):
+                if had_prev or not declared_new:
+                    env.assign(stmt.var_name, item)
+                else:
+                    env.declare(stmt.var_name, item)
+                    declared_new = False
+                context.variables = env.values
+                context.metadata[stmt.var_name] = item
+                for body_stmt in stmt.body:
+                    self._execute_statement(body_stmt, context, allow_return=allow_return)
+            if had_prev:
+                env.assign(stmt.var_name, prev_val)
+                context.metadata[stmt.var_name] = prev_val
+            else:
+                env.remove(stmt.var_name)
+                context.metadata.pop(stmt.var_name, None)
+            return context.metadata.get("last_output")
+        if isinstance(stmt, IRRepeatUpTo):
+            count_val = evaluator.evaluate(stmt.count) if stmt.count is not None else 0
+            try:
+                count_num = int(count_val)
+            except Exception:
+                raise Namel3ssError("N3-3401: repeat-up-to requires numeric count")
+            if count_num < 0:
+                raise Namel3ssError("N3-3402: loop count must be non-negative")
+            for idx in range(count_num):
+                for body_stmt in stmt.body:
+                    self._execute_statement(body_stmt, context, allow_return=allow_return)
+            return context.metadata.get("last_output")
+        if isinstance(stmt, IRRetry):
+            count_val = evaluator.evaluate(stmt.count) if stmt.count is not None else 0
+            try:
+                attempts = int(count_val)
+            except Exception:
+                raise Namel3ssError("N3-4500: retry requires numeric max attempts")
+            if attempts < 1:
+                raise Namel3ssError("N3-4501: retry max attempts must be at least 1")
+            last_output = None
+            for attempt in range(attempts):
+                try:
+                    for body_stmt in stmt.body:
+                        last_output = self._execute_statement(body_stmt, context)
+                    if not self._is_error_result(last_output):
+                        break
+                    if attempt + 1 == attempts:
+                        break
+                except Namel3ssError:
+                    if attempt + 1 == attempts:
+                        raise
+                    continue
+            context.metadata["last_output"] = last_output
+            return last_output
+        if isinstance(stmt, IRMatch):
+            target_val = evaluator.evaluate(stmt.target) if stmt.target is not None else None
+            for br in stmt.branches:
+                if self._match_branch(br, target_val, evaluator, context):
+                    for action in br.actions:
+                        self._execute_statement(action, context, allow_return=allow_return)
+                    break
+            return context.metadata.get("last_output")
+        if isinstance(stmt, IRReturn):
+            if not allow_return:
+                raise Namel3ssError("N3-6002: return used outside helper")
+            value = evaluator.evaluate(stmt.expr) if stmt.expr is not None else None
+            raise ReturnSignal(value)
+        if isinstance(stmt, IRAskUser):
+            provided = self._resolve_provided_input(stmt.var_name, context)
+            if provided is not None:
+                self._assign_variable(stmt.var_name, provided, context)
+                return provided
+            pending = context.metadata.setdefault("pending_inputs", [])
+            pending.append(
+                {
+                    "type": "ask",
+                    "name": stmt.var_name,
+                    "label": stmt.label,
+                    "validation": self._validation_to_dict(stmt.validation, evaluator),
+                }
+            )
+            context.metadata["__awaiting_input__"] = True
+            return None
+        if isinstance(stmt, IRForm):
+            provided = self._resolve_provided_input(stmt.name, context)
+            if isinstance(provided, dict):
+                self._assign_variable(stmt.name, provided, context)
+                return provided
+            fields = [
+                {"label": f.label, "name": f.name, "validation": self._validation_to_dict(f.validation, evaluator)}
+                for f in stmt.fields
+            ]
+            pending = context.metadata.setdefault("pending_inputs", [])
+            pending.append({"type": "form", "name": stmt.name, "label": stmt.label, "fields": fields})
+            context.metadata["__awaiting_input__"] = True
+            return None
+        if isinstance(stmt, IRLog):
+            meta_val = evaluator.evaluate(stmt.metadata) if stmt.metadata is not None else None
+            entry = self._build_log_entry(stmt.level, stmt.message, meta_val)
+            context.metadata.setdefault("logs", []).append(entry)
+            return context.metadata.get("last_output")
+        if isinstance(stmt, IRNote):
+            entry = self._build_note_entry(stmt.message)
+            context.metadata.setdefault("notes", []).append(entry)
+            return context.metadata.get("last_output")
+        if isinstance(stmt, IRCheckpoint):
+            entry = self._build_checkpoint_entry(stmt.label)
+            context.metadata.setdefault("checkpoints", []).append(entry)
             return context.metadata.get("last_output")
         if isinstance(stmt, IRAction):
             step = AgentStep(kind=stmt.kind if stmt.kind != "agent" else "subagent", target=stmt.target)

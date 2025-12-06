@@ -62,6 +62,34 @@ class IRMemory:
 
 
 @dataclass
+class IRHelper:
+    name: str
+    identifier: str
+    params: list[str] = field(default_factory=list)
+    return_name: str | None = None
+    body: list["IRStatement"] = field(default_factory=list)
+
+
+@dataclass
+class IRImport:
+    module: str
+    kind: str
+    name: str
+    alias: str | None = None
+
+
+@dataclass
+class IREnvConfig:
+    name: str
+    entries: dict[str, ast_nodes.Expr] = field(default_factory=dict)
+
+
+@dataclass
+class IRSettings:
+    envs: dict[str, IREnvConfig] = field(default_factory=dict)
+
+
+@dataclass
 class IRFlowStep:
     name: str
     kind: Literal["ai", "agent", "tool", "condition", "goto_flow", "script"]
@@ -102,7 +130,84 @@ class IRIf:
     branches: list["IRConditionalBranch"] = field(default_factory=list)
 
 
-IRStatement = IRAction | IRLet | IRSet | IRIf
+@dataclass
+class IRForEach:
+    var_name: str
+    iterable: ast_nodes.Expr | None = None
+    body: list["IRStatement"] = field(default_factory=list)
+
+
+@dataclass
+class IRRepeatUpTo:
+    count: ast_nodes.Expr | None = None
+    body: list["IRStatement"] = field(default_factory=list)
+
+
+@dataclass
+class IRAskUser:
+    label: str
+    var_name: str
+    validation: ast_nodes.InputValidation | None = None
+
+
+@dataclass
+class IRFormField:
+    label: str
+    name: str
+    validation: ast_nodes.InputValidation | None = None
+
+
+@dataclass
+class IRForm:
+    label: str
+    name: str
+    fields: list[IRFormField] = field(default_factory=list)
+
+
+@dataclass
+class IRLog:
+    level: str
+    message: str
+    metadata: ast_nodes.Expr | None = None
+
+
+@dataclass
+class IRNote:
+    message: str
+
+
+@dataclass
+class IRCheckpoint:
+    label: str
+
+
+@dataclass
+class IRReturn:
+    expr: ast_nodes.Expr | None = None
+
+
+@dataclass
+class IRMatchBranch:
+    pattern: ast_nodes.Expr | ast_nodes.SuccessPattern | ast_nodes.ErrorPattern | None = None
+    binding: str | None = None
+    actions: list["IRStatement"] = field(default_factory=list)
+    label: str | None = None
+
+
+@dataclass
+class IRMatch:
+    target: ast_nodes.Expr | None = None
+    branches: list[IRMatchBranch] = field(default_factory=list)
+
+
+@dataclass
+class IRRetry:
+    count: ast_nodes.Expr | None = None
+    with_backoff: bool = False
+    body: list["IRStatement"] = field(default_factory=list)
+
+
+IRStatement = IRAction | IRLet | IRSet | IRIf | IRForEach | IRRepeatUpTo | IRMatch | IRRetry | IRAskUser | IRForm | IRLog | IRNote | IRCheckpoint | IRReturn
 
 
 @dataclass
@@ -137,6 +242,9 @@ class IRProgram:
     flows: Dict[str, IRFlow] = field(default_factory=dict)
     plugins: Dict[str, "IRPlugin"] = field(default_factory=dict)
     rulegroups: Dict[str, Dict[str, ast_nodes.Expr]] = field(default_factory=dict)
+    helpers: Dict[str, IRHelper] = field(default_factory=dict)
+    imports: List[IRImport] = field(default_factory=list)
+    settings: IRSettings | None = None
 
 
 @dataclass
@@ -187,6 +295,17 @@ def ast_to_ir(module: ast_nodes.Module) -> IRProgram:
                             expr.span and expr.span.line,
                         )
                     return ast_nodes.RuleGroupRefExpr(group_name=group, condition_name=cond_name), None
+        if isinstance(expr, ast_nodes.RecordFieldAccess):
+            if isinstance(expr.target, ast_nodes.Identifier) and expr.target.name in rulegroups:
+                group = expr.target.name
+                cond_name = expr.field
+                if cond_name not in rulegroups[group]:
+                    raise IRError(
+                        f"Condition '{cond_name}' does not exist in rulegroup '{group}'.",
+                        expr.span and expr.span.line,
+                    )
+                return ast_nodes.RuleGroupRefExpr(group_name=group, condition_name=cond_name), None
+            return expr, None
         if isinstance(expr, ast_nodes.PatternExpr):
             updated_pairs: list[ast_nodes.PatternPair] = []
             for pair in expr.pairs:
@@ -198,6 +317,21 @@ def ast_to_ir(module: ast_nodes.Module) -> IRProgram:
                 val_expr, _ = transform_expr(pair.value)
                 updated_pairs.append(ast_nodes.PatternPair(key=pair.key, value=val_expr or pair.value))
             return ast_nodes.PatternExpr(subject=expr.subject, pairs=updated_pairs, span=expr.span), None
+        if isinstance(expr, ast_nodes.BuiltinCall):
+            new_args: list[ast_nodes.Expr] = []
+            for arg in expr.args:
+                new_arg, _ = transform_expr(arg)
+                new_args.append(new_arg or arg)
+            return ast_nodes.BuiltinCall(name=expr.name, args=new_args), None
+        if isinstance(expr, ast_nodes.FunctionCall):
+            new_args: list[ast_nodes.Expr] = []
+            for arg in expr.args:
+                new_arg, _ = transform_expr(arg)
+                new_args.append(new_arg or arg)
+            return ast_nodes.FunctionCall(name=expr.name, args=new_args, span=expr.span), None
+        if isinstance(expr, ast_nodes.ListBuiltinCall):
+            inner, _ = transform_expr(expr.expr) if expr.expr is not None else (None, None)
+            return ast_nodes.ListBuiltinCall(name=expr.name, expr=inner or expr.expr), None
         return expr, None
 
     def lower_statement(stmt: ast_nodes.Statement | ast_nodes.FlowAction) -> IRStatement:
@@ -210,6 +344,37 @@ def ast_to_ir(module: ast_nodes.Module) -> IRProgram:
         if isinstance(stmt, ast_nodes.IfStatement):
             branches = [lower_branch(br) for br in stmt.branches]
             return IRIf(branches=branches)
+        if isinstance(stmt, ast_nodes.ForEachLoop):
+            body = [lower_statement(s) for s in stmt.body]
+            return IRForEach(var_name=stmt.var_name, iterable=stmt.iterable, body=body)
+        if isinstance(stmt, ast_nodes.RepeatUpToLoop):
+            body = [lower_statement(s) for s in stmt.body]
+            return IRRepeatUpTo(count=stmt.count, body=body)
+        if isinstance(stmt, ast_nodes.MatchStatement):
+            ir_branches: list[IRMatchBranch] = []
+            for br in stmt.branches:
+                actions = [lower_statement(a) for a in br.actions]
+                ir_branches.append(IRMatchBranch(pattern=br.pattern, binding=br.binding, actions=actions, label=br.label))
+            return IRMatch(target=stmt.target, branches=ir_branches)
+        if isinstance(stmt, ast_nodes.RetryStatement):
+            body = [lower_statement(s) for s in stmt.body]
+            return IRRetry(count=stmt.count, with_backoff=stmt.with_backoff, body=body)
+        if isinstance(stmt, ast_nodes.AskUserStatement):
+            return IRAskUser(label=stmt.label, var_name=stmt.var_name, validation=stmt.validation)
+        if isinstance(stmt, ast_nodes.FormStatement):
+            fields = [
+                IRFormField(label=f.label, name=f.name, validation=f.validation)
+                for f in stmt.fields
+            ]
+            return IRForm(label=stmt.label, name=stmt.name, fields=fields)
+        if isinstance(stmt, ast_nodes.LogStatement):
+            return IRLog(level=stmt.level, message=stmt.message, metadata=stmt.metadata)
+        if isinstance(stmt, ast_nodes.NoteStatement):
+            return IRNote(message=stmt.message)
+        if isinstance(stmt, ast_nodes.CheckpointStatement):
+            return IRCheckpoint(label=stmt.label)
+        if isinstance(stmt, ast_nodes.ReturnStatement):
+            return IRReturn(expr=stmt.expr)
         raise IRError(f"Unsupported statement type '{type(stmt).__name__}'", getattr(stmt, "span", None) and getattr(stmt.span, "line", None))
 
     def lower_branch(br: ast_nodes.ConditionalBranch) -> IRConditionalBranch:
@@ -375,6 +540,35 @@ def ast_to_ir(module: ast_nodes.Module) -> IRProgram:
             program.plugins[decl.name] = IRPlugin(
                 name=decl.name, description=decl.description
             )
+        elif isinstance(decl, ast_nodes.HelperDecl):
+            if decl.identifier in program.helpers:
+                raise IRError("N3-6003: duplicate helper identifier", decl.span and decl.span.line)
+            body = [lower_statement(stmt) for stmt in decl.body]
+            program.helpers[decl.identifier] = IRHelper(
+                name=decl.name,
+                identifier=decl.identifier,
+                params=list(decl.params),
+                return_name=decl.return_name,
+                body=body,
+            )
+        elif isinstance(decl, ast_nodes.ImportDecl):
+            program.imports.append(IRImport(module=decl.module, kind=decl.kind, name=decl.name, alias=decl.alias))
+        elif isinstance(decl, ast_nodes.ModuleUse):
+            program.imports.append(IRImport(module=decl.module, kind="module", name=decl.module))
+        elif isinstance(decl, ast_nodes.SettingsDecl):
+            if program.settings is not None:
+                raise IRError("N3-6200: settings defined more than once", decl.span and decl.span.line)
+            env_map: dict[str, IREnvConfig] = {}
+            for env in decl.envs:
+                if env.name in env_map:
+                    raise IRError(f"N3-6200: duplicate env definition '{env.name}'", env.span and env.span.line)
+                entry_map: dict[str, ast_nodes.Expr] = {}
+                for entry in env.entries:
+                    if entry.key in entry_map:
+                        raise IRError(f"N3-6201: duplicate key '{entry.key}' in env '{env.name}'", env.span and env.span.line)
+                    entry_map[entry.key] = entry.expr
+                env_map[env.name] = IREnvConfig(name=env.name, entries=entry_map)
+            program.settings = IRSettings(envs=env_map)
         elif isinstance(decl, ast_nodes.UseImport):
             # Imports are acknowledged but not expanded in this minimal slice.
             continue

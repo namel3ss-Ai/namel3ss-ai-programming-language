@@ -2,6 +2,8 @@
 
 Namel3ss now supports a more readable, English-inspired surface syntax. The new style is fully backward compatible with the existing syntax and compiles to the same AST/IR and runtime behavior.
 
+Preferred usage, style, and deprecation notes live in `docs/language/style_guide.md`; the lint rules that reinforce the style are listed in `docs/language/lint_rules.md`.
+
 ## Complete Example
 
 ```ai
@@ -123,3 +125,215 @@ flow "scoring":
 ```
 
 Boolean expressions use `and`, `or`, and `not`, and parentheses are available for grouping. Redeclaring a variable in the same scope or assigning to an undefined variable produces a diagnostic.
+
+## Collections, Records, and Loops (Phase 2)
+
+Lists, records, and safe loops extend the English surface while keeping the symbolic forms available.
+
+### Lists: literals, indexing, slicing
+```ai
+let xs be [1, 2, 3, 4]
+let first be xs[0]
+let middle be xs[1:3]
+let prefix be xs[:2]
+let suffix be xs[2:]
+```
+
+Indexing out of bounds or using negative indices raises a runtime error. Slices always return a new list without mutating the original.
+
+### List built-ins and pipelines
+- English style: `length of xs`, `first of xs`, `last of xs`, `sorted form of xs`, `reverse of xs`, `unique elements of xs`, `sum of xs`
+- Functional equivalents: `length(xs)`, `first(xs)`, `last(xs)`, `sorted(xs)`, `reverse(xs)`, `unique(xs)`, `sum(xs)`
+
+```ai
+let xs be [3, 1, 2]
+let l be length of xs          # 3
+let s be sorted form of xs     # [1, 2, 3]
+let total be sum(xs)           # 6
+```
+
+### Filtering and mapping
+Use natural phrasing or the functional helpers:
+
+```ai
+let highs be all xs where item > 10
+let emails be all user.email from users
+
+let evens be filter(xs, where: item % 2 == 0)
+let doubled be map(xs, to: item * 2)
+```
+
+Filter predicates must return booleans. Mapping evaluates the expression for each element. Both operate on lists.
+
+### Record literals and field access
+Records are inline dictionaries:
+
+```ai
+let user be { name: "Ada", age: 37 }
+let name be user.name
+```
+
+Accessing a missing field raises `N3-3300`. Record keys must be identifiers or strings.
+
+### Safe loops
+- For-each: `repeat for each item in xs:` then a block
+- Bounded: `repeat up to 5 times:` then a block
+
+```ai
+repeat for each score in scores:
+  set total to total + score
+
+repeat up to 3 times:
+  do tool "ping"
+```
+
+Loop counts must be numeric and non-negative; for-each requires a list value.
+
+### Example flow
+```ai
+flow "scoring":
+  step "compute":
+    let base be 10
+    let bonus be 5
+    let scores be [base, bonus, 7]
+    let total be sum(scores)
+    let over_threshold be all scores where item > 6
+
+    repeat for each s in scores:
+      set total to total + s
+
+    if total is greater than 30:
+      do agent "notify"
+```
+
+## Strings & Built-ins (Phase 3)
+
+Common utilities stay readable:
+
+- Strings: `trim of name`, `lowercase of code`, `uppercase of code`, `replace "foo" with "bar" in text`, `split text by ","`, `join parts with ", "`, `slugify of title`
+- Functional: `trim(name)`, `lowercase(name)`, `replace(text, "foo", "bar")`, `split(text, ",")`, `join(parts, ", ")`, `slugify(title)`
+- Numbers: `minimum of scores`, `maximum of scores`, `mean of scores`, `round value to 2`, `absolute value of delta`
+- Functional: `min(scores)`, `max(scores)`, `mean(scores)`, `round(value, 2)`, `abs(delta)`
+- Boolean helpers: `any result in results where result.score is greater than 0.8`, `all user in users where user.is_verified`
+- Time/random: `current timestamp`, `current date`, `random uuid` or `current_timestamp()`, `current_date()`, `random_uuid()`
+
+Example:
+
+```ai
+let name be "  Disan  "
+let trimmed be trim of name
+let slug be slugify of "Hello World"
+
+let scores be [12, 4, 9, 10]
+let minimum be minimum of scores
+let average be mean of scores
+
+let any_high be any score in scores where score is greater than 9
+```
+
+## Pattern Matching and Retry (Phase 4)
+
+Use `match` to branch on values:
+
+```ai
+match user.intent:
+  when "billing":
+    do agent "billing_agent"
+  when "technical":
+    do agent "technical_agent"
+  otherwise:
+    do agent "fallback_agent"
+```
+
+Handle result shapes explicitly:
+
+```ai
+match result:
+  when success as value:
+    do agent "handle_success" with data: value
+  when error as err:
+    do agent "handle_failure" with error: err
+```
+
+## User Input, Logging, and Observability (Phase 5)
+
+### Asking the user
+Prompt for a single value and bind it to a variable:
+
+```ai
+ask user for "Email" as email
+  type is text
+```
+
+If the value is already provided (e.g., via metadata), execution continues; otherwise the runtime records a pending input so UIs can collect it.
+
+### Forms
+Gather multiple fields at once and receive a record:
+
+```ai
+form "Survey" as survey:
+  field "Name" as name
+    type is text
+
+  field "Age" as age
+    type is number
+    must be at least 18
+```
+
+After submission, `survey.name` and `survey.age` are available like any record fields.
+
+### Logging, notes, checkpoints
+- Logs: `log info "Starting checkout" with { order_id: order.id }`
+- Notes: `note "Before processing survey"`
+- Checkpoints: `checkpoint "after_survey"`
+
+Logs support `info`, `warning`, and `error` levels, with optional metadata records. Notes and checkpoints annotate the trace without levels.
+
+## Helpers, Imports, and Settings (Phase 6)
+
+### Helpers / functions
+Define reusable helpers at the top level:
+
+```ai
+define helper "normalize_score":
+  takes score
+  returns normalized
+  let normalized be score divided by 100
+  return normalized
+```
+
+Call helpers from expressions: `let adjusted be normalize_score(score)`. `return` may omit an expression to yield `null`.
+
+### Modules and imports
+- Load a module: `use module "common_helpers"`
+- Import specific items: `from "billing" use helper "normalize_score"`
+
+Imports are recorded in the IR for resolution by the host environment.
+
+### Settings and environments
+Declare environment-specific configuration:
+
+```ai
+settings:
+  env "production":
+    model_provider be "openai"
+    log_level be "info"
+
+  env "local":
+    model_provider be "ollama"
+    log_level be "debug"
+```
+
+Each `env` is a map of keys to expressions; the active environment can be selected by tooling or runtime.
+
+Retry unstable work:
+
+```ai
+retry up to 3 times with backoff:
+  do tool "fetch_remote" with url: endpoint
+```
+
+## Style & Linting (Phase 7)
+
+- Preferred English style is captured in `docs/language/style_guide.md`.
+- Core lint rules are listed in `docs/language/lint_rules.md`; run the lint engine to catch unused variables, shadowing, discouraged `=`, and more.

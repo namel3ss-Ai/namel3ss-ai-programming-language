@@ -1,0 +1,12 @@
+define helper "double":
+  takes x
+  returns result
+  let result be x times 2
+  return result
+
+flow "data_pipeline":
+  step "prepare":
+    let xs be [1, 2, 3, 4]
+    let evens be all xs where item % 2 == 0
+    let doubled be map(xs, to: double(item))
+    log info "processed list" with { count: length(xs), evens: evens, doubled: doubled }

@@ -1,5 +1,13 @@
 # Changelog
 
+## [Unreleased]
+### Added
+- Lint engine with core English-style rules (unused bindings, shadowing, unreachable match branches, discouraged `=` in `let`), plus style and lint references.
+- Example gallery programs demonstrating the stabilized language surface.
+
+### Notes
+- Language surface is frozen for the v1.0 English-style syntax; legacy symbolic forms remain supported but are discouraged via lint warnings.
+
 ## [3.0.0] - 2025-12-04
 ### Added
 - Stable language, diagnostics, and runtime graph with CLI/HTTP access.

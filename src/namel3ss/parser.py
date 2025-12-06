@@ -39,10 +39,14 @@ class Parser:
             return self.parse_english_model()
         if token.value == "use":
             return self.parse_use()
+        if token.value == "from":
+            return self.parse_from_import()
         if token.value == "define" and self.peek_offset(1).value == "condition":
             return self.parse_condition_macro()
         if token.value == "define" and self.peek_offset(1).value == "rulegroup":
             return self.parse_rulegroup()
+        if token.value == "define" and self.peek_offset(1).value == "helper":
+            return self.parse_helper()
         if token.value == "app":
             return self.parse_app()
         if token.value == "page":
@@ -59,13 +63,31 @@ class Parser:
             return self.parse_flow()
         if token.value == "plugin":
             return self.parse_plugin()
+        if token.value == "settings":
+            return self.parse_settings()
         raise self.error(f"Unexpected declaration '{token.value}'", token)
 
     def parse_use(self) -> ast_nodes.UseImport:
         start = self.consume("KEYWORD", "use")
+        if self.peek().value == "module":
+            self.consume("KEYWORD", "module")
+            mod = self.consume("STRING")
+            self.optional_newline()
+            return ast_nodes.ModuleUse(module=mod.value or "", span=self._span(start))
         path = self.consume("STRING")
         self.optional_newline()
         return ast_nodes.UseImport(path=path.value or "", span=self._span(start))
+
+    def parse_from_import(self) -> ast_nodes.ImportDecl:
+        start = self.consume("KEYWORD", "from")
+        module_tok = self.consume("STRING")
+        self.consume("KEYWORD", "use")
+        kind_tok = self.consume_any({"IDENT", "KEYWORD"})
+        if kind_tok.value not in {"helper", "flow", "agent"}:
+            raise self.error("Expected helper/flow/agent after 'use'", kind_tok)
+        name_tok = self.consume("STRING")
+        self.optional_newline()
+        return ast_nodes.ImportDecl(module=module_tok.value or "", kind=kind_tok.value or "", name=name_tok.value or "", span=self._span(start))
 
     def parse_english_memory(self) -> ast_nodes.MemoryDecl:
         start = self.consume("KEYWORD", "remember")
@@ -144,6 +166,50 @@ class Parser:
         self.consume("DEDENT")
         self.optional_newline()
         return ast_nodes.RuleGroupDecl(name=name_tok.value or "", conditions=conditions, span=self._span(start))
+
+    def parse_helper(self) -> ast_nodes.HelperDecl:
+        start = self.consume("KEYWORD", "define")
+        self.consume("KEYWORD", "helper")
+        name_tok = self.consume("STRING")
+        identifier = name_tok.value or ""
+        params: list[str] = []
+        return_name: str | None = None
+        self.consume("COLON")
+        self.consume("NEWLINE")
+        self.consume("INDENT")
+        # Optional headers inside helper body
+        while True:
+            if self.match("NEWLINE"):
+                continue
+            tok = self.peek()
+            if tok.value == "takes":
+                self.consume("KEYWORD", "takes")
+                while True:
+                    param_tok = self.consume_any({"IDENT", "KEYWORD"})
+                    params.append(param_tok.value or "")
+                    if self.match("COMMA"):
+                        continue
+                    break
+                self.optional_newline()
+                continue
+            if tok.value == "returns":
+                self.consume("KEYWORD", "returns")
+                ret_tok = self.consume_any({"IDENT", "KEYWORD"})
+                return_name = ret_tok.value
+                self.optional_newline()
+                continue
+            break
+        body = self.parse_statement_block()
+        self.consume("DEDENT")
+        self.optional_newline()
+        return ast_nodes.HelperDecl(
+            name=name_tok.value or "",
+            identifier=identifier,
+            params=params,
+            return_name=return_name,
+            body=body,
+            span=self._span(start),
+        )
 
     def parse_app(self) -> ast_nodes.AppDecl:
         start = self.consume("KEYWORD", "app")
@@ -611,6 +677,46 @@ class Parser:
             name=name.value or "", description=description, span=self._span(start)
         )
 
+    def parse_settings(self) -> ast_nodes.SettingsDecl:
+        start = self.consume("KEYWORD", "settings")
+        self.consume("COLON")
+        self.consume("NEWLINE")
+        self.consume("INDENT")
+        envs: list[ast_nodes.EnvConfig] = []
+        seen_envs: set[str] = set()
+        while not self.check("DEDENT"):
+            if self.match("NEWLINE"):
+                continue
+            self.consume("KEYWORD", "env")
+            env_name_tok = self.consume("STRING")
+            env_name = env_name_tok.value or ""
+            if env_name in seen_envs:
+                raise self.error("N3-6200: duplicate env definition", env_name_tok)
+            seen_envs.add(env_name)
+            self.consume("COLON")
+            self.consume("NEWLINE")
+            self.consume("INDENT")
+            entries: list[ast_nodes.SettingEntry] = []
+            seen_keys: set[str] = set()
+            while not self.check("DEDENT"):
+                if self.match("NEWLINE"):
+                    continue
+                key_tok = self.consume_any({"IDENT", "KEYWORD"})
+                if key_tok.value in seen_keys:
+                    raise self.error("N3-6201: duplicate key inside env", key_tok)
+                seen_keys.add(key_tok.value or "")
+                if not self.match_value("KEYWORD", "be"):
+                    raise self.error("Expected 'be' in env entry", self.peek())
+                expr = self.parse_expression()
+                entries.append(ast_nodes.SettingEntry(key=key_tok.value or "", expr=expr))
+                self.optional_newline()
+            self.consume("DEDENT")
+            self.optional_newline()
+            envs.append(ast_nodes.EnvConfig(name=env_name, entries=entries, span=self._span(env_name_tok)))
+        self.consume("DEDENT")
+        self.optional_newline()
+        return ast_nodes.SettingsDecl(envs=envs, span=self._span(start))
+
     def parse_section(self) -> ast_nodes.SectionDecl:
         section_name_token = self.consume("STRING")
         self.consume("COLON")
@@ -765,7 +871,23 @@ class Parser:
                 goto_action = self.parse_goto_action()
                 self.optional_newline()
                 continue
-            if token.value in {"let", "set", "do"} or (token.value == "go" and script_mode):
+            if token.value in {"let", "set", "do", "repeat", "match", "retry", "ask", "form", "log", "note", "checkpoint", "return"} or (token.value == "go" and script_mode):
+                if token.value == "match":
+                    script_mode = True
+                    statements.append(self.parse_match_statement())
+                    continue
+                if token.value == "retry":
+                    script_mode = True
+                    statements.append(self.parse_retry_statement())
+                    continue
+                if token.value in {"ask", "form", "log", "note", "checkpoint"}:
+                    script_mode = True
+                    statements.append(self.parse_statement_or_action())
+                    continue
+                if token.value == "return":
+                    script_mode = True
+                    statements.append(self.parse_statement_or_action())
+                    continue
                 script_mode = True
                 statements.append(self.parse_statement_or_action())
                 continue
@@ -863,6 +985,24 @@ class Parser:
             return self.parse_let_statement()
         if token.value == "set":
             return self.parse_set_statement()
+        if token.value == "repeat":
+            return self.parse_repeat_statement()
+        if token.value == "retry":
+            return self.parse_retry_statement()
+        if token.value == "match":
+            return self.parse_match_statement()
+        if token.value == "ask":
+            return self.parse_ask_statement()
+        if token.value == "form":
+            return self.parse_form_statement()
+        if token.value == "log":
+            return self.parse_log_statement()
+        if token.value == "note":
+            return self.parse_note_statement()
+        if token.value == "checkpoint":
+            return self.parse_checkpoint_statement()
+        if token.value == "return":
+            return self.parse_return_statement()
         if token.value == "do":
             return self._parse_do_action()
         if token.value == "go":
@@ -935,25 +1075,262 @@ class Parser:
             )
         return ast_nodes.IfStatement(branches=branches, span=self._span(start_tok))
 
+    def parse_match_statement(self) -> ast_nodes.MatchStatement:
+        start_tok = self.consume("KEYWORD", "match")
+        target_expr = self.parse_expression()
+        self.consume("COLON")
+        self.consume("NEWLINE")
+        self.consume("INDENT")
+        branches: list[ast_nodes.MatchBranch] = []
+        while not self.check("DEDENT"):
+            if self.match("NEWLINE"):
+                continue
+            tok = self.peek()
+            if tok.value == "otherwise":
+                self.consume("KEYWORD", "otherwise")
+                self.consume("COLON")
+                self.consume("NEWLINE")
+                self.consume("INDENT")
+                actions = self.parse_statement_block()
+                self.consume("DEDENT")
+                self.optional_newline()
+                branches.append(ast_nodes.MatchBranch(pattern=None, actions=actions, label="otherwise"))
+                continue
+            self.consume("KEYWORD", "when")
+            pat_token = self.peek()
+            pattern: ast_nodes.Expr | ast_nodes.SuccessPattern | ast_nodes.ErrorPattern | None
+            binding: str | None = None
+            if pat_token.value == "success":
+                self.consume("KEYWORD", "success")
+                if self.peek().value == "as":
+                    self.consume("KEYWORD", "as")
+                    bind_tok = self.consume_any({"IDENT", "KEYWORD"})
+                    binding = bind_tok.value
+                pattern = ast_nodes.SuccessPattern(binding=binding)
+            elif pat_token.value == "error":
+                self.consume("KEYWORD", "error")
+                if self.peek().value == "as":
+                    self.consume("KEYWORD", "as")
+                    bind_tok = self.consume_any({"IDENT", "KEYWORD"})
+                    binding = bind_tok.value
+                pattern = ast_nodes.ErrorPattern(binding=binding)
+            else:
+                pattern = self.parse_expression()
+            self.consume("COLON")
+            self.consume("NEWLINE")
+            self.consume("INDENT")
+            actions = self.parse_statement_block()
+            self.consume("DEDENT")
+            self.optional_newline()
+            branches.append(ast_nodes.MatchBranch(pattern=pattern, binding=binding, actions=actions))
+        self.consume("DEDENT")
+        self.optional_newline()
+        return ast_nodes.MatchStatement(target=target_expr, branches=branches, span=self._span(start_tok))
+
     def parse_let_statement(self) -> ast_nodes.LetStatement:
         start = self.consume("KEYWORD", "let")
-        name_tok = self.consume("IDENT")
+        name_tok = self.consume_any({"IDENT", "KEYWORD"})
+        uses_equals = False
         if self.match_value("KEYWORD", "be"):
             expr = self.parse_expression()
         elif self.match_value("OP", "="):
+            uses_equals = True
             expr = self.parse_expression()
         else:
             raise self.error("Expected 'be' or '=' after variable name", self.peek())
-        return ast_nodes.LetStatement(name=name_tok.value or "", expr=expr, span=self._span(start))
+        return ast_nodes.LetStatement(name=name_tok.value or "", expr=expr, uses_equals=uses_equals, span=self._span(start))
 
     def parse_set_statement(self) -> ast_nodes.SetStatement:
         start = self.consume("KEYWORD", "set")
-        name_tok = self.consume("IDENT")
+        name_tok = self.consume_any({"IDENT", "KEYWORD"})
         if self.match_value("KEYWORD", "to") or self.match_value("OP", "="):
             expr = self.parse_expression()
         else:
             raise self.error("Expected 'to' after variable name in set statement", self.peek())
         return ast_nodes.SetStatement(name=name_tok.value or "", expr=expr, span=self._span(start))
+
+    def parse_repeat_statement(self) -> ast_nodes.Statement:
+        repeat_tok = self.consume("KEYWORD", "repeat")
+        if self.peek().value == "for":
+            self.consume("KEYWORD", "for")
+            self.consume("KEYWORD", "each")
+            var_tok = self.consume("IDENT")
+            self.consume("KEYWORD", "in")
+            iterable_expr = self.parse_expression()
+            self.consume("COLON")
+            self.consume("NEWLINE")
+            self.consume("INDENT")
+            body = self.parse_statement_block()
+            self.consume("DEDENT")
+            self.optional_newline()
+            return ast_nodes.ForEachLoop(var_name=var_tok.value or "item", iterable=iterable_expr, body=body, span=self._span(repeat_tok))
+        if self.peek().value == "up":
+            self.consume("KEYWORD", "up")
+            self.consume("KEYWORD", "to")
+            count_expr = self.parse_expression()
+            self.consume("KEYWORD", "times")
+            self.consume("COLON")
+            self.consume("NEWLINE")
+            self.consume("INDENT")
+            body = self.parse_statement_block()
+            self.consume("DEDENT")
+            self.optional_newline()
+            return ast_nodes.RepeatUpToLoop(count=count_expr, body=body, span=self._span(repeat_tok))
+        raise self.error("Expected 'for each' or 'up to' after repeat", self.peek())
+
+    def parse_retry_statement(self) -> ast_nodes.RetryStatement:
+        retry_tok = self.consume("KEYWORD", "retry")
+        self.consume("KEYWORD", "up")
+        self.consume("KEYWORD", "to")
+        count_expr = self.parse_expression()
+        if self.peek().value == "times":
+            self.consume("KEYWORD", "times")
+        with_backoff = False
+        if self.peek().value == "with":
+            self.consume("KEYWORD", "with")
+            self.consume("KEYWORD", "backoff")
+            with_backoff = True
+        self.consume("COLON")
+        self.consume("NEWLINE")
+        self.consume("INDENT")
+        body = self.parse_statement_block()
+        self.consume("DEDENT")
+        self.optional_newline()
+        return ast_nodes.RetryStatement(count=count_expr, with_backoff=with_backoff, body=body, span=self._span(retry_tok))
+
+    def _parse_validation_block(self, error_code: str = "N3-5001") -> ast_nodes.InputValidation:
+        validation = ast_nodes.InputValidation()
+        while not self.check("DEDENT"):
+            if self.match("NEWLINE"):
+                continue
+            tok = self.peek()
+            if tok.value == "type":
+                self.consume("KEYWORD", "type")
+                self.consume("KEYWORD", "is")
+                t_tok = self.consume_any({"IDENT", "KEYWORD"})
+                validation.field_type = t_tok.value
+                self.optional_newline()
+                continue
+            if tok.value == "must":
+                self.consume("KEYWORD", "must")
+                self.consume("KEYWORD", "be")
+                if self.peek().value == "at":
+                    self.consume("KEYWORD", "at")
+                next_tok = self.peek()
+                if next_tok.value == "least":
+                    self.consume("KEYWORD", "least")
+                    validation.min_expr = self.parse_expression()
+                    self.optional_newline()
+                    continue
+                if next_tok.value == "most":
+                    self.consume("KEYWORD", "most")
+                    validation.max_expr = self.parse_expression()
+                    self.optional_newline()
+                    continue
+                raise self.error(f"{error_code}: invalid validation rule for user input", next_tok)
+            raise self.error(f"{error_code}: invalid validation rule for user input", tok)
+        return validation
+
+    def parse_ask_statement(self) -> ast_nodes.AskUserStatement:
+        start_tok = self.consume("KEYWORD", "ask")
+        self.consume("KEYWORD", "user")
+        self.consume("KEYWORD", "for")
+        if not self.check("STRING"):
+            raise self.error("N3-5000: ask user label must be a string literal", self.peek())
+        label_tok = self.consume("STRING")
+        self.consume("KEYWORD", "as")
+        name_tok = self.consume_any({"IDENT", "KEYWORD"})
+        validation: ast_nodes.InputValidation | None = None
+        if self.match("NEWLINE"):
+            if self.match("INDENT"):
+                validation = self._parse_validation_block()
+                self.consume("DEDENT")
+            self.optional_newline()
+        else:
+            self.optional_newline()
+        return ast_nodes.AskUserStatement(label=label_tok.value or "", var_name=name_tok.value or "", validation=validation, span=self._span(start_tok))
+
+    def parse_form_statement(self) -> ast_nodes.FormStatement:
+        start_tok = self.consume("KEYWORD", "form")
+        if not self.check("STRING"):
+            raise self.error("N3-5010: form label must be a string literal", self.peek())
+        label_tok = self.consume("STRING")
+        self.consume("KEYWORD", "as")
+        name_tok = self.consume_any({"IDENT", "KEYWORD"})
+        self.consume("COLON")
+        self.consume("NEWLINE")
+        self.consume("INDENT")
+        fields: list[ast_nodes.FormField] = []
+        seen_names: set[str] = set()
+        while not self.check("DEDENT"):
+            if self.match("NEWLINE"):
+                continue
+            self.consume("KEYWORD", "field")
+            if not self.check("STRING"):
+                raise self.error("N3-5010: form field label must be a string literal", self.peek())
+            field_label_tok = self.consume("STRING")
+            self.consume("KEYWORD", "as")
+            field_name_tok = self.consume_any({"IDENT", "KEYWORD"})
+            validation: ast_nodes.InputValidation | None = None
+            if self.match("NEWLINE"):
+                if self.match("INDENT"):
+                    validation = self._parse_validation_block(error_code="N3-5012")
+                    self.consume("DEDENT")
+                self.optional_newline()
+            else:
+                self.optional_newline()
+            if field_name_tok.value in seen_names:
+                raise self.error("N3-5011: duplicate field identifier in form", field_name_tok)
+            seen_names.add(field_name_tok.value or "")
+            fields.append(
+                ast_nodes.FormField(
+                    label=field_label_tok.value or "",
+                    name=field_name_tok.value or "",
+                    validation=validation,
+                )
+            )
+        self.consume("DEDENT")
+        self.optional_newline()
+        return ast_nodes.FormStatement(label=label_tok.value or "", name=name_tok.value or "", fields=fields, span=self._span(start_tok))
+
+    def parse_log_statement(self) -> ast_nodes.LogStatement:
+        start_tok = self.consume("KEYWORD", "log")
+        level_tok = self.consume_any({"IDENT", "KEYWORD"})
+        if level_tok.value not in {"info", "warning", "error"}:
+            raise self.error("N3-5100: invalid log level", level_tok)
+        if not self.check("STRING"):
+            raise self.error("N3-5101: log message must be a string literal", self.peek())
+        msg_tok = self.consume("STRING")
+        metadata_expr: ast_nodes.Expr | None = None
+        if self.peek().value == "with":
+            self.consume("KEYWORD", "with")
+            metadata_expr = self.parse_expression()
+        self.optional_newline()
+        return ast_nodes.LogStatement(level=level_tok.value or "info", message=msg_tok.value or "", metadata=metadata_expr, span=self._span(start_tok))
+
+    def parse_note_statement(self) -> ast_nodes.NoteStatement:
+        start_tok = self.consume("KEYWORD", "note")
+        if not self.check("STRING"):
+            raise self.error("Note message must be a string literal", self.peek())
+        msg_tok = self.consume("STRING")
+        self.optional_newline()
+        return ast_nodes.NoteStatement(message=msg_tok.value or "", span=self._span(start_tok))
+
+    def parse_checkpoint_statement(self) -> ast_nodes.CheckpointStatement:
+        start_tok = self.consume("KEYWORD", "checkpoint")
+        if not self.check("STRING"):
+            raise self.error("N3-5110: checkpoint label must be a string literal", self.peek())
+        label_tok = self.consume("STRING")
+        self.optional_newline()
+        return ast_nodes.CheckpointStatement(label=label_tok.value or "", span=self._span(start_tok))
+
+    def parse_return_statement(self) -> ast_nodes.ReturnStatement:
+        start_tok = self.consume("KEYWORD", "return")
+        expr = None
+        if not self.check("NEWLINE") and not self.check("DEDENT") and not self.check("EOF"):
+            expr = self.parse_expression()
+        self.optional_newline()
+        return ast_nodes.ReturnStatement(expr=expr, span=self._span(start_tok))
 
     def _parse_do_action(self) -> ast_nodes.FlowAction:
         do_token = self.consume("KEYWORD", "do")
@@ -1134,7 +1511,7 @@ class Parser:
                 actions.append(self.parse_goto_action())
                 self.optional_newline()
                 continue
-            if self.peek().value in {"let", "set", "if", "when", "otherwise", "unless"}:
+            if self.peek().value in {"let", "set", "if", "when", "otherwise", "unless", "match", "retry", "ask", "form", "log", "note", "checkpoint", "return"}:
                 actions.append(self.parse_statement_or_action())
                 continue
             actions.append(self._parse_do_action())
@@ -1261,6 +1638,11 @@ class Parser:
                 expr = ast_nodes.BinaryOp(left=expr, op=op_tok.value, right=right)
                 continue
             if token.type == "KEYWORD" and token.value in {"times", "divided"}:
+                next_tok = self.peek_offset(1)
+                if token.value == "times" and next_tok and next_tok.type in {"COLON", "DEDENT", "NEWLINE", "EOF"}:
+                    break
+                if token.value == "times" and next_tok and next_tok.value in {"with", "backoff"}:
+                    break
                 op_val = "*"
                 if token.value == "divided":
                     op_val = "/"
@@ -1284,6 +1666,46 @@ class Parser:
             return ast_nodes.UnaryOp(op="+", operand=self.parse_unary())
         if self.match_value("KEYWORD", "minus"):
             return ast_nodes.UnaryOp(op="-", operand=self.parse_unary())
+        token = self.peek()
+        builtin_call_names = {
+            "length",
+            "first",
+            "last",
+            "sorted",
+            "reverse",
+            "unique",
+            "sum",
+            "trim",
+            "lowercase",
+            "uppercase",
+            "replace",
+            "split",
+            "join",
+            "slugify",
+            "minimum",
+            "maximum",
+            "mean",
+            "min",
+            "max",
+            "average",
+            "round",
+            "abs",
+            "current_timestamp",
+            "current_date",
+            "random_uuid",
+            "filter",
+            "map",
+            "any",
+            "all",
+        }
+        if token.type in {"IDENT", "KEYWORD"} and self.peek_offset(1).type == "LPAREN" and token.value in builtin_call_names:
+            return self.parse_builtin_call()
+        if token.type == "KEYWORD" and token.value in {"any"}:
+            return self.parse_english_any()
+        if token.type == "KEYWORD" and token.value == "all":
+            return self.parse_english_all()
+        if token.type == "KEYWORD" and token.value in {"length", "first", "last", "sorted", "reverse", "unique", "sum", "trim", "lowercase", "uppercase", "replace", "split", "join", "slugify", "minimum", "maximum", "mean", "round", "absolute", "current", "random"}:
+            return self.parse_english_builtin()
         return self.parse_primary()
 
     def parse_primary(self) -> ast_nodes.Expr:
@@ -1301,19 +1723,293 @@ class Parser:
                     num_val = int(tok.value)
             except Exception:
                 num_val = tok.value
-            return ast_nodes.Literal(value=num_val, span=self._span(tok))
+            expr: ast_nodes.Expr = ast_nodes.Literal(value=num_val, span=self._span(tok))
+            return self.parse_postfix(expr)
+        if token.type == "LBRACKET":
+            return self.parse_postfix(self.parse_list_literal())
+        if token.type == "LBRACE":
+            return self.parse_postfix(self.parse_record_literal())
         if token.type in {"IDENT", "KEYWORD"}:
+            # Function-style builtins
+            if self.peek_offset(1).type == "LPAREN" and token.value in {"length", "first", "last", "sorted", "reverse", "unique", "sum", "filter", "map", "trim", "lowercase", "uppercase", "replace", "split", "join", "slugify", "minimum", "maximum", "mean", "min", "max", "average", "round", "abs", "current_timestamp", "current_date", "random_uuid", "any", "all"}:
+                return self.parse_builtin_call()
+            if self.peek_offset(1).type == "LPAREN":
+                return self.parse_postfix(self.parse_function_call())
             tok = self.consume(token.type)
             if tok.value in {"true", "false"}:
-                return ast_nodes.Literal(value=tok.value == "true", span=self._span(tok))
-            return ast_nodes.Identifier(name=tok.value or "", span=self._span(tok))
+                expr = ast_nodes.Literal(value=tok.value == "true", span=self._span(tok))
+            else:
+                value = tok.value or ""
+                if "." in value:
+                    parts = value.split(".")
+                    expr = ast_nodes.Identifier(name=parts[0], span=self._span(tok))
+                    for part in parts[1:]:
+                        expr = ast_nodes.RecordFieldAccess(target=expr, field=part)
+                else:
+                    expr = ast_nodes.Identifier(name=value, span=self._span(tok))
+            return self.parse_postfix(expr)
         if token.type == "LPAREN":
             self.consume("LPAREN")
             inner = self.parse_expression()
             if not self.match("RPAREN"):
                 raise self.error("Expected ')' to close expression", self.peek())
-            return inner
+            return self.parse_postfix(inner)
         raise self.error("Expected expression", token)
+
+    def parse_postfix(self, expr: ast_nodes.Expr) -> ast_nodes.Expr:
+        while True:
+            if self.match("LBRACKET"):
+                start_expr = None
+                end_expr = None
+                if self.match("COLON"):
+                    if not self.check("RBRACKET"):
+                        end_expr = self.parse_expression()
+                else:
+                    start_expr = self.parse_expression()
+                    if self.match("COLON"):
+                        if not self.check("RBRACKET"):
+                            end_expr = self.parse_expression()
+                    else:
+                        if not self.match("RBRACKET"):
+                            raise self.error("Expected ']' after index", self.peek())
+                        expr = ast_nodes.IndexExpr(seq=expr, index=start_expr)
+                        continue
+                if not self.match("RBRACKET"):
+                    raise self.error("Expected ']' to close slice", self.peek())
+                expr = ast_nodes.SliceExpr(seq=expr, start=start_expr, end=end_expr)
+                continue
+            break
+        return expr
+
+    def parse_list_literal(self) -> ast_nodes.ListLiteral:
+        self.consume("LBRACKET")
+        items: list[ast_nodes.Expr] = []
+        if self.check("RBRACKET"):
+            self.consume("RBRACKET")
+            return ast_nodes.ListLiteral(items=items)
+        while True:
+            items.append(self.parse_expression())
+            if self.match("COMMA"):
+                continue
+            break
+        if not self.match("RBRACKET"):
+            raise self.error("Expected ']' after list literal", self.peek())
+        return ast_nodes.ListLiteral(items=items)
+
+    def parse_record_literal(self) -> ast_nodes.RecordLiteral:
+        self.consume("LBRACE")
+        fields: list[ast_nodes.RecordField] = []
+        if self.check("RBRACE"):
+            self.consume("RBRACE")
+            return ast_nodes.RecordLiteral(fields=fields)
+        while not self.check("RBRACE"):
+            key_tok = self.consume_any({"IDENT", "STRING", "KEYWORD"})
+            self.consume("COLON")
+            value_expr = self.parse_expression()
+            fields.append(ast_nodes.RecordField(key=key_tok.value or "", value=value_expr))
+            if self.match("COMMA"):
+                continue
+            break
+        if not self.match("RBRACE"):
+            raise self.error("Expected '}' after record literal", self.peek())
+        return ast_nodes.RecordLiteral(fields=fields)
+
+    def parse_english_builtin(self) -> ast_nodes.Expr:
+        tok = self.consume("KEYWORD")
+        name = tok.value or ""
+        if name == "sorted":
+            if self.peek().value == "form":
+                self.consume("KEYWORD", "form")
+            if self.peek().value == "of":
+                self.consume("KEYWORD", "of")
+            operand = self.parse_unary()
+            return ast_nodes.ListBuiltinCall(name=name, expr=operand)
+        elif name == "unique":
+            if self.peek().value == "elements":
+                self.consume("KEYWORD", "elements")
+            if self.peek().value == "of":
+                self.consume("KEYWORD", "of")
+            operand = self.parse_unary()
+            return ast_nodes.ListBuiltinCall(name=name, expr=operand)
+        elif name in {"length", "first", "last", "reverse", "sum"}:
+            if self.peek().value == "of":
+                self.consume("KEYWORD", "of")
+            operand = self.parse_unary()
+            return ast_nodes.ListBuiltinCall(name=name, expr=operand)
+        elif name in {"trim", "lowercase", "uppercase", "slugify"}:
+            if self.peek().value == "of":
+                self.consume("KEYWORD", "of")
+            operand = self.parse_unary()
+            return ast_nodes.BuiltinCall(name=name, args=[operand])
+        elif name == "replace":
+            pattern_expr = self.parse_expression()
+            self.consume("KEYWORD", "with")
+            replacement_expr = self.parse_expression()
+            self.consume("KEYWORD", "in")
+            base_expr = self.parse_expression()
+            return ast_nodes.BuiltinCall(name="replace", args=[base_expr, pattern_expr, replacement_expr])
+        elif name == "split":
+            base_expr = self.parse_expression()
+            self.consume("KEYWORD", "by")
+            sep_expr = self.parse_expression()
+            return ast_nodes.BuiltinCall(name="split", args=[base_expr, sep_expr])
+        elif name == "join":
+            items_expr = self.parse_expression()
+            self.consume("KEYWORD", "with")
+            sep_expr = self.parse_expression()
+            return ast_nodes.BuiltinCall(name="join", args=[items_expr, sep_expr])
+        elif name in {"minimum", "maximum", "mean"}:
+            if self.peek().value == "of":
+                self.consume("KEYWORD", "of")
+            operand = self.parse_unary()
+            return ast_nodes.BuiltinCall(name=name, args=[operand])
+        elif name == "round":
+            value_expr = self.parse_unary()
+            if self.peek().value == "to":
+                self.consume("KEYWORD", "to")
+                precision_expr = self.parse_expression()
+                return ast_nodes.BuiltinCall(name="round", args=[value_expr, precision_expr])
+            return ast_nodes.BuiltinCall(name="round", args=[value_expr])
+        elif name == "absolute":
+            if self.peek().value == "value":
+                self.consume("KEYWORD", "value")
+            if self.peek().value == "of":
+                self.consume("KEYWORD", "of")
+            operand = self.parse_unary()
+            return ast_nodes.BuiltinCall(name="abs", args=[operand])
+        elif name == "current":
+            next_tok = self.consume("KEYWORD")
+            if next_tok.value == "timestamp":
+                return ast_nodes.BuiltinCall(name="current_timestamp", args=[])
+            if next_tok.value == "date":
+                return ast_nodes.BuiltinCall(name="current_date", args=[])
+            raise self.error("Expected 'timestamp' or 'date' after 'current'", next_tok)
+        elif name == "random":
+            next_tok = self.consume("KEYWORD")
+            if next_tok.value != "uuid":
+                raise self.error("Expected 'uuid' after 'random'", next_tok)
+            return ast_nodes.BuiltinCall(name="random_uuid", args=[])
+        raise self.error(f"Unsupported builtin '{name}'", tok)
+
+    def parse_english_all(self) -> ast_nodes.Expr:
+        self.consume("KEYWORD", "all")
+        first_tok = self.consume_any({"IDENT"})
+        first_val = first_tok.value or ""
+        if "." in first_val:
+            parts = first_val.split(".")
+            first_expr: ast_nodes.Expr = ast_nodes.Identifier(name=parts[0], span=self._span(first_tok))
+            for part in parts[1:]:
+                first_expr = ast_nodes.RecordFieldAccess(target=first_expr, field=part)
+        else:
+            first_expr = ast_nodes.Identifier(name=first_val, span=self._span(first_tok))
+        if self.peek().value == "in":
+            self.consume("KEYWORD", "in")
+            source_expr = self.parse_expression()
+            self.consume("KEYWORD", "where")
+            predicate = self.parse_expression()
+            return ast_nodes.AllExpression(source=source_expr, var_name=first_tok.value or "item", predicate=predicate)
+        if self.peek().value == "where":
+            self.consume("KEYWORD", "where")
+            predicate = self.parse_expression()
+            return ast_nodes.FilterExpression(source=first_expr, var_name="item", predicate=predicate)
+        if self.peek().value == "from":
+            self.consume("KEYWORD", "from")
+            source_expr = self.parse_expression()
+            var_name = first_tok.value.split(".")[0] if first_tok.value else "item"
+            return ast_nodes.MapExpression(source=source_expr, var_name=var_name, mapper=first_expr)
+        raise self.error("Expected 'where' or 'from' after 'all' expression", self.peek())
+
+    def parse_english_any(self) -> ast_nodes.Expr:
+        self.consume("KEYWORD", "any")
+        var_tok = self.consume_any({"IDENT"})
+        self.consume("KEYWORD", "in")
+        source_expr = self.parse_expression()
+        self.consume("KEYWORD", "where")
+        predicate = self.parse_expression()
+        return ast_nodes.AnyExpression(source=source_expr, var_name=var_tok.value or "item", predicate=predicate)
+
+    def parse_builtin_call(self) -> ast_nodes.Expr:
+        name_tok = self.consume_any({"IDENT", "KEYWORD"})
+        name = name_tok.value or ""
+        self.consume("LPAREN")
+        if name in {"filter", "map"}:
+            source_expr = self.parse_expression()
+            predicate = None
+            mapper = None
+            var_name = "item"
+            if self.match("COMMA"):
+                label_tok = self.consume_any({"KEYWORD"})
+                if label_tok.value == "where":
+                    if self.match("COLON"):
+                        pass
+                    predicate = self.parse_expression()
+                elif label_tok.value == "to":
+                    if self.match("COLON"):
+                        pass
+                    mapper = self.parse_expression()
+                else:
+                    raise self.error("Expected 'where' or 'to' keyword argument", label_tok)
+            if not self.match("RPAREN"):
+                if self.check("RPAREN"):
+                    self.consume("RPAREN")
+                else:
+                    raise self.error("Expected ')' to close call", self.peek())
+            if name == "filter":
+                if predicate is None:
+                    raise self.error("filter requires 'where' predicate", name_tok)
+                return ast_nodes.FilterExpression(source=source_expr, var_name=var_name, predicate=predicate)
+            if mapper is None:
+                raise self.error("map requires 'to' mapper", name_tok)
+            return ast_nodes.MapExpression(source=source_expr, var_name=var_name, mapper=mapper)
+        if name in {"any", "all"}:
+            source_expr = self.parse_expression() if not self.check("RPAREN") else ast_nodes.Literal(value=[])
+            predicate = None
+            if self.match("COMMA"):
+                label_tok = self.consume_any({"KEYWORD"})
+                if label_tok.value != "where":
+                    raise self.error("Expected 'where' keyword argument", label_tok)
+                if self.match("COLON"):
+                    pass
+                predicate = self.parse_expression()
+            if not self.match("RPAREN"):
+                if self.check("RPAREN"):
+                    self.consume("RPAREN")
+                else:
+                    raise self.error("Expected ')' to close call", self.peek())
+            if predicate is None:
+                raise self.error(f"{name} requires a 'where' predicate", name_tok)
+            if name == "any":
+                return ast_nodes.AnyExpression(source=source_expr, var_name="item", predicate=predicate)
+            return ast_nodes.AllExpression(source=source_expr, var_name="item", predicate=predicate)
+        args: list[ast_nodes.Expr] = []
+        if not self.check("RPAREN"):
+            args.append(self.parse_expression())
+            while self.match("COMMA"):
+                args.append(self.parse_expression())
+        if not self.match("RPAREN"):
+            if self.check("RPAREN"):
+                self.consume("RPAREN")
+            else:
+                raise self.error("Expected ')' to close call", self.peek())
+        if name in {"length", "first", "last", "sorted", "reverse", "unique", "sum"} and len(args) == 1:
+            return ast_nodes.ListBuiltinCall(name=name, expr=args[0])
+        return ast_nodes.BuiltinCall(name=name, args=args)
+
+    def parse_function_call(self) -> ast_nodes.FunctionCall:
+        name_tok = self.consume_any({"IDENT", "KEYWORD"})
+        name = name_tok.value or ""
+        self.consume("LPAREN")
+        args: list[ast_nodes.Expr] = []
+        if not self.check("RPAREN"):
+            args.append(self.parse_expression())
+            while self.match("COMMA"):
+                args.append(self.parse_expression())
+        if not self.match("RPAREN"):
+            if self.check("RPAREN"):
+                self.consume("RPAREN")
+            else:
+                raise self.error("Expected ')' to close function call", self.peek())
+        return ast_nodes.FunctionCall(name=name, args=args, span=self._span(name_tok))
 
     def optional_newline(self) -> None:
         if self.check("NEWLINE"):

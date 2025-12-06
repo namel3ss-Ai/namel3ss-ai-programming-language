@@ -516,7 +516,7 @@ class Engine:
             initial_state = payload.get("state") or payload.get("payload") or {}
             context.metadata.update(payload)
         result = await self.flow_engine.run_flow_async(flow, context, initial_state=initial_state)
-        payload_out = asdict(result)
+        payload_out = result.to_dict() if hasattr(result, "to_dict") else asdict(result)
         if context.tracer and context.tracer.last_trace:
             payload_out["trace"] = asdict(context.tracer.last_trace)
         return payload_out

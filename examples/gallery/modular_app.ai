@@ -1,0 +1,14 @@
+use module "shared_settings"
+from "helpers" use helper "normalize_score"
+
+settings:
+  env "production":
+    model_provider be "openai"
+    retries be 3
+
+flow "score_flow":
+  step "compute":
+    let raw be 82
+    let normalized be normalize_score(raw)
+    if normalized is greater than 0.7:
+      do agent "notify"

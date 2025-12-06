@@ -131,6 +131,52 @@ class MemoryDecl:
 
 
 @dataclass
+class HelperDecl:
+    """define helper \"name\": reusable helper."""
+
+    name: str
+    identifier: str
+    params: List[str] = field(default_factory=list)
+    return_name: Optional[str] = None
+    body: List["Statement | FlowAction"] = field(default_factory=list)
+    span: Optional[Span] = None
+
+
+@dataclass
+class ModuleUse:
+    module: str
+    span: Optional[Span] = None
+
+
+@dataclass
+class ImportDecl:
+    module: str
+    kind: str
+    name: str
+    alias: Optional[str] = None
+    span: Optional[Span] = None
+
+
+@dataclass
+class SettingEntry:
+    key: str
+    expr: Expr
+
+
+@dataclass
+class EnvConfig:
+    name: str
+    entries: List[SettingEntry] = field(default_factory=list)
+    span: Optional[Span] = None
+
+
+@dataclass
+class SettingsDecl:
+    envs: List[EnvConfig] = field(default_factory=list)
+    span: Optional[Span] = None
+
+
+@dataclass
 class PluginDecl:
     """plugin \"name\": description."""
 
@@ -197,6 +243,12 @@ class Literal(Expr):
 
 
 @dataclass
+class FunctionCall(Expr):
+    name: str = ""
+    args: List[Expr] = field(default_factory=list)
+
+
+@dataclass
 class UnaryOp(Expr):
     op: str = ""
     operand: Expr | None = None
@@ -222,6 +274,84 @@ class PatternExpr(Expr):
 
 
 @dataclass
+class ListLiteral(Expr):
+    items: List[Expr] = field(default_factory=list)
+
+
+@dataclass
+class IndexExpr(Expr):
+    seq: Expr | None = None
+    index: Expr | None = None
+
+
+@dataclass
+class SliceExpr(Expr):
+    seq: Expr | None = None
+    start: Expr | None = None
+    end: Expr | None = None
+
+
+@dataclass
+class RecordField:
+    key: str
+    value: Expr
+
+
+@dataclass
+class RecordLiteral(Expr):
+    fields: List[RecordField] = field(default_factory=list)
+
+
+@dataclass
+class RecordFieldAccess(Expr):
+    target: Expr | None = None
+    field: str = ""
+
+
+@dataclass
+class ListBuiltinCall(Expr):
+    name: str = ""
+    expr: Expr | None = None
+    predicate: Expr | None = None
+    mapper: Expr | None = None
+    var_name: str = "item"
+
+
+@dataclass
+class FilterExpression(Expr):
+    source: Expr | None = None
+    var_name: str = "item"
+    predicate: Expr | None = None
+
+
+@dataclass
+class MapExpression(Expr):
+    source: Expr | None = None
+    var_name: str = "item"
+    mapper: Expr | None = None
+
+
+@dataclass
+class BuiltinCall(Expr):
+    name: str = ""
+    args: List[Expr] = field(default_factory=list)
+
+
+@dataclass
+class AnyExpression(Expr):
+    source: Expr | None = None
+    var_name: str = "item"
+    predicate: Expr | None = None
+
+
+@dataclass
+class AllExpression(Expr):
+    source: Expr | None = None
+    var_name: str = "item"
+    predicate: Expr | None = None
+
+
+@dataclass
 class Statement:
     span: Optional[Span] = None
 
@@ -230,12 +360,107 @@ class Statement:
 class LetStatement(Statement):
     name: str = ""
     expr: Expr | None = None
+    uses_equals: bool = False
 
 
 @dataclass
 class SetStatement(Statement):
     name: str = ""
     expr: Expr | None = None
+
+
+@dataclass
+class ForEachLoop(Statement):
+    var_name: str = "item"
+    iterable: Expr | None = None
+    body: List["Statement | FlowAction"] = field(default_factory=list)
+
+
+@dataclass
+class RepeatUpToLoop(Statement):
+    count: Expr | None = None
+    body: List["Statement | FlowAction"] = field(default_factory=list)
+
+
+@dataclass
+class InputValidation:
+    field_type: str | None = None
+    min_expr: Expr | None = None
+    max_expr: Expr | None = None
+
+
+@dataclass
+class AskUserStatement(Statement):
+    label: str = ""
+    var_name: str = ""
+    validation: InputValidation | None = None
+
+
+@dataclass
+class FormField:
+    label: str = ""
+    name: str = ""
+    validation: InputValidation | None = None
+
+
+@dataclass
+class FormStatement(Statement):
+    label: str = ""
+    name: str = ""
+    fields: List[FormField] = field(default_factory=list)
+
+
+@dataclass
+class LogStatement(Statement):
+    level: str = "info"
+    message: str = ""
+    metadata: Expr | None = None
+
+
+@dataclass
+class NoteStatement(Statement):
+    message: str = ""
+
+
+@dataclass
+class CheckpointStatement(Statement):
+    label: str = ""
+
+
+@dataclass
+class ReturnStatement(Statement):
+    expr: Expr | None = None
+
+
+@dataclass
+class SuccessPattern:
+    binding: str | None = None
+
+
+@dataclass
+class ErrorPattern:
+    binding: str | None = None
+
+
+@dataclass
+class MatchBranch:
+    pattern: Expr | SuccessPattern | ErrorPattern | None = None
+    actions: List["Statement | FlowAction"] = field(default_factory=list)
+    binding: str | None = None
+    label: str | None = None
+
+
+@dataclass
+class MatchStatement(Statement):
+    target: Expr | None = None
+    branches: List[MatchBranch] = field(default_factory=list)
+
+
+@dataclass
+class RetryStatement(Statement):
+    count: Expr | None = None
+    with_backoff: bool = False
+    body: List["Statement | FlowAction"] = field(default_factory=list)
 
 
 @dataclass
@@ -299,6 +524,10 @@ Declaration = Union[
     AICallDecl,
     AgentDecl,
     MemoryDecl,
+    HelperDecl,
+    ModuleUse,
+    ImportDecl,
+    SettingsDecl,
     FlowDecl,
     PluginDecl,
     ConditionMacroDecl,

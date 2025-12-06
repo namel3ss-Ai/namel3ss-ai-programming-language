@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import asyncio
 import time
-from dataclasses import asdict
+from dataclasses import asdict, is_dataclass
 from typing import Any, Callable, Optional
 from uuid import uuid4
 
@@ -16,7 +16,26 @@ from ..agent.engine import AgentRunner
 from ..ai.registry import ModelRegistry
 from ..ai.router import ModelRouter
 from ..errors import Namel3ssError
-from ..ir import IRAction, IRFlow, IRIf, IRLet, IRProgram, IRSet, IRStatement
+from ..ir import (
+    IRAction,
+    IRAskUser,
+    IRCheckpoint,
+    IRFlow,
+    IRForEach,
+    IRForm,
+    IRIf,
+    IRLet,
+    IRLog,
+    IRMatch,
+    IRMatchBranch,
+    IRNote,
+    IRProgram,
+    IRRepeatUpTo,
+    IRRetry,
+    IRReturn,
+    IRSet,
+    IRStatement,
+)
 from ..metrics.tracker import MetricsTracker
 from ..observability.metrics import default_metrics
 from ..observability.tracing import default_tracer
@@ -33,6 +52,11 @@ from .graph import (
     flow_ir_to_graph,
 )
 from .models import FlowRunResult, FlowStepMetrics, FlowStepResult
+
+
+class ReturnSignal(Exception):
+    def __init__(self, value: Any = None) -> None:
+        self.value = value
 
 
 class FlowEngine:
@@ -200,6 +224,8 @@ class FlowEngine:
             # Stop execution if a redirect has been requested.
             if current_state.context.get("__redirect_flow__"):
                 return current_state
+            if current_state.context.get("__awaiting_input__"):
+                return current_state
 
             # Branch evaluation
             if node.kind == "branch":
@@ -254,6 +280,10 @@ class FlowEngine:
             total_cost=total_cost,
             total_duration_seconds=total_duration,
             redirect_to=redirect_to,
+            inputs=list(getattr(final_state, "inputs", [])),
+            logs=list(getattr(final_state, "logs", [])),
+            notes=list(getattr(final_state, "notes", [])),
+            checkpoints=list(getattr(final_state, "checkpoints", [])),
         )
 
     async def _run_branch_with_limit(
@@ -379,7 +409,8 @@ class FlowEngine:
                     ai_call, runtime_ctx.model_registry, runtime_ctx.router, base_context
                 )
             elif node.kind == "agent":
-                output = asdict(runtime_ctx.agent_runner.run(target, base_context))
+                raw_output = runtime_ctx.agent_runner.run(target, base_context)
+                output = asdict(raw_output) if is_dataclass(raw_output) else raw_output
             elif node.kind == "tool":
                 tool = runtime_ctx.tool_registry.get(target)
                 if not tool:
@@ -607,7 +638,7 @@ class FlowEngine:
                     state.data.pop(br.binding, None)
             break
 
-    async def _execute_statement(self, stmt: IRStatement, state: FlowState, runtime_ctx: FlowRuntimeContext, prefix: str) -> Any:
+    async def _execute_statement(self, stmt: IRStatement, state: FlowState, runtime_ctx: FlowRuntimeContext, prefix: str, allow_return: bool = False) -> Any:
         env = state.variables or runtime_ctx.variables or VariableEnvironment()
         evaluator = self._build_evaluator(state, runtime_ctx)
         if isinstance(stmt, IRLet):
@@ -627,6 +658,147 @@ class FlowEngine:
         if isinstance(stmt, IRIf):
             await self._execute_ir_if(stmt, state, runtime_ctx, prefix)
             return state.get("last_output")
+        if isinstance(stmt, IRForEach):
+            iterable_val = evaluator.evaluate(stmt.iterable) if stmt.iterable is not None else None
+            if not isinstance(iterable_val, list):
+                raise Namel3ssError("N3-3400: for-each loop requires a list value")
+            had_prev = env.has(stmt.var_name)
+            prev_val = env.resolve(stmt.var_name) if had_prev else None
+            declared_new = not had_prev
+            for idx, item in enumerate(iterable_val):
+                if had_prev or not declared_new:
+                    env.assign(stmt.var_name, item)
+                else:
+                    env.declare(stmt.var_name, item)
+                    declared_new = False
+                state.set(stmt.var_name, item)
+                for body_stmt in stmt.body:
+                    await self._execute_statement(body_stmt, state, runtime_ctx, f"{prefix}.foreach{idx}", allow_return=allow_return)
+                    if state.context.get("__awaiting_input__"):
+                        break
+                if state.context.get("__awaiting_input__"):
+                    break
+            if had_prev:
+                env.assign(stmt.var_name, prev_val)
+                state.set(stmt.var_name, prev_val)
+            else:
+                env.remove(stmt.var_name)
+                state.data.pop(stmt.var_name, None)
+            return state.get("last_output")
+        if isinstance(stmt, IRRepeatUpTo):
+            count_val = evaluator.evaluate(stmt.count) if stmt.count is not None else 0
+            try:
+                count_num = int(count_val)
+            except Exception:
+                raise Namel3ssError("N3-3401: repeat-up-to requires numeric count")
+            if count_num < 0:
+                raise Namel3ssError("N3-3402: loop count must be non-negative")
+            for idx in range(count_num):
+                for body_stmt in stmt.body:
+                    await self._execute_statement(body_stmt, state, runtime_ctx, f"{prefix}.repeat{idx}", allow_return=allow_return)
+                    if state.context.get("__awaiting_input__"):
+                        break
+                if state.context.get("__awaiting_input__"):
+                    break
+            return state.get("last_output")
+        if isinstance(stmt, IRRetry):
+            count_val = evaluator.evaluate(stmt.count) if stmt.count is not None else 0
+            try:
+                attempts = int(count_val)
+            except Exception:
+                raise Namel3ssError("N3-4500: retry requires numeric max attempts")
+            if attempts < 1:
+                raise Namel3ssError("N3-4501: retry max attempts must be at least 1")
+            last_output = None
+            for attempt in range(attempts):
+                try:
+                    for body_stmt in stmt.body:
+                        last_output = await self._execute_statement(body_stmt, state, runtime_ctx, f"{prefix}.retry{attempt}", allow_return=allow_return)
+                        if state.context.get("__awaiting_input__"):
+                            break
+                    if state.context.get("__awaiting_input__"):
+                        break
+                    # success if no exception and result not error-like
+                    if not self._is_error_result(last_output):
+                        break
+                    if attempt + 1 == attempts:
+                        break
+                except Namel3ssError:
+                    if attempt + 1 == attempts:
+                        raise
+                    continue
+            state.set("last_output", last_output)
+            return last_output
+        if isinstance(stmt, IRMatch):
+            target_val = evaluator.evaluate(stmt.target) if stmt.target is not None else None
+            for br in stmt.branches:
+                if self._match_branch(br, target_val, evaluator, state):
+                    for act in br.actions:
+                        await self._execute_statement(act, state, runtime_ctx, f"{prefix}.match", allow_return=allow_return)
+                        if state.context.get("__awaiting_input__"):
+                            break
+                    break
+            return state.get("last_output")
+        if isinstance(stmt, IRReturn):
+            if not allow_return:
+                raise Namel3ssError("N3-6002: return used outside helper")
+            value = evaluator.evaluate(stmt.expr) if stmt.expr is not None else None
+            raise ReturnSignal(value)
+        if isinstance(stmt, IRAskUser):
+            provided = self._resolve_provided_input(stmt.var_name, runtime_ctx, state)
+            if provided is not None:
+                self._assign_variable(stmt.var_name, provided, state)
+                return provided
+            request = {
+                "type": "ask",
+                "name": stmt.var_name,
+                "label": stmt.label,
+                "validation": self._validation_to_dict(stmt.validation, evaluator),
+            }
+            state.inputs.append(request)
+            state.context["__awaiting_input__"] = True
+            return None
+        if isinstance(stmt, IRForm):
+            provided = self._resolve_provided_input(stmt.name, runtime_ctx, state)
+            if isinstance(provided, dict):
+                self._assign_variable(stmt.name, provided, state)
+                return provided
+            field_defs = [
+                {
+                    "label": f.label,
+                    "name": f.name,
+                    "validation": self._validation_to_dict(f.validation, evaluator),
+                }
+                for f in stmt.fields
+            ]
+            request = {
+                "type": "form",
+                "name": stmt.name,
+                "label": stmt.label,
+                "fields": field_defs,
+            }
+            state.inputs.append(request)
+            state.context["__awaiting_input__"] = True
+            return None
+        if isinstance(stmt, IRLog):
+            meta_val = evaluator.evaluate(stmt.metadata) if stmt.metadata is not None else None
+            entry = self._build_log_entry(stmt.level, stmt.message, meta_val, state)
+            state.logs.append(entry)
+            if runtime_ctx.tracer:
+                runtime_ctx.tracer.record_flow_event("log", entry)
+            return state.get("last_output")
+        if isinstance(stmt, IRNote):
+            entry = self._build_note_entry(stmt.message, state)
+            state.notes.append(entry)
+            if runtime_ctx.tracer:
+                runtime_ctx.tracer.record_flow_event("note", entry)
+            return state.get("last_output")
+        if isinstance(stmt, IRCheckpoint):
+            entry = self._build_checkpoint_entry(stmt.label, state)
+            state.checkpoints.append(entry)
+            if runtime_ctx.tracer:
+                runtime_ctx.tracer.record_flow_event("checkpoint", entry)
+            return state.get("last_output")
         if isinstance(stmt, IRAction):
             cfg = {
                 "kind": stmt.kind,
@@ -644,6 +816,8 @@ class FlowEngine:
         last_val: Any = None
         for idx, stmt in enumerate(statements or []):
             last_val = await self._execute_statement(stmt, state, runtime_ctx, f"{step_id}.stmt{idx}")
+            if state.context.get("__awaiting_input__"):
+                break
         return last_val
 
     async def _execute_with_timing(
@@ -721,6 +895,18 @@ class FlowEngine:
         env = getattr(state, "variables", None)
         if env and env.has(name):
             return True, env.resolve(name)
+        if env and "." in name:
+            parts = name.split(".")
+            if env.has(parts[0]):
+                value: Any = env.resolve(parts[0])
+                for part in parts[1:]:
+                    if isinstance(value, dict) and part in value:
+                        value = value.get(part)
+                    elif hasattr(value, part):
+                        value = getattr(value, part, None)
+                    else:
+                        return False, None
+                return True, value
         parts = name.split(".")
         value: Any = None
         found = False
@@ -743,12 +929,161 @@ class FlowEngine:
                 return False, None
         return found, value
 
+    def _call_helper(self, name: str, args: list[Any], state: FlowState, runtime_ctx: FlowRuntimeContext | None) -> Any:
+        helper = runtime_ctx.program.helpers.get(name) if runtime_ctx and runtime_ctx.program else None
+        if not helper:
+            raise Namel3ssError(f"N3-6000: unknown helper '{name}'")
+        if len(args) != len(helper.params):
+            raise Namel3ssError("N3-6001: wrong number of arguments for helper")
+        env = (state.variables or VariableEnvironment()).clone()
+        saved_env = state.variables
+        for param, arg in zip(helper.params, args):
+            if env.has(param):
+                env.assign(param, arg)
+            else:
+                env.declare(param, arg)
+            state.set(param, arg)
+        state.variables = env
+        evaluator = self._build_evaluator(state, runtime_ctx)
+        try:
+            for stmt in helper.body:
+                if isinstance(stmt, IRLet):
+                    val = evaluator.evaluate(stmt.expr) if stmt.expr is not None else None
+                    env.declare(stmt.name, val)
+                    state.set(stmt.name, val)
+                elif isinstance(stmt, IRSet):
+                    if not env.has(stmt.name):
+                        raise Namel3ssError(f"Variable '{stmt.name}' is not defined")
+                    val = evaluator.evaluate(stmt.expr) if stmt.expr is not None else None
+                    env.assign(stmt.name, val)
+                    state.set(stmt.name, val)
+                elif isinstance(stmt, IRReturn):
+                    return evaluator.evaluate(stmt.expr) if stmt.expr is not None else None
+                else:
+                    raise Namel3ssError("Helper bodies support let/set/return statements in this phase")
+        finally:
+            state.variables = saved_env
+        return None
+
+    def _is_error_result(self, value: Any) -> bool:
+        if isinstance(value, Exception):
+            return True
+        if isinstance(value, dict):
+            if value.get("error") is not None:
+                return True
+            if "success" in value and value.get("success") is False:
+                return True
+        return False
+
+    def _extract_success_payload(self, value: Any) -> Any:
+        if isinstance(value, dict):
+            if "result" in value:
+                return value.get("result")
+            if "value" in value:
+                return value.get("value")
+        return value
+
+    def _extract_error_payload(self, value: Any) -> Any:
+        if isinstance(value, dict) and "error" in value:
+            return value.get("error")
+        return value
+
+    def _match_branch(self, br: IRMatchBranch, target_val: Any, evaluator: ExpressionEvaluator, state: FlowState) -> bool:
+        pattern = br.pattern
+        env = state.variables or VariableEnvironment()
+        if isinstance(pattern, ast_nodes.SuccessPattern):
+            if self._is_error_result(target_val):
+                return False
+            if pattern.binding:
+                if env.has(pattern.binding):
+                    env.assign(pattern.binding, self._extract_success_payload(target_val))
+                else:
+                    env.declare(pattern.binding, self._extract_success_payload(target_val))
+                state.set(pattern.binding, self._extract_success_payload(target_val))
+            return True
+        if isinstance(pattern, ast_nodes.ErrorPattern):
+            if not self._is_error_result(target_val):
+                return False
+            if pattern.binding:
+                if env.has(pattern.binding):
+                    env.assign(pattern.binding, self._extract_error_payload(target_val))
+                else:
+                    env.declare(pattern.binding, self._extract_error_payload(target_val))
+                state.set(pattern.binding, self._extract_error_payload(target_val))
+            return True
+        if pattern is None:
+            return True
+        try:
+            pat_val = evaluator.evaluate(pattern)
+        except Exception as exc:
+            raise Namel3ssError(str(exc))
+        if isinstance(pat_val, bool):
+            return bool(pat_val)
+        return target_val == pat_val
+
+    def _resolve_provided_input(self, name: str, runtime_ctx: FlowRuntimeContext, state: FlowState) -> Any:
+        env = state.variables or VariableEnvironment()
+        if env.has(name):
+            try:
+                return env.resolve(name)
+            except Exception:
+                return None
+        ctx_inputs = {}
+        exec_ctx = getattr(runtime_ctx, "execution_context", None)
+        if exec_ctx and isinstance(getattr(exec_ctx, "metadata", None), dict):
+            ctx_inputs = exec_ctx.metadata.get("inputs", {}) or {}
+        if isinstance(ctx_inputs, dict) and name in ctx_inputs:
+            return ctx_inputs.get(name)
+        return None
+
+    def _assign_variable(self, name: str, value: Any, state: FlowState) -> None:
+        env = state.variables or VariableEnvironment()
+        if env.has(name):
+            env.assign(name, value)
+        else:
+            env.declare(name, value)
+        state.variables = env
+        state.set(name, value)
+
+    def _validation_to_dict(self, validation: ast_nodes.InputValidation | None, evaluator: ExpressionEvaluator) -> dict | None:
+        if not validation:
+            return None
+        data: dict[str, Any] = {}
+        if validation.field_type:
+            data["type"] = validation.field_type
+        if validation.min_expr is not None:
+            try:
+                data["min"] = evaluator.evaluate(validation.min_expr)
+            except Exception:
+                data["min"] = None
+        if validation.max_expr is not None:
+            try:
+                data["max"] = evaluator.evaluate(validation.max_expr)
+            except Exception:
+                data["max"] = None
+        return data or None
+
+    def _build_log_entry(self, level: str, message: str, metadata: Any, state: FlowState) -> dict:
+        return {
+            "timestamp": time.time(),
+            "level": level,
+            "message": message,
+            "metadata": metadata,
+        }
+
+    def _build_note_entry(self, message: str, state: FlowState) -> dict:
+        return {"timestamp": time.time(), "message": message}
+
+    def _build_checkpoint_entry(self, label: str, state: FlowState) -> dict:
+        return {"timestamp": time.time(), "label": label}
+
     def _build_evaluator(self, state: FlowState, runtime_ctx: FlowRuntimeContext | None) -> ExpressionEvaluator:
         env = getattr(state, "variables", None) or getattr(runtime_ctx, "variables", None) or VariableEnvironment()
         return ExpressionEvaluator(
             env,
             resolver=lambda name: self._resolve_identifier(name, state),
             rulegroup_resolver=lambda expr: self._eval_rulegroup(expr, state, runtime_ctx) if runtime_ctx else (False, None),
+            helper_resolver=lambda name, args: self._call_helper(name, args, state, runtime_ctx),
         )
 
     def _eval_rulegroup(self, expr: ast_nodes.RuleGroupRefExpr, state: FlowState, runtime_ctx: FlowRuntimeContext) -> tuple[bool, Any]:
@@ -928,7 +1263,6 @@ class FlowEngine:
                 env.declare(binding_name, binding_value)
             state.set(binding_name, binding_value)
 
-        inline_steps = []
         for action in selected.actions:
             if isinstance(action, IRAction):
                 cfg = {
@@ -939,11 +1273,9 @@ class FlowEngine:
                 }
                 if action.message:
                     cfg["params"] = {"message": action.message}
-                inline_steps.append(cfg)
+                await self._run_inline_sequence(node.id, [cfg], state, runtime_ctx)
             else:
                 await self._execute_statement(action, state, runtime_ctx, node.id)
-        if inline_steps:
-            await self._run_inline_sequence(node.id, inline_steps, state, runtime_ctx)
         if binding_name:
             if had_prev:
                 env.assign(binding_name, previous_binding)

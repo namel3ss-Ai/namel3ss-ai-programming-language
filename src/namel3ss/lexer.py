@@ -12,6 +12,47 @@ from .errors import LexError
 KEYWORDS = {
     "let",
     "set",
+    "length",
+    "first",
+    "last",
+    "sorted",
+    "form",
+    "reverse",
+    "unique",
+    "elements",
+    "sum",
+    "ask",
+    "user",
+    "form",
+    "field",
+    "log",
+    "info",
+    "warning",
+    "error",
+    "note",
+    "checkpoint",
+    "trim",
+    "lowercase",
+    "uppercase",
+    "replace",
+    "split",
+    "join",
+    "slugify",
+    "minimum",
+    "maximum",
+    "mean",
+    "round",
+    "absolute",
+    "any",
+    "current",
+    "timestamp",
+    "date",
+    "random",
+    "uuid",
+    "all",
+    "where",
+    "from",
+    "of",
     "if",
     "otherwise",
     "unless",
@@ -42,9 +83,20 @@ KEYWORDS = {
     "provider",
     "input",
     "from",
+    "define",
+    "helper",
+    "takes",
+    "returns",
+    "return",
+    "settings",
+    "env",
+    "module",
     "goal",
     "personality",
     "type",
+    "must",
+    "least",
+    "most",
     # English-style surface syntax
     "remember",
     "conversation",
@@ -59,6 +111,13 @@ KEYWORDS = {
     "minus",
     "times",
     "divided",
+    "repeat",
+    "for",
+    "each",
+    "in",
+    "up",
+    "to",
+    "times",
     "when",
     "called",
     "comes",
@@ -68,6 +127,13 @@ KEYWORDS = {
     "is",
     "this",
     "will",
+    "match",
+    "when",
+    "success",
+    "error",
+    "retry",
+    "backoff",
+    "with",
     "first",
     "then",
     "finally",
@@ -270,6 +336,16 @@ class Lexer:
                 continue
             if char == "}":
                 tokens.append(Token("RBRACE", "}", line_no, column))
+                i += 1
+                column += 1
+                continue
+            if char == "[":
+                tokens.append(Token("LBRACKET", "[", line_no, column))
+                i += 1
+                column += 1
+                continue
+            if char == "]":
+                tokens.append(Token("RBRACKET", "]", line_no, column))
                 i += 1
                 column += 1
                 continue

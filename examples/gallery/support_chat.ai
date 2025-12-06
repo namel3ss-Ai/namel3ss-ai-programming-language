@@ -1,0 +1,28 @@
+use module "support_shared"
+
+define helper "route_intent":
+  takes intent
+  returns destination
+  match intent:
+    when "billing":
+      return "billing_agent"
+    when "technical":
+      return "tech_agent"
+    otherwise:
+      return "fallback_agent"
+
+flow "support_chat":
+  step "classify":
+    ask user for "Issue" as issue
+    log info "classifying issue"
+    let intent be issue
+
+  step "route":
+    let target be route_intent(intent)
+    match target:
+      when "billing_agent":
+        do agent "billing_agent"
+      when "tech_agent":
+        do agent "tech_agent"
+      otherwise:
+        do agent "fallback_agent"

@@ -1,0 +1,11 @@
+flow "signup_flow":
+  step "collect":
+    form "Signup" as signup:
+      field "Name" as name
+        type is text
+      field "Age" as age
+        type is number
+        must be at least 18
+    log info "signup collected" with signup
+    checkpoint "after_signup"
+    do agent "welcome_agent"

@@ -39,6 +39,10 @@ class FlowState:
     data: Dict[str, Any] = field(default_factory=dict)
     context: Dict[str, Any] = field(default_factory=dict)
     errors: list[FlowError] = field(default_factory=list)
+    inputs: list = field(default_factory=list)
+    logs: list = field(default_factory=list)
+    notes: list = field(default_factory=list)
+    checkpoints: list = field(default_factory=list)
     variables: VariableEnvironment | None = None
     _baseline: Dict[str, Any] = field(default_factory=dict, init=False, repr=False)
 
@@ -59,6 +63,10 @@ class FlowState:
             data=dict(self.data),
             context=dict(self.context),
             errors=list(self.errors),
+            inputs=list(self.inputs),
+            logs=list(self.logs),
+            notes=list(self.notes),
+            checkpoints=list(self.checkpoints),
             variables=self.variables.clone() if self.variables else None,
         )
         clone._baseline = dict(self.data)

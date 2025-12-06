@@ -68,7 +68,8 @@ class UIEventRouter:
                 context=context.metadata.get("execution_context"),  # may be None, FlowEngine will build new one
                 initial_state={"ui_event": event.payload},
             )
-            return UIEventResult(success=True, updated_state={"flow": asdict(result)})
+            flow_payload = result.to_dict() if hasattr(result, "to_dict") else asdict(result)
+            return UIEventResult(success=True, updated_state={"flow": flow_payload})
 
         if handler.handler_kind == "agent":
             if handler.target not in self.agent_runner.program.agents:

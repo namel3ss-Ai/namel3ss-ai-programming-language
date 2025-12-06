@@ -6,3 +6,22 @@ flow "scoring":
 
     if total is greater than 10:
       do agent "notify"
+
+flow "collections":
+  step "aggregate":
+    let scores be [3, 1, 2]
+    let sorted_scores be sorted form of scores
+    let high_scores be all scores where item > 1
+    let total be sum(scores)
+
+    repeat for each s in scores:
+      set total to total + s
+
+    do tool "echo"
+
+flow "strings":
+  step "cleanup":
+    let title be "  Hello World!  "
+    let trimmed be trim of title
+    let slug be slugify of title
+    do tool "echo"
