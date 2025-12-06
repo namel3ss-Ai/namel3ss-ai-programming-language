@@ -73,9 +73,15 @@ Each block kind has required and optional fields aligned with the current IR:
 - Section names must be unique within a page; component ordering is preserved.
 
 ## Expressions & Values
-- The language accepts string literals, booleans, numbers where appropriate; most fields are simple strings (e.g., names, routes, prompts).
-- Lists are used for references (page `ai_calls`, `agents`, `memories`; flow `steps`; section `components`).
-- Components use a flat `props` dictionary for configuration; no additional expression syntax is supported.
+- Variables: `let <name> be <expression>` (or `let <name> = <expression>`) declares a variable in the current flow/agent scope. Redeclaring in the same scope is an error.
+- Mutation: `set <name> to <expression>` updates an existing variable. Assigning to an undefined variable is an error.
+- Literals: strings, booleans (`true`/`false`), and numbers (int/float).
+- Operators:
+  - Logical: `and`, `or`, `not`
+  - Comparisons: `==`, `!=`, `<`, `>`, `<=`, `>=` plus English forms (`is greater than`, `is less than`, `is at least`, `is at most`)
+  - Arithmetic: `+`, `-`, `*`, `/`, `%` plus English forms (`plus`, `minus`, `times`, `divided by`)
+- Precedence (lowest to highest): `or`, `and`, `not`, comparisons, `+/-`, `*//%`, unary `+/-`, primary (identifiers, literals, parentheses).
+- Conditions must evaluate to booleans; type mismatches, divide-by-zero, and invalid operators surface diagnostics.
 
 ## Diagnostics Philosophy
 - Categories: `syntax`, `semantic`, `lang-spec`, `performance`, `security`.

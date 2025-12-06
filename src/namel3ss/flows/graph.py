@@ -9,6 +9,7 @@ from dataclasses import dataclass, field
 from typing import Any, Dict, Optional
 
 from ..ir import IRFlow
+from ..runtime.expressions import VariableEnvironment
 
 
 @dataclass
@@ -38,11 +39,14 @@ class FlowState:
     data: Dict[str, Any] = field(default_factory=dict)
     context: Dict[str, Any] = field(default_factory=dict)
     errors: list[FlowError] = field(default_factory=list)
+    variables: VariableEnvironment | None = None
     _baseline: Dict[str, Any] = field(default_factory=dict, init=False, repr=False)
 
     def __post_init__(self) -> None:
         # Track a snapshot so we can compute deterministic deltas when merging branches.
         self._baseline = dict(self.data)
+        if self.variables is None:
+            self.variables = VariableEnvironment()
 
     def get(self, key: str, default: Any = None) -> Any:
         return self.data.get(key, default)
@@ -51,7 +55,12 @@ class FlowState:
         self.data[key] = value
 
     def copy(self) -> "FlowState":
-        clone = FlowState(data=dict(self.data), context=dict(self.context), errors=list(self.errors))
+        clone = FlowState(
+            data=dict(self.data),
+            context=dict(self.context),
+            errors=list(self.errors),
+            variables=self.variables.clone() if self.variables else None,
+        )
         clone._baseline = dict(self.data)
         return clone
 
@@ -79,6 +88,7 @@ class FlowRuntimeContext:
     max_parallel_tasks: int = 4
     parallel_semaphore: asyncio.Semaphore | None = None
     step_results: list | None = None
+    variables: VariableEnvironment | None = None
 
 
 def flow_ir_to_graph(flow: IRFlow) -> FlowGraph:
@@ -101,6 +111,7 @@ def flow_ir_to_graph(flow: IRFlow) -> FlowGraph:
                 "step_name": step.name,
                 "branches": getattr(step, "conditional_branches", None),
                 "message": getattr(step, "message", None),
+                "statements": getattr(step, "statements", None),
                 "reason": "unconditional" if step.kind == "goto_flow" else None,
             },
             next_ids=[],

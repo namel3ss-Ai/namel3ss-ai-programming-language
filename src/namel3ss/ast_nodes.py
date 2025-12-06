@@ -165,6 +165,7 @@ class FlowStepDecl:
     kind: str
     target: str
     message: Optional[str] = None
+    statements: List["Statement | FlowAction"] = field(default_factory=list)
     conditional_branches: Optional[list["ConditionalBranch"]] = None
     span: Optional[Span] = None
 
@@ -221,6 +222,23 @@ class PatternExpr(Expr):
 
 
 @dataclass
+class Statement:
+    span: Optional[Span] = None
+
+
+@dataclass
+class LetStatement(Statement):
+    name: str = ""
+    expr: Expr | None = None
+
+
+@dataclass
+class SetStatement(Statement):
+    name: str = ""
+    expr: Expr | None = None
+
+
+@dataclass
 class RuleGroupRefExpr(Expr):
     group_name: str = ""
     condition_name: Optional[str] = None
@@ -237,10 +255,15 @@ class FlowAction:
 @dataclass
 class ConditionalBranch:
     condition: Optional[Expr]
-    actions: List[FlowAction] = field(default_factory=list)
+    actions: List[Statement | FlowAction] = field(default_factory=list)
     label: Optional[str] = None
     binding: Optional[str] = None
     span: Optional[Span] = None
+
+
+@dataclass
+class IfStatement(Statement):
+    branches: List[ConditionalBranch] = field(default_factory=list)
 
 
 @dataclass

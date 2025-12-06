@@ -104,3 +104,22 @@ flow "billing_flow":
 ```
 
 `go to flow "name"` ends the current flow and continues execution in the target flow. When used inside a conditional branch, only the selected branch's redirect runs, and subsequent steps in the current flow are skipped. Traces include a `flow.goto` event showing the source step and destination flow.
+
+## Variables and Expressions (Phase 1)
+
+Use `let <name> be <expression>` to declare variables and `set <name> to <expression>` to mutate them. The symbolic `=` form is still accepted for developers, but the English `be` / `to` style is preferred. Arithmetic can be written with symbols (`+`, `-`, `*`, `/`, `%`) or words (`plus`, `minus`, `times`, `divided by`). Comparisons support both symbols and words such as `is greater than`, `is less than`, `is at least`, and `is at most`.
+
+Example:
+
+```ai
+flow "scoring":
+  step "compute":
+    let base be 10
+    let bonus be 5
+    let total be base plus bonus
+
+    if total is greater than 10:
+      do agent "notify"
+```
+
+Boolean expressions use `and`, `or`, and `not`, and parentheses are available for grouping. Redeclaring a variable in the same scope or assigning to an undefined variable produces a diagnostic.

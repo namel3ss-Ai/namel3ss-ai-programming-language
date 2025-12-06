@@ -1,0 +1,8 @@
+flow "scoring":
+  step "compute score":
+    let base be 10
+    let bonus be 5
+    let total be base plus bonus
+
+    if total is greater than 10:
+      do agent "notify"

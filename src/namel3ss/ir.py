@@ -64,10 +64,11 @@ class IRMemory:
 @dataclass
 class IRFlowStep:
     name: str
-    kind: Literal["ai", "agent", "tool", "condition", "goto_flow"]
+    kind: Literal["ai", "agent", "tool", "condition", "goto_flow", "script"]
     target: str
     message: str | None = None
     conditional_branches: list["IRConditionalBranch"] | None = None
+    statements: list["IRStatement"] | None = None
 
 
 @dataclass
@@ -85,9 +86,29 @@ class IRAction:
 
 
 @dataclass
+class IRLet:
+    name: str
+    expr: ast_nodes.Expr | None = None
+
+
+@dataclass
+class IRSet:
+    name: str
+    expr: ast_nodes.Expr | None = None
+
+
+@dataclass
+class IRIf:
+    branches: list["IRConditionalBranch"] = field(default_factory=list)
+
+
+IRStatement = IRAction | IRLet | IRSet | IRIf
+
+
+@dataclass
 class IRConditionalBranch:
     condition: ast_nodes.Expr | None
-    actions: List[IRAction] = field(default_factory=list)
+    actions: List[IRStatement] = field(default_factory=list)
     label: str | None = None
     binding: str | None = None
     macro_origin: str | None = None
@@ -179,6 +200,36 @@ def ast_to_ir(module: ast_nodes.Module) -> IRProgram:
             return ast_nodes.PatternExpr(subject=expr.subject, pairs=updated_pairs, span=expr.span), None
         return expr, None
 
+    def lower_statement(stmt: ast_nodes.Statement | ast_nodes.FlowAction) -> IRStatement:
+        if isinstance(stmt, ast_nodes.FlowAction):
+            return IRAction(kind=stmt.kind, target=stmt.target, message=stmt.message)
+        if isinstance(stmt, ast_nodes.LetStatement):
+            return IRLet(name=stmt.name, expr=stmt.expr)
+        if isinstance(stmt, ast_nodes.SetStatement):
+            return IRSet(name=stmt.name, expr=stmt.expr)
+        if isinstance(stmt, ast_nodes.IfStatement):
+            branches = [lower_branch(br) for br in stmt.branches]
+            return IRIf(branches=branches)
+        raise IRError(f"Unsupported statement type '{type(stmt).__name__}'", getattr(stmt, "span", None) and getattr(stmt.span, "line", None))
+
+    def lower_branch(br: ast_nodes.ConditionalBranch) -> IRConditionalBranch:
+        cond, macro_origin = transform_expr(br.condition)
+        if macro_origin is None and isinstance(br.condition, ast_nodes.Identifier) and br.condition.name in macro_defs:
+            macro_origin = br.condition.name
+        if br.binding and br.binding in macro_defs:
+            raise IRError(
+                f"Binding name '{br.binding}' conflicts with condition macro.",
+                br.span and br.span.line,
+            )
+        actions = [lower_statement(act) for act in br.actions]
+        return IRConditionalBranch(
+            condition=cond,
+            actions=actions,
+            label=br.label,
+            binding=br.binding,
+            macro_origin=macro_origin,
+        )
+
     for decl in module.declarations:
         if isinstance(decl, ast_nodes.ConditionMacroDecl):
             continue
@@ -255,29 +306,7 @@ def ast_to_ir(module: ast_nodes.Module) -> IRProgram:
 
             agent_branches: list[IRConditionalBranch] | None = None
             if getattr(decl, "conditional_branches", None):
-                agent_branches = []
-                for br in decl.conditional_branches or []:
-                    actions = [
-                        IRAction(kind=act.kind, target=act.target, message=act.message)
-                        for act in br.actions
-                    ]
-                    cond, macro_origin = transform_expr(br.condition)
-                    if macro_origin is None and isinstance(br.condition, ast_nodes.Identifier) and br.condition.name in macro_defs:
-                        macro_origin = br.condition.name
-                    if br.binding and br.binding in macro_defs:
-                        raise IRError(
-                            f"Binding name '{br.binding}' conflicts with condition macro.",
-                            br.span and br.span.line,
-                        )
-                    agent_branches.append(
-                        IRConditionalBranch(
-                            condition=cond,
-                            actions=actions,
-                            label=br.label,
-                            binding=br.binding,
-                            macro_origin=macro_origin,
-                        )
-                    )
+                agent_branches = [lower_branch(br) for br in decl.conditional_branches or []]
             program.agents[decl.name] = IRAgent(
                 name=decl.name, goal=decl.goal, personality=decl.personality, conditional_branches=agent_branches
             )
@@ -301,30 +330,19 @@ def ast_to_ir(module: ast_nodes.Module) -> IRProgram:
                 )
             flow_steps: List[IRFlowStep] = []
             for step in decl.steps:
-                if step.conditional_branches:
-                    branches: list[IRConditionalBranch] = []
-                    for br in step.conditional_branches:
-                        actions = [
-                            IRAction(kind=act.kind, target=act.target, message=act.message)
-                            for act in br.actions
-                        ]
-                        cond, macro_origin = transform_expr(br.condition)
-                        if macro_origin is None and isinstance(br.condition, ast_nodes.Identifier) and br.condition.name in macro_defs:
-                            macro_origin = br.condition.name
-                        if br.binding and br.binding in macro_defs:
-                            raise IRError(
-                                f"Binding name '{br.binding}' conflicts with condition macro.",
-                                br.span and br.span.line,
-                            )
-                        branches.append(
-                            IRConditionalBranch(
-                                condition=cond,
-                                actions=actions,
-                                label=br.label,
-                                binding=br.binding,
-                                macro_origin=macro_origin,
-                            )
+                if step.statements:
+                    ir_statements = [lower_statement(stmt) for stmt in step.statements]
+                    flow_steps.append(
+                        IRFlowStep(
+                            name=step.name,
+                            kind="script",
+                            target=step.target or step.name,
+                            message=getattr(step, "message", None),
+                            statements=ir_statements,
                         )
+                    )
+                elif step.conditional_branches:
+                    branches: list[IRConditionalBranch] = [lower_branch(br) for br in step.conditional_branches]
                     flow_steps.append(
                         IRFlowStep(
                             name=step.name,
@@ -411,6 +429,8 @@ def ast_to_ir(module: ast_nodes.Module) -> IRProgram:
                     raise IRError(
                         f"Flow '{flow.name}' references missing tool '{step.target}'"
                     )
+            elif step.kind in {"condition", "script"}:
+                continue
             elif step.kind == "goto_flow":
                 # Flow redirection target validated at runtime; keep IR flexible.
                 continue

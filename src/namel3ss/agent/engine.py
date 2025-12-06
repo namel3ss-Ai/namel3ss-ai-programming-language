@@ -9,10 +9,11 @@ from typing import Any, Optional
 from .. import ast_nodes
 from ..ai.registry import ModelRegistry
 from ..errors import Namel3ssError
-from ..ir import IRAgent, IRProgram
+from ..ir import IRAction, IRAgent, IRIf, IRLet, IRProgram, IRSet, IRStatement
 from ..observability.metrics import default_metrics
 from ..observability.tracing import default_tracer
 from ..runtime.context import ExecutionContext, execute_ai_call_with_registry
+from ..runtime.expressions import EvaluationError, ExpressionEvaluator, VariableEnvironment
 from ..tools.registry import ToolRegistry
 from .evaluation import AgentEvaluation, AgentEvaluator
 from .evaluators import AgentStepEvaluator, DeterministicEvaluator, OpenAIEvaluator
@@ -363,7 +364,10 @@ class AgentRunner:
             return expr.group_name
         return str(expr)
 
-    def _resolve_identifier(self, name: str, context: ExecutionContext) -> Any:
+    def _resolve_identifier(self, name: str, context: ExecutionContext) -> tuple[bool, Any]:
+        env = getattr(context, "_env", None)
+        if env and env.has(name):
+            return True, env.resolve(name)
         parts = name.split(".")
         current: Any = None
         meta = getattr(context, "metadata", None) or {}
@@ -371,12 +375,27 @@ class AgentRunner:
             current = meta.get(parts[0])
         elif hasattr(context, parts[0]):
             current = getattr(context, parts[0], None)
+        elif parts[0] in getattr(context, "variables", {}):
+            current = context.variables.get(parts[0])
+        else:
+            return False, None
         for part in parts[1:]:
-            if isinstance(current, dict):
+            if isinstance(current, dict) and part in current:
                 current = current.get(part)
-            else:
+            elif hasattr(current, part):
                 current = getattr(current, part, None)
-        return current
+            else:
+                return False, None
+        return True, current
+
+    def _build_evaluator(self, context: ExecutionContext) -> ExpressionEvaluator:
+        env = getattr(context, "_env", None) or VariableEnvironment(context.variables)
+        context._env = env
+        return ExpressionEvaluator(
+            env,
+            resolver=lambda name: self._resolve_identifier(name, context),
+            rulegroup_resolver=lambda expr: self._eval_rulegroup(expr, context),
+        )
 
     def _eval_rulegroup(self, expr: ast_nodes.RuleGroupRefExpr, context: ExecutionContext) -> tuple[bool, Any]:
         groups = getattr(self.program, "rulegroups", {}) if self.program else {}
@@ -421,46 +440,18 @@ class AgentRunner:
         return all_true, all_true
 
     def _eval_expr(self, expr: ast_nodes.Expr, context: ExecutionContext) -> Any:
-        if isinstance(expr, ast_nodes.Literal):
-            return expr.value
-        if isinstance(expr, ast_nodes.Identifier):
-            return self._resolve_identifier(expr.name, context)
-        if isinstance(expr, ast_nodes.RuleGroupRefExpr):
-            res, _ = self._eval_rulegroup(expr, context)
-            return res
-        if isinstance(expr, ast_nodes.UnaryOp):
-            val = self._eval_expr(expr.operand, context) if expr.operand else None
-            if expr.op == "not":
-                return not bool(val)
-            raise Namel3ssError(f"Unsupported unary operator '{expr.op}'")
-        if isinstance(expr, ast_nodes.BinaryOp):
-            left = self._eval_expr(expr.left, context) if expr.left else None
-            right = self._eval_expr(expr.right, context) if expr.right else None
-            try:
-                if expr.op == "and":
-                    return bool(left) and bool(right)
-                if expr.op == "or":
-                    return bool(left) or bool(right)
-                if expr.op == "is":
-                    return left == right
-                if expr.op == "is not":
-                    return left != right
-                if expr.op == "<":
-                    return left < right
-                if expr.op == ">":
-                    return left > right
-                if expr.op == "<=":
-                    return left <= right
-                if expr.op == ">=":
-                    return left >= right
-            except Exception:
-                return False
-            raise Namel3ssError(f"Unsupported operator '{expr.op}'")
-        raise Namel3ssError("Unsupported expression")
+        if isinstance(expr, ast_nodes.PatternExpr):
+            match, _ = self._match_pattern(expr, context)
+            return match
+        evaluator = self._build_evaluator(context)
+        try:
+            return evaluator.evaluate(expr)
+        except EvaluationError as exc:
+            raise Namel3ssError(str(exc))
 
     def _match_pattern(self, pattern: ast_nodes.PatternExpr, context: ExecutionContext) -> tuple[bool, Any]:
-        subject = self._resolve_identifier(pattern.subject.name, context)
-        if not isinstance(subject, dict):
+        found, subject = self._resolve_identifier(pattern.subject.name, context)
+        if not found or not isinstance(subject, dict):
             return False, None
         for pair in pattern.pairs:
             subject_val = subject.get(pair.key)
@@ -476,10 +467,10 @@ class AgentRunner:
                     elif op == "or":
                         if not (bool(left_val) or bool(right_val)):
                             return False, None
-                    elif op == "is":
+                    elif op in {"is", "==", "="}:
                         if left_val != right_val:
                             return False, None
-                    elif op == "is not":
+                    elif op in {"is not", "!="}:
                         if left_val == right_val:
                             return False, None
                     elif op == "<":
@@ -509,35 +500,76 @@ class AgentRunner:
             return self._match_pattern(expr, context)
         if isinstance(expr, ast_nodes.RuleGroupRefExpr):
             return self._eval_rulegroup(expr, context)
-        if isinstance(expr, ast_nodes.BinaryOp):
-            left = self._eval_expr(expr.left, context) if expr.left else None
-            right = self._eval_expr(expr.right, context) if expr.right else None
-            result = False
-            try:
-                if expr.op == "and":
-                    result = bool(left) and bool(right)
-                elif expr.op == "or":
-                    result = bool(left) or bool(right)
-                elif expr.op == "is":
-                    result = left == right
-                elif expr.op == "is not":
-                    result = left != right
-                elif expr.op == "<":
-                    result = left < right
-                elif expr.op == ">":
-                    result = left > right
-                elif expr.op == "<=":
-                    result = left <= right
-                elif expr.op == ">=":
-                    result = left >= right
-            except Exception:
-                result = False
-            return result, right
-        if isinstance(expr, ast_nodes.UnaryOp) and expr.op == "not":
-            val = self._eval_expr(expr.operand, context) if expr.operand else None
-            return (not bool(val)), not bool(val)
-        value = self._eval_expr(expr, context)
+        evaluator = self._build_evaluator(context)
+        try:
+            value = evaluator.evaluate(expr)
+        except EvaluationError as exc:
+            raise Namel3ssError(str(exc))
+        if not isinstance(value, bool):
+            raise Namel3ssError("Condition must evaluate to a boolean")
         return bool(value), value
+
+    def _execute_ir_if(self, stmt: IRIf, context: ExecutionContext) -> None:
+        env = getattr(context, "_env", None) or VariableEnvironment(context.variables)
+        context._env = env
+        for idx, br in enumerate(stmt.branches):
+            result, candidate_binding = self._eval_condition_with_binding(br.condition, context)
+            label = br.label or f"branch-{idx}"
+            if br.label == "unless":
+                result = not result
+            if not result:
+                continue
+            had_prev = False
+            previous_binding = None
+            if br.binding:
+                if env.has(br.binding):
+                    had_prev = True
+                    previous_binding = env.resolve(br.binding)
+                    env.assign(br.binding, candidate_binding)
+                else:
+                    env.declare(br.binding, candidate_binding)
+                context.variables = env.values
+                context.metadata[br.binding] = candidate_binding
+            for action in br.actions:
+                self._execute_statement(action, context)
+            if br.binding:
+                if had_prev:
+                    env.assign(br.binding, previous_binding)
+                    context.metadata[br.binding] = previous_binding
+                else:
+                    env.remove(br.binding)
+                    context.metadata.pop(br.binding, None)
+            break
+
+    def _execute_statement(self, stmt: IRStatement, context: ExecutionContext) -> Any:
+        env = getattr(context, "_env", None) or VariableEnvironment(context.variables)
+        context._env = env
+        evaluator = self._build_evaluator(context)
+        if isinstance(stmt, IRLet):
+            value = evaluator.evaluate(stmt.expr) if stmt.expr is not None else None
+            env.declare(stmt.name, value)
+            context.variables = env.values
+            context.metadata[stmt.name] = value
+            context.metadata["last_output"] = value
+            return value
+        if isinstance(stmt, IRSet):
+            if not env.has(stmt.name):
+                raise Namel3ssError(f"Variable '{stmt.name}' is not defined")
+            value = evaluator.evaluate(stmt.expr) if stmt.expr is not None else None
+            env.assign(stmt.name, value)
+            context.variables = env.values
+            context.metadata[stmt.name] = value
+            context.metadata["last_output"] = value
+            return value
+        if isinstance(stmt, IRIf):
+            self._execute_ir_if(stmt, context)
+            return context.metadata.get("last_output")
+        if isinstance(stmt, IRAction):
+            step = AgentStep(kind=stmt.kind if stmt.kind != "agent" else "subagent", target=stmt.target)
+            output = self._run_step(step, context.metadata.get("last_output") if isinstance(context.metadata.get("last_output"), dict) else None, context)
+            context.metadata["last_output"] = output
+            return output
+        raise Namel3ssError(f"Unsupported statement '{type(stmt).__name__}'")
 
     def _run_agent_conditions(self, agent: IRAgent, context: ExecutionContext) -> dict:
         branches = agent.conditional_branches or []
@@ -546,6 +578,8 @@ class AgentRunner:
         selected_expr_display = None
         binding_value = None
         binding_name = None
+        env = getattr(context, "_env", None) or VariableEnvironment(context.variables)
+        context._env = env
         for idx, br in enumerate(branches):
             cond = br.condition
             result, candidate_binding = self._eval_condition_with_binding(cond, context)
@@ -581,27 +615,37 @@ class AgentRunner:
         previous_binding = None
         had_prev = False
         if binding_name:
-            if binding_name in context.metadata:
+            if env.has(binding_name):
                 had_prev = True
-                previous_binding = context.metadata.get(binding_name)
+                previous_binding = env.resolve(binding_name)
+                env.assign(binding_name, binding_value)
+            else:
+                env.declare(binding_name, binding_value)
+            context.variables = env.values
             context.metadata[binding_name] = binding_value
         for action in selected.actions:
-            step = AgentStep(kind=action.kind if action.kind != "agent" else "subagent", target=action.target)
-            output = self._run_step(step, last_output if isinstance(last_output, dict) else None, context)
-            steps_results.append(
-                AgentStepResult(
-                    step_id=step.id,
-                    input={"previous": last_output},
-                    output=output if isinstance(output, dict) else {"value": output},
-                    success=True,
-                    error=None,
+            if isinstance(action, IRAction):
+                step = AgentStep(kind=action.kind if action.kind != "agent" else "subagent", target=action.target)
+                output = self._run_step(step, last_output if isinstance(last_output, dict) else None, context)
+                steps_results.append(
+                    AgentStepResult(
+                        step_id=step.id,
+                        input={"previous": last_output},
+                        output=output if isinstance(output, dict) else {"value": output},
+                        success=True,
+                        error=None,
+                    )
                 )
-            )
-            last_output = output
+                last_output = output
+                context.metadata["last_output"] = output
+            else:
+                last_output = self._execute_statement(action, context)
         if binding_name:
             if had_prev:
+                env.assign(binding_name, previous_binding)
                 context.metadata[binding_name] = previous_binding
             else:
+                env.remove(binding_name)
                 context.metadata.pop(binding_name, None)
         return {
             "branch": selected_label,

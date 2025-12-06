@@ -10,6 +10,8 @@ from typing import List, Optional
 from .errors import LexError
 
 KEYWORDS = {
+    "let",
+    "set",
     "if",
     "otherwise",
     "unless",
@@ -47,11 +49,16 @@ KEYWORDS = {
     "remember",
     "conversation",
     "as",
+    "be",
     "provided",
     "by",
     "not",
     "and",
     "or",
+    "plus",
+    "minus",
+    "times",
+    "divided",
     "when",
     "called",
     "comes",
@@ -66,6 +73,12 @@ KEYWORDS = {
     "finally",
     "go",
     "to",
+    "than",
+    "greater",
+    "less",
+    "least",
+    "most",
+    "equal",
     "starts",
     "at",
     "found",
@@ -80,6 +93,8 @@ KEYWORDS = {
     "define",
     "condition",
     "rulegroup",
+    "true",
+    "false",
 }
 
 
@@ -203,6 +218,16 @@ class Lexer:
                 token_type = "KEYWORD" if ident in KEYWORDS else "IDENT"
                 tokens.append(Token(token_type, ident, line_no, start_col))
                 continue
+            if char in {"+", "-", "*", "/", "%"}:
+                tokens.append(Token("OP", char, line_no, column))
+                i += 1
+                column += 1
+                continue
+            if char in {"(", ")"}:
+                tokens.append(Token("LPAREN" if char == "(" else "RPAREN", char, line_no, column))
+                i += 1
+                column += 1
+                continue
             if char in {"<", ">"}:
                 start_col = column
                 if i + 1 < len(line) and line[i + 1] == "=":
@@ -214,6 +239,25 @@ class Lexer:
                     i += 1
                     column += 1
                 continue
+            if char == "=":
+                start_col = column
+                if i + 1 < len(line) and line[i + 1] == "=":
+                    tokens.append(Token("OP", "==", line_no, start_col))
+                    i += 2
+                    column += 2
+                else:
+                    tokens.append(Token("OP", "=", line_no, start_col))
+                    i += 1
+                    column += 1
+                continue
+            if char == "!":
+                start_col = column
+                if i + 1 < len(line) and line[i + 1] == "=":
+                    tokens.append(Token("OP", "!=", line_no, start_col))
+                    i += 2
+                    column += 2
+                    continue
+                raise LexError(f"Unexpected character '{char}'", line_no, column)
             if char == ":":
                 tokens.append(Token("COLON", ":", line_no, column))
                 i += 1

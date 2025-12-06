@@ -28,6 +28,11 @@ severity, plus location metadata.
 | N3-1005  | lang-spec  | error            | Field has an invalid type or value. |
 | N3-2001  | semantic   | error            | Reference to an unknown target (ai/agent/model/memory/etc.). |
 | N3-2002  | semantic   | error            | Invalid argument or parameter binding. |
+| N3-2101  | semantic   | error            | Variable is not defined when referenced. |
+| N3-2102  | semantic   | error            | Variable redeclaration in the same scope. |
+| N3-2103  | semantic   | error            | Invalid operator for the provided operand types. |
+| N3-2104  | semantic   | error            | Condition did not evaluate to a boolean. |
+| N3-2105  | semantic   | error            | Divide-by-zero while evaluating an expression. |
 | N3-3001  | performance| warning          | Potentially expensive chain detected (reserved). |
 | N3-5001  | security   | warning          | Insecure configuration detected (reserved). |
 

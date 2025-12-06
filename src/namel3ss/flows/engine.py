@@ -16,11 +16,12 @@ from ..agent.engine import AgentRunner
 from ..ai.registry import ModelRegistry
 from ..ai.router import ModelRouter
 from ..errors import Namel3ssError
-from ..ir import IRFlow, IRProgram
+from ..ir import IRAction, IRFlow, IRIf, IRLet, IRProgram, IRSet, IRStatement
 from ..metrics.tracker import MetricsTracker
 from ..observability.metrics import default_metrics
 from ..observability.tracing import default_tracer
 from ..runtime.context import ExecutionContext, execute_ai_call_with_registry
+from ..runtime.expressions import EvaluationError, ExpressionEvaluator, VariableEnvironment
 from ..secrets.manager import SecretsManager
 from ..tools.registry import ToolRegistry
 from .graph import (
@@ -70,6 +71,7 @@ class FlowEngine:
             execution_context=context,
             max_parallel_tasks=self.max_parallel_tasks,
             parallel_semaphore=asyncio.Semaphore(self.max_parallel_tasks),
+            variables=None,
         )
 
     def run_flow(
@@ -81,6 +83,8 @@ class FlowEngine:
         self, flow: IRFlow, context: ExecutionContext, initial_state: Optional[dict[str, Any]] = None
     ) -> FlowRunResult:
         runtime_ctx = self._build_runtime_context(context)
+        env = VariableEnvironment(context.variables)
+        runtime_ctx.variables = env
         state = FlowState(
             data=initial_state or {},
             context={
@@ -88,6 +92,7 @@ class FlowEngine:
                 "request_id": context.request_id,
                 "app": context.app_name,
             },
+            variables=env,
         )
         tracer = context.tracer
         step_results: list[FlowStepResult] = []
@@ -119,6 +124,12 @@ class FlowEngine:
             current_flow = next_flow
             state = result.state or state
 
+        if result and result.state and getattr(result.state, "variables", None):
+            context.variables = result.state.variables.values
+            runtime_ctx.variables = result.state.variables
+        elif state and getattr(state, "variables", None):
+            context.variables = state.variables.values
+            runtime_ctx.variables = state.variables
         return result or FlowRunResult(flow_name=flow.name)
 
     async def a_run_flow(
@@ -301,6 +312,12 @@ class FlowEngine:
                 target.data[namespaced] = value
             for err in branch_state.errors:
                 target.errors.append(err)
+            if target.variables and branch_state.variables:
+                for name, value in branch_state.variables.values.items():
+                    if target.variables.has(name):
+                        target.variables.assign(name, value)
+                    else:
+                        target.variables.declare(name, value)
         return target
 
     def _evaluate_branch(self, node: FlowNode, state: FlowState, runtime_ctx: FlowRuntimeContext) -> str | None:
@@ -395,6 +412,9 @@ class FlowEngine:
                 sub_state = state.copy()
                 result = await self.a_run_flow(graph, sub_state, runtime_ctx, flow_name=target)
                 output = {"subflow": target, "state": result.state.data if result.state else {}}
+            elif node.kind == "script":
+                statements = node.config.get("statements") or []
+                output = await self._execute_script(statements, state, runtime_ctx, node.id)
             elif node.kind == "condition":
                 output = await self._run_condition_node(node, state, runtime_ctx)
             elif node.kind == "function":
@@ -557,6 +577,75 @@ class FlowEngine:
                 break
         return state
 
+    async def _execute_ir_if(self, stmt: IRIf, state: FlowState, runtime_ctx: FlowRuntimeContext, prefix: str) -> None:
+        env = state.variables or runtime_ctx.variables or VariableEnvironment()
+        for idx, br in enumerate(stmt.branches):
+            result, candidate_binding = self._eval_condition_with_binding(br.condition, state, runtime_ctx)
+            label = br.label or f"branch-{idx}"
+            if br.label == "unless":
+                result = not result
+            if not result:
+                continue
+            previous_binding = None
+            had_prev = False
+            if br.binding:
+                if env.has(br.binding):
+                    had_prev = True
+                    previous_binding = env.resolve(br.binding)
+                    env.assign(br.binding, candidate_binding)
+                else:
+                    env.declare(br.binding, candidate_binding)
+                state.set(br.binding, candidate_binding)
+            for action in br.actions:
+                await self._execute_statement(action, state, runtime_ctx, f"{prefix}.{label}")
+            if br.binding:
+                if had_prev:
+                    env.assign(br.binding, previous_binding)
+                    state.set(br.binding, previous_binding)
+                else:
+                    env.remove(br.binding)
+                    state.data.pop(br.binding, None)
+            break
+
+    async def _execute_statement(self, stmt: IRStatement, state: FlowState, runtime_ctx: FlowRuntimeContext, prefix: str) -> Any:
+        env = state.variables or runtime_ctx.variables or VariableEnvironment()
+        evaluator = self._build_evaluator(state, runtime_ctx)
+        if isinstance(stmt, IRLet):
+            value = evaluator.evaluate(stmt.expr) if stmt.expr is not None else None
+            env.declare(stmt.name, value)
+            state.set(stmt.name, value)
+            state.set("last_output", value)
+            return value
+        if isinstance(stmt, IRSet):
+            if not env.has(stmt.name):
+                raise Namel3ssError(f"Variable '{stmt.name}' is not defined")
+            value = evaluator.evaluate(stmt.expr) if stmt.expr is not None else None
+            env.assign(stmt.name, value)
+            state.set(stmt.name, value)
+            state.set("last_output", value)
+            return value
+        if isinstance(stmt, IRIf):
+            await self._execute_ir_if(stmt, state, runtime_ctx, prefix)
+            return state.get("last_output")
+        if isinstance(stmt, IRAction):
+            cfg = {
+                "kind": stmt.kind,
+                "target": stmt.target,
+                "step_name": f"{prefix}.{stmt.target}",
+                "reason": "script",
+            }
+            if stmt.message is not None:
+                cfg["params"] = {"message": stmt.message}
+            await self._run_inline_sequence(prefix, [cfg], state, runtime_ctx)
+            return state.get("last_output")
+        raise Namel3ssError(f"Unsupported statement '{type(stmt).__name__}' in script")
+
+    async def _execute_script(self, statements: list[IRStatement] | None, state: FlowState, runtime_ctx: FlowRuntimeContext, step_id: str) -> Any:
+        last_val: Any = None
+        for idx, stmt in enumerate(statements or []):
+            last_val = await self._execute_statement(stmt, state, runtime_ctx, f"{step_id}.stmt{idx}")
+        return last_val
+
     async def _execute_with_timing(
         self, node: FlowNode, state: FlowState, runtime_ctx: FlowRuntimeContext
     ) -> Optional[FlowStepResult]:
@@ -628,15 +717,39 @@ class FlowEngine:
             return expr.group_name
         return str(expr)
 
-    def _resolve_identifier(self, name: str, state: FlowState) -> Any:
+    def _resolve_identifier(self, name: str, state: FlowState) -> tuple[bool, Any]:
+        env = getattr(state, "variables", None)
+        if env and env.has(name):
+            return True, env.resolve(name)
         parts = name.split(".")
-        value: Any = state.get(parts[0])
+        value: Any = None
+        found = False
+        if parts[0] in state.data:
+            value = state.get(parts[0])
+            found = True
+        elif parts[0] in state.context:
+            value = state.context.get(parts[0])
+            found = True
+        else:
+            return False, None
         for part in parts[1:]:
-            if isinstance(value, dict):
+            if isinstance(value, dict) and part in value:
                 value = value.get(part)
-            else:
+                found = True
+            elif hasattr(value, part):
                 value = getattr(value, part, None)
-        return value
+                found = True
+            else:
+                return False, None
+        return found, value
+
+    def _build_evaluator(self, state: FlowState, runtime_ctx: FlowRuntimeContext | None) -> ExpressionEvaluator:
+        env = getattr(state, "variables", None) or getattr(runtime_ctx, "variables", None) or VariableEnvironment()
+        return ExpressionEvaluator(
+            env,
+            resolver=lambda name: self._resolve_identifier(name, state),
+            rulegroup_resolver=lambda expr: self._eval_rulegroup(expr, state, runtime_ctx) if runtime_ctx else (False, None),
+        )
 
     def _eval_rulegroup(self, expr: ast_nodes.RuleGroupRefExpr, state: FlowState, runtime_ctx: FlowRuntimeContext) -> tuple[bool, Any]:
         groups = getattr(runtime_ctx.program, "rulegroups", {}) if runtime_ctx else {}
@@ -680,48 +793,18 @@ class FlowEngine:
         return all_true, all_true
 
     def _eval_expr(self, expr: ast_nodes.Expr, state: FlowState, runtime_ctx: FlowRuntimeContext | None = None) -> Any:
-        if isinstance(expr, ast_nodes.Literal):
-            return expr.value
-        if isinstance(expr, ast_nodes.Identifier):
-            return self._resolve_identifier(expr.name, state)
-        if isinstance(expr, ast_nodes.RuleGroupRefExpr):
-            if runtime_ctx is None or runtime_ctx.program is None:
-                return False
-            res, _ = self._eval_rulegroup(expr, state, runtime_ctx)
-            return res
-        if isinstance(expr, ast_nodes.UnaryOp):
-            val = self._eval_expr(expr.operand, state, runtime_ctx) if expr.operand else None
-            if expr.op == "not":
-                return not bool(val)
-            raise Namel3ssError(f"Unsupported unary operator '{expr.op}'")
-        if isinstance(expr, ast_nodes.BinaryOp):
-            left = self._eval_expr(expr.left, state, runtime_ctx) if expr.left else None
-            right = self._eval_expr(expr.right, state, runtime_ctx) if expr.right else None
-            try:
-                if expr.op == "and":
-                    return bool(left) and bool(right)
-                if expr.op == "or":
-                    return bool(left) or bool(right)
-                if expr.op == "is":
-                    return left == right
-                if expr.op == "is not":
-                    return left != right
-                if expr.op == "<":
-                    return left < right
-                if expr.op == ">":
-                    return left > right
-                if expr.op == "<=":
-                    return left <= right
-                if expr.op == ">=":
-                    return left >= right
-            except Exception:
-                return False
-            raise Namel3ssError(f"Unsupported operator '{expr.op}'")
-        raise Namel3ssError("Unsupported expression")
+        if isinstance(expr, ast_nodes.PatternExpr):
+            match, _ = self._match_pattern(expr, state, runtime_ctx) if runtime_ctx else (False, None)
+            return match
+        evaluator = self._build_evaluator(state, runtime_ctx)
+        try:
+            return evaluator.evaluate(expr)
+        except EvaluationError as exc:
+            raise Namel3ssError(str(exc))
 
     def _match_pattern(self, pattern: ast_nodes.PatternExpr, state: FlowState, runtime_ctx: FlowRuntimeContext) -> tuple[bool, Any]:
-        subject = self._resolve_identifier(pattern.subject.name, state)
-        if not isinstance(subject, dict):
+        found, subject = self._resolve_identifier(pattern.subject.name, state)
+        if not found or not isinstance(subject, dict):
             return False, None
         for pair in pattern.pairs:
             subject_val = subject.get(pair.key)
@@ -737,10 +820,10 @@ class FlowEngine:
                     elif op == "or":
                         if not (bool(left_val) or bool(right_val)):
                             return False, None
-                    elif op == "is":
+                    elif op in {"is", "==", "="}:
                         if left_val != right_val:
                             return False, None
-                    elif op == "is not":
+                    elif op in {"is not", "!="}:
                         if left_val == right_val:
                             return False, None
                     elif op == "<":
@@ -775,34 +858,13 @@ class FlowEngine:
         if isinstance(expr, ast_nodes.RuleGroupRefExpr):
             res, val = self._eval_rulegroup(expr, state, runtime_ctx)
             return res, val
-        if isinstance(expr, ast_nodes.BinaryOp):
-            left = self._eval_expr(expr.left, state, runtime_ctx) if expr.left else None
-            right = self._eval_expr(expr.right, state, runtime_ctx) if expr.right else None
-            result = False
-            try:
-                if expr.op == "and":
-                    result = bool(left) and bool(right)
-                elif expr.op == "or":
-                    result = bool(left) or bool(right)
-                elif expr.op == "is":
-                    result = left == right
-                elif expr.op == "is not":
-                    result = left != right
-                elif expr.op == "<":
-                    result = left < right
-                elif expr.op == ">":
-                    result = left > right
-                elif expr.op == "<=":
-                    result = left <= right
-                elif expr.op == ">=":
-                    result = left >= right
-            except Exception:
-                result = False
-            return result, right
-        if isinstance(expr, ast_nodes.UnaryOp) and expr.op == "not":
-            val = self._eval_expr(expr.operand, state) if expr.operand else None
-            return (not bool(val)), not bool(val)
-        value = self._eval_expr(expr, state)
+        evaluator = self._build_evaluator(state, runtime_ctx)
+        try:
+            value = evaluator.evaluate(expr)
+        except EvaluationError as exc:
+            raise Namel3ssError(str(exc))
+        if not isinstance(value, bool):
+            raise Namel3ssError("Condition must evaluate to a boolean")
         return bool(value), value
 
     async def _run_condition_node(self, node: FlowNode, state: FlowState, runtime_ctx: FlowRuntimeContext) -> dict:
@@ -812,6 +874,7 @@ class FlowEngine:
         selected_label = None
         binding_value = None
         binding_name = None
+        env = state.variables or runtime_ctx.variables or VariableEnvironment()
         for idx, br in enumerate(branches):
             condition_expr = getattr(br, "condition", None)
             is_pattern = isinstance(condition_expr, ast_nodes.PatternExpr)
@@ -857,27 +920,36 @@ class FlowEngine:
         previous_binding = None
         had_prev = False
         if binding_name:
-            if binding_name in state.data:
+            if env.has(binding_name):
                 had_prev = True
-                previous_binding = state.data[binding_name]
+                previous_binding = env.resolve(binding_name)
+                env.assign(binding_name, binding_value)
+            else:
+                env.declare(binding_name, binding_value)
             state.set(binding_name, binding_value)
 
         inline_steps = []
         for action in selected.actions:
-            cfg = {
-                "kind": action.kind,
-                "target": action.target,
-                "step_name": f"{node.id}.{action.target}",
-                "reason": "conditional",
-            }
-            if action.message:
-                cfg["params"] = {"message": action.message}
-            inline_steps.append(cfg)
-        await self._run_inline_sequence(node.id, inline_steps, state, runtime_ctx)
+            if isinstance(action, IRAction):
+                cfg = {
+                    "kind": action.kind,
+                    "target": action.target,
+                    "step_name": f"{node.id}.{action.target}",
+                    "reason": "conditional",
+                }
+                if action.message:
+                    cfg["params"] = {"message": action.message}
+                inline_steps.append(cfg)
+            else:
+                await self._execute_statement(action, state, runtime_ctx, node.id)
+        if inline_steps:
+            await self._run_inline_sequence(node.id, inline_steps, state, runtime_ctx)
         if binding_name:
             if had_prev:
+                env.assign(binding_name, previous_binding)
                 state.set(binding_name, previous_binding)
             else:
+                env.remove(binding_name)
                 state.data.pop(binding_name, None)
         return {"condition": selected_label}
 

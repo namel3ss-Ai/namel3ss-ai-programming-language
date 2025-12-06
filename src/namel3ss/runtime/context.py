@@ -24,6 +24,7 @@ class ExecutionContext:
     request_id: str
     user_input: Optional[str] = None
     metadata: Dict[str, Any] = field(default_factory=dict)
+    variables: Dict[str, Any] = field(default_factory=dict)
     memory_engine: Optional[MemoryEngine] = None
     rag_engine: Optional[RAGEngine] = None
     tracer: Optional[Tracer] = None

@@ -697,26 +697,91 @@ class Parser:
         self.consume("COLON")
         self.consume("NEWLINE")
         self.consume("INDENT")
+        (
+            kind,
+            target,
+            message,
+            statements,
+            conditional_branches,
+            goto_action,
+        ) = self._parse_step_body(allow_fields=True)
+        self.consume("DEDENT")
+        self.optional_newline()
+        return self._build_flow_step_decl(
+            step_name_token,
+            kind,
+            target,
+            message,
+            statements,
+            conditional_branches,
+            goto_action,
+        )
+
+    def parse_english_flow_step(self, prefix: str | None) -> ast_nodes.FlowStepDecl:
+        if prefix:
+            self.consume("KEYWORD", "step")
+        else:
+            self.consume("KEYWORD", "step")
+        step_name_token = self.consume("STRING")
+        self.consume("COLON")
+        self.consume("NEWLINE")
+        self.consume("INDENT")
+        (
+            kind,
+            target,
+            message,
+            statements,
+            conditional_branches,
+            goto_action,
+        ) = self._parse_step_body(allow_fields=False)
+        self.consume("DEDENT")
+        self.optional_newline()
+        return self._build_flow_step_decl(
+            step_name_token,
+            kind,
+            target,
+            message,
+            statements,
+            conditional_branches,
+            goto_action,
+        )
+
+    def _parse_step_body(
+        self, allow_fields: bool = True
+    ) -> tuple[str | None, str | None, str | None, list[ast_nodes.Statement | ast_nodes.FlowAction], list[ast_nodes.ConditionalBranch] | None, ast_nodes.FlowAction | None]:
         kind = None
         target = None
         message = None
+        statements: list[ast_nodes.Statement | ast_nodes.FlowAction] = []
         conditional_branches: list[ast_nodes.ConditionalBranch] | None = None
         goto_action: ast_nodes.FlowAction | None = None
-        allowed_fields: Set[str] = {"kind", "target", "message"}
+        allowed_fields: Set[str] = {"kind", "target", "message"} if allow_fields else set()
+        script_mode = False
         while not self.check("DEDENT"):
             if self.match("NEWLINE"):
                 continue
-            field_token = self.peek()
-            if field_token.value in {"if", "when", "otherwise", "unless"}:
-                conditional_branches = conditional_branches or []
-                self.parse_conditional_into(conditional_branches)
-                continue
-            if field_token.value == "go":
-                if goto_action is not None or kind is not None or target is not None:
-                    raise self.error("Unexpected 'go to flow' after step fields", field_token)
+            token = self.peek()
+            if token.value == "go" and allow_fields and not script_mode and not statements and conditional_branches is None:
                 goto_action = self.parse_goto_action()
                 self.optional_newline()
                 continue
+            if token.value in {"let", "set", "do"} or (token.value == "go" and script_mode):
+                script_mode = True
+                statements.append(self.parse_statement_or_action())
+                continue
+            if token.value in {"if", "when", "otherwise", "unless"}:
+                if script_mode or statements:
+                    script_mode = True
+                    statements.append(self.parse_if_statement())
+                else:
+                    conditional_branches = conditional_branches or []
+                    self.parse_conditional_into(conditional_branches)
+                continue
+            if not allow_fields:
+                raise self.error(
+                    f"Unexpected field '{token.value}' in step block",
+                    token,
+                )
             field_token = self.consume("KEYWORD")
             if field_token.value not in allowed_fields:
                 raise self.error(
@@ -733,8 +798,38 @@ class Parser:
                 msg_token = self.consume_string_value(field_token, "message")
                 message = msg_token.value
             self.optional_newline()
-        self.consume("DEDENT")
-        self.optional_newline()
+        return kind, target, message, statements, conditional_branches, goto_action
+
+    def _build_flow_step_decl(
+        self,
+        step_name_token,
+        kind,
+        target,
+        message,
+        statements,
+        conditional_branches,
+        goto_action,
+    ) -> ast_nodes.FlowStepDecl:
+        if statements:
+            only_actions = all(isinstance(stmt, ast_nodes.FlowAction) for stmt in statements)
+            if only_actions and len(statements) == 1 and not conditional_branches:
+                action = statements[0]
+                return ast_nodes.FlowStepDecl(
+                    name=step_name_token.value or "",
+                    kind=action.kind,
+                    target=action.target,
+                    message=action.message,
+                    statements=[],
+                    span=self._span(step_name_token),
+                )
+            return ast_nodes.FlowStepDecl(
+                name=step_name_token.value or "",
+                kind="script",
+                target=target or "",
+                message=message,
+                statements=statements,
+                span=self._span(step_name_token),
+            )
         if conditional_branches:
             return ast_nodes.FlowStepDecl(
                 name=step_name_token.value or "",
@@ -762,48 +857,130 @@ class Parser:
             span=self._span(step_name_token),
         )
 
-    def parse_english_flow_step(self, prefix: str | None) -> ast_nodes.FlowStepDecl:
-        if prefix:
-            # Prefix already consumed; used only for readability.
-            self.consume("KEYWORD", "step")
-        else:
-            self.consume("KEYWORD", "step")
-        step_name_token = self.consume("STRING")
-        self.consume("COLON")
-        self.consume("NEWLINE")
-        self.consume("INDENT")
-        self.consume("KEYWORD", "do")
-        kind_token = self.consume_any({"KEYWORD", "IDENT"})
-        if kind_token.value not in {"ai", "agent", "tool"}:
-            raise self.error(
-                f"Unsupported step kind '{kind_token.value}'", kind_token
+    def parse_statement_or_action(self) -> ast_nodes.Statement | ast_nodes.FlowAction:
+        token = self.peek()
+        if token.value == "let":
+            return self.parse_let_statement()
+        if token.value == "set":
+            return self.parse_set_statement()
+        if token.value == "do":
+            return self._parse_do_action()
+        if token.value == "go":
+            return self.parse_goto_action()
+        if token.value in {"if", "when", "otherwise", "unless"}:
+            return self.parse_if_statement()
+        raise self.error(f"Unexpected statement '{token.value}'", token)
+
+    def parse_statement_block(self) -> list[ast_nodes.Statement | ast_nodes.FlowAction]:
+        statements: list[ast_nodes.Statement | ast_nodes.FlowAction] = []
+        while not self.check("DEDENT"):
+            if self.match("NEWLINE"):
+                continue
+            statements.append(self.parse_statement_or_action())
+        return statements
+
+    def parse_if_statement(self) -> ast_nodes.IfStatement:
+        token = self.peek()
+        if token.value not in {"if", "when", "unless"}:
+            if token.value == "otherwise":
+                raise self.error("Found 'otherwise' without preceding if/when", token)
+            raise self.error(f"Unexpected conditional '{token.value}'", token)
+        branches: list[ast_nodes.ConditionalBranch] = []
+
+        def parse_branch(label: str, start_token) -> None:
+            cond = self.parse_condition_expr()
+            binding = self._parse_optional_binding()
+            self.consume("COLON")
+            self.consume("NEWLINE")
+            self.consume("INDENT")
+            actions = self.parse_statement_block()
+            self.consume("DEDENT")
+            self.optional_newline()
+            branches.append(
+                ast_nodes.ConditionalBranch(
+                    condition=cond,
+                    actions=actions,
+                    label=label,
+                    binding=binding,
+                    span=self._span(start_token),
+                )
             )
-        target_token = self.consume("STRING")
+
+        start_tok = self.consume("KEYWORD")
+        parse_branch(start_tok.value, start_tok)
+        while self.peek().value == "otherwise":
+            other_tok = self.consume("KEYWORD", "otherwise")
+            label = "otherwise"
+            cond = None
+            binding = None
+            if self.peek().value == "if":
+                self.consume("KEYWORD", "if")
+                cond = self.parse_condition_expr()
+                binding = self._parse_optional_binding()
+                label = "otherwise-if"
+            self.consume("COLON")
+            self.consume("NEWLINE")
+            self.consume("INDENT")
+            actions = self.parse_statement_block()
+            self.consume("DEDENT")
+            self.optional_newline()
+            branches.append(
+                ast_nodes.ConditionalBranch(
+                    condition=cond,
+                    actions=actions,
+                    label=label,
+                    binding=binding,
+                    span=self._span(other_tok),
+                )
+            )
+        return ast_nodes.IfStatement(branches=branches, span=self._span(start_tok))
+
+    def parse_let_statement(self) -> ast_nodes.LetStatement:
+        start = self.consume("KEYWORD", "let")
+        name_tok = self.consume("IDENT")
+        if self.match_value("KEYWORD", "be"):
+            expr = self.parse_expression()
+        elif self.match_value("OP", "="):
+            expr = self.parse_expression()
+        else:
+            raise self.error("Expected 'be' or '=' after variable name", self.peek())
+        return ast_nodes.LetStatement(name=name_tok.value or "", expr=expr, span=self._span(start))
+
+    def parse_set_statement(self) -> ast_nodes.SetStatement:
+        start = self.consume("KEYWORD", "set")
+        name_tok = self.consume("IDENT")
+        if self.match_value("KEYWORD", "to") or self.match_value("OP", "="):
+            expr = self.parse_expression()
+        else:
+            raise self.error("Expected 'to' after variable name in set statement", self.peek())
+        return ast_nodes.SetStatement(name=name_tok.value or "", expr=expr, span=self._span(start))
+
+    def _parse_do_action(self) -> ast_nodes.FlowAction:
+        do_token = self.consume("KEYWORD", "do")
+        kind_tok = self.consume_any({"KEYWORD", "IDENT"})
+        if kind_tok.value not in {"ai", "agent", "tool"}:
+            raise self.error(f"Unsupported action kind '{kind_tok.value}'", kind_tok)
+        target_tok = self.consume("STRING")
         message = None
-        if kind_token.value == "tool" and self.peek().value == "with":
+        if kind_tok.value == "tool" and self.peek().value == "with":
             self.consume("KEYWORD", "with")
             self.consume("KEYWORD", "message")
             if self.check("COLON"):
                 self.consume("COLON")
                 self.consume("NEWLINE")
                 self.consume("INDENT")
-                msg_token = self.consume("STRING")
-                message = msg_token.value
+                msg_tok = self.consume("STRING")
+                message = msg_tok.value
                 self.optional_newline()
                 self.consume("DEDENT")
             else:
-                msg_token = self.consume("STRING")
-                message = msg_token.value
-        while self.match("NEWLINE"):
-            continue
-        self.consume("DEDENT")
-        self.optional_newline()
-        return ast_nodes.FlowStepDecl(
-            name=step_name_token.value or "",
-            kind=kind_token.value,
-            target=target_token.value or "",
-            span=self._span(step_name_token),
+                msg_tok = self.consume("STRING")
+                message = msg_tok.value
+        return ast_nodes.FlowAction(
+            kind=kind_tok.value or "",
+            target=target_tok.value or "",
             message=message,
+            span=self._span(do_token),
         )
 
     # --------- Condition parsing and expressions ---------
@@ -948,8 +1125,8 @@ class Parser:
             raise self.error("Multiple 'as' bindings are not allowed in a single condition.", self.peek())
         return name_tok.value
 
-    def parse_do_actions(self) -> list[ast_nodes.FlowAction]:
-        actions: list[ast_nodes.FlowAction] = []
+    def parse_do_actions(self) -> list[ast_nodes.FlowAction | ast_nodes.Statement]:
+        actions: list[ast_nodes.FlowAction | ast_nodes.Statement] = []
         while not self.check("DEDENT"):
             if self.match("NEWLINE"):
                 continue
@@ -957,34 +1134,10 @@ class Parser:
                 actions.append(self.parse_goto_action())
                 self.optional_newline()
                 continue
-            do_token = self.consume("KEYWORD", "do")
-            kind_tok = self.consume_any({"KEYWORD", "IDENT"})
-            if kind_tok.value not in {"ai", "agent", "tool"}:
-                raise self.error(f"Unsupported action kind '{kind_tok.value}'", kind_tok)
-            target_tok = self.consume("STRING")
-            message = None
-            if kind_tok.value == "tool" and self.peek().value == "with":
-                self.consume("KEYWORD", "with")
-                self.consume("KEYWORD", "message")
-                if self.check("COLON"):
-                    self.consume("COLON")
-                    self.consume("NEWLINE")
-                    self.consume("INDENT")
-                    msg_tok = self.consume("STRING")
-                    message = msg_tok.value
-                    self.optional_newline()
-                    self.consume("DEDENT")
-                else:
-                    msg_tok = self.consume("STRING")
-                    message = msg_tok.value
-            actions.append(
-                ast_nodes.FlowAction(
-                    kind=kind_tok.value or "",
-                    target=target_tok.value or "",
-                    message=message,
-                    span=self._span(do_token),
-                )
-            )
+            if self.peek().value in {"let", "set", "if", "when", "otherwise", "unless"}:
+                actions.append(self.parse_statement_or_action())
+                continue
+            actions.append(self._parse_do_action())
             self.optional_newline()
         return actions
 
@@ -1003,17 +1156,15 @@ class Parser:
     def parse_or(self) -> ast_nodes.Expr:
         expr = self.parse_and()
         while self.match_value("KEYWORD", "or"):
-            op = "or"
             right = self.parse_and()
-            expr = ast_nodes.BinaryOp(left=expr, op=op, right=right)
+            expr = ast_nodes.BinaryOp(left=expr, op="or", right=right)
         return expr
 
     def parse_and(self) -> ast_nodes.Expr:
         expr = self.parse_not()
         while self.match_value("KEYWORD", "and"):
-            op = "and"
             right = self.parse_not()
-            expr = ast_nodes.BinaryOp(left=expr, op=op, right=right)
+            expr = ast_nodes.BinaryOp(left=expr, op="and", right=right)
         return expr
 
     def parse_not(self) -> ast_nodes.Expr:
@@ -1023,20 +1174,117 @@ class Parser:
         return self.parse_comparison()
 
     def parse_comparison(self) -> ast_nodes.Expr:
-        expr = self.parse_primary()
-        token = self.peek()
-        if token.type == "KEYWORD" and token.value == "is":
-            self.consume("KEYWORD", "is")
-            op = "is"
-            if self.match_value("KEYWORD", "not"):
-                op = "is not"
-            right = self.parse_primary()
-            expr = ast_nodes.BinaryOp(left=expr, op=op, right=right)
-        elif token.type == "OP" and token.value in {"<", ">", "<=", ">="}:
-            op_tok = self.consume("OP")
-            right = self.parse_primary()
-            expr = ast_nodes.BinaryOp(left=expr, op=op_tok.value, right=right)
+        expr = self.parse_add()
+        while True:
+            token = self.peek()
+            if token.type == "OP" and token.value in {"==", "!=", "<", ">", "<=", ">="}:
+                op_tok = self.consume("OP")
+                right = self.parse_add()
+                expr = ast_nodes.BinaryOp(left=expr, op=op_tok.value, right=right)
+                continue
+            if token.type == "OP" and token.value == "=":
+                self.consume("OP", "=")
+                right = self.parse_add()
+                expr = ast_nodes.BinaryOp(left=expr, op="==", right=right)
+                continue
+            if token.type == "KEYWORD" and token.value == "is":
+                self.consume("KEYWORD", "is")
+                op = "=="
+                if self.match_value("KEYWORD", "not"):
+                    op = "!="
+                    if self.peek().value == "equal":
+                        self.consume("KEYWORD", "equal")
+                        if self.peek().value == "to":
+                            self.consume("KEYWORD", "to")
+                    right = self.parse_add()
+                    expr = ast_nodes.BinaryOp(left=expr, op=op, right=right)
+                    continue
+                if self.match_value("KEYWORD", "greater"):
+                    if self.peek().value == "than":
+                        self.consume("KEYWORD", "than")
+                    op = ">"
+                    right = self.parse_add()
+                    expr = ast_nodes.BinaryOp(left=expr, op=op, right=right)
+                    continue
+                if self.match_value("KEYWORD", "less"):
+                    if self.peek().value == "than":
+                        self.consume("KEYWORD", "than")
+                    op = "<"
+                    right = self.parse_add()
+                    expr = ast_nodes.BinaryOp(left=expr, op=op, right=right)
+                    continue
+                if self.match_value("KEYWORD", "at"):
+                    if self.match_value("KEYWORD", "least"):
+                        op = ">="
+                    elif self.match_value("KEYWORD", "most"):
+                        op = "<="
+                    else:
+                        raise self.error("Expected 'least' or 'most' after 'is at'", self.peek())
+                    right = self.parse_add()
+                    expr = ast_nodes.BinaryOp(left=expr, op=op, right=right)
+                    continue
+                if self.peek().value == "equal":
+                    self.consume("KEYWORD", "equal")
+                    if self.peek().value == "to":
+                        self.consume("KEYWORD", "to")
+                right = self.parse_add()
+                expr = ast_nodes.BinaryOp(left=expr, op=op, right=right)
+                continue
+            break
         return expr
+
+    def parse_add(self) -> ast_nodes.Expr:
+        expr = self.parse_mul()
+        while True:
+            token = self.peek()
+            if token.type == "OP" and token.value in {"+", "-"}:
+                op_tok = self.consume("OP")
+                right = self.parse_mul()
+                expr = ast_nodes.BinaryOp(left=expr, op=op_tok.value, right=right)
+                continue
+            if token.type == "KEYWORD" and token.value in {"plus", "minus"}:
+                op_val = "+" if token.value == "plus" else "-"
+                self.consume("KEYWORD")
+                right = self.parse_mul()
+                expr = ast_nodes.BinaryOp(left=expr, op=op_val, right=right)
+                continue
+            break
+        return expr
+
+    def parse_mul(self) -> ast_nodes.Expr:
+        expr = self.parse_unary()
+        while True:
+            token = self.peek()
+            if token.type == "OP" and token.value in {"*", "/", "%"}:
+                op_tok = self.consume("OP")
+                right = self.parse_unary()
+                expr = ast_nodes.BinaryOp(left=expr, op=op_tok.value, right=right)
+                continue
+            if token.type == "KEYWORD" and token.value in {"times", "divided"}:
+                op_val = "*"
+                if token.value == "divided":
+                    op_val = "/"
+                    self.consume("KEYWORD", "divided")
+                    if self.peek().value == "by":
+                        self.consume("KEYWORD", "by")
+                else:
+                    self.consume("KEYWORD", "times")
+                right = self.parse_unary()
+                expr = ast_nodes.BinaryOp(left=expr, op=op_val, right=right)
+                continue
+            break
+        return expr
+
+    def parse_unary(self) -> ast_nodes.Expr:
+        if self.match_value("OP", "+"):
+            return ast_nodes.UnaryOp(op="+", operand=self.parse_unary())
+        if self.match_value("OP", "-"):
+            return ast_nodes.UnaryOp(op="-", operand=self.parse_unary())
+        if self.match_value("KEYWORD", "plus"):
+            return ast_nodes.UnaryOp(op="+", operand=self.parse_unary())
+        if self.match_value("KEYWORD", "minus"):
+            return ast_nodes.UnaryOp(op="-", operand=self.parse_unary())
+        return self.parse_primary()
 
     def parse_primary(self) -> ast_nodes.Expr:
         token = self.peek()
@@ -1059,6 +1307,12 @@ class Parser:
             if tok.value in {"true", "false"}:
                 return ast_nodes.Literal(value=tok.value == "true", span=self._span(tok))
             return ast_nodes.Identifier(name=tok.value or "", span=self._span(tok))
+        if token.type == "LPAREN":
+            self.consume("LPAREN")
+            inner = self.parse_expression()
+            if not self.match("RPAREN"):
+                raise self.error("Expected ')' to close expression", self.peek())
+            return inner
         raise self.error("Expected expression", token)
 
     def optional_newline(self) -> None:

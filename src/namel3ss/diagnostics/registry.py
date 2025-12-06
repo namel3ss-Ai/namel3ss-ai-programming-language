@@ -67,6 +67,36 @@ _DEFINITIONS: Dict[str, DiagnosticDefinition] = {
         default_severity="error",
         message_template="Invalid argument or parameter binding in {context}",
     ),
+    "N3-2101": DiagnosticDefinition(
+        code="N3-2101",
+        category="semantic",
+        default_severity="error",
+        message_template="Variable '{name}' is not defined",
+    ),
+    "N3-2102": DiagnosticDefinition(
+        code="N3-2102",
+        category="semantic",
+        default_severity="error",
+        message_template="Variable '{name}' is already defined",
+    ),
+    "N3-2103": DiagnosticDefinition(
+        code="N3-2103",
+        category="semantic",
+        default_severity="error",
+        message_template="Invalid operator or operand types for '{op}'",
+    ),
+    "N3-2104": DiagnosticDefinition(
+        code="N3-2104",
+        category="semantic",
+        default_severity="error",
+        message_template="Condition must evaluate to a boolean",
+    ),
+    "N3-2105": DiagnosticDefinition(
+        code="N3-2105",
+        category="semantic",
+        default_severity="error",
+        message_template="Divide-by-zero detected while evaluating expression",
+    ),
     # Performance (reserved)
     "N3-3001": DiagnosticDefinition(
         code="N3-3001",
