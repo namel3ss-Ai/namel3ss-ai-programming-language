@@ -29,9 +29,14 @@ venv/
 .pytest_cache/
 .mypy_cache/
 .coverage
+.coverage.*
+.ruff_cache/
 
 # Node.js
 node_modules/
 
 # Local
 *.log
+# Temporary workspaces
+tmp/
+tmp_diag_test/
