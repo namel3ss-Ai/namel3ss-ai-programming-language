@@ -1,5 +1,6 @@
 # Namel3ss
 
+![Version](https://img.shields.io/badge/version-0.6.9-blue)
 ![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)
 ![Python 3.11+](https://img.shields.io/badge/Python-3.11%2B-blue)
 ![Build](https://github.com/namel3ss-Ai/namel3ss-programming-language/actions/workflows/tests.yml/badge.svg)

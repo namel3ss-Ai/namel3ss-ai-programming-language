@@ -4,19 +4,51 @@ build-backend = "hatchling.build"
 
 [project]
 name = "namel3ss"
-version = "3.0.0"
-description = "Namel3ss AI-native programming language and agent OS"
+version = "0.6.9"
+description = "AI-native programming language with English-style syntax for building agents, flows, and UI"
 readme = "README.md"
 requires-python = ">=3.11"
-license = "MIT"
+license = {text = "MIT"}
 authors = [
-  { name = "Namel3ss Team" }
+  { name = "Namel3ss Team", email = "team@namel3ss.ai" }
+]
+keywords = [
+  "ai",
+  "language",
+  "agent",
+  "flow",
+  "dsl",
+  "llm",
+  "programming-language",
+  "ai-native",
+  "automation",
+  "studio",
+]
+classifiers = [
+  "Development Status :: 4 - Beta",
+  "Intended Audience :: Developers",
+  "License :: OSI Approved :: MIT License",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
+  "Topic :: Software Development :: Compilers",
+  "Topic :: Software Development :: Interpreters",
+  "Topic :: Scientific/Engineering :: Artificial Intelligence",
+  "Operating System :: OS Independent",
 ]
 dependencies = [
   "fastapi>=0.110.0",
   "uvicorn>=0.29.0",
   "python-multipart>=0.0.9",
 ]
+
+[project.urls]
+Homepage = "https://namel3ss.ai"
+Documentation = "https://namel3ss.ai/docs"
+Repository = "https://github.com/namel3ss-Ai/namel3ss-ai-programming-language"
+"Bug Tracker" = "https://github.com/namel3ss-Ai/namel3ss-ai-programming-language/issues"
+Changelog = "https://github.com/namel3ss-Ai/namel3ss-ai-programming-language/blob/main/CHANGELOG.md"
 
 [project.optional-dependencies]
 dev = [
