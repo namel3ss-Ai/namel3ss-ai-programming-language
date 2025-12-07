@@ -169,9 +169,10 @@ class ExpressionEvaluator:
             idx_num = self._to_number(idx_val)
             if isinstance(idx_num, float):
                 idx_num = int(idx_num)
+            idx_num = int(idx_num)
             if idx_num < 0:
-                raise EvaluationError("N3-3205: index out of bounds")
-            if idx_num >= len(seq):
+                idx_num = len(seq) + idx_num
+            if idx_num < 0 or idx_num >= len(seq):
                 raise EvaluationError("N3-3205: index out of bounds")
             return seq[int(idx_num)]
         if isinstance(expr, ast_nodes.SliceExpr):
@@ -180,10 +181,8 @@ class ExpressionEvaluator:
                 raise EvaluationError("N3-3200: slicing requires a list")
             start_val = self.evaluate(expr.start) if expr.start is not None else None
             end_val = self.evaluate(expr.end) if expr.end is not None else None
-            start_idx = 0 if start_val is None else self._to_int_index(start_val)
-            end_idx = len(seq) if end_val is None else self._to_int_index(end_val)
-            if start_idx < 0 or end_idx < 0:
-                raise EvaluationError("N3-3205: index out of bounds")
+            start_idx = None if start_val is None else self._to_int_index(start_val)
+            end_idx = None if end_val is None else self._to_int_index(end_val)
             return seq[start_idx:end_idx]
         if isinstance(expr, ast_nodes.BuiltinCall):
             return self._eval_builtin_call(expr)

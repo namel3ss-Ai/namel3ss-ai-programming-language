@@ -4,7 +4,7 @@ from dataclasses import replace
 from pathlib import Path
 from typing import Iterable, List, Tuple
 
-from .. import ir, lexer, parser
+from .. import ir, lexer, parser, linting
 from ..errors import Namel3ssError
 from . import Diagnostic, create_diagnostic, legacy_to_structured
 from .pipeline import run_diagnostics
@@ -47,6 +47,14 @@ def _parse_file(path: Path) -> tuple[list[Diagnostic], object | None]:
         source = path.read_text(encoding="utf-8")
         tokens = lexer.Lexer(source, filename=str(path)).tokenize()
         module = parser.Parser(tokens).parse_module()
+        if not getattr(module, "declarations", []):
+            diag = create_diagnostic(
+                "N3-1010",
+                file=str(path),
+                line=1,
+                column=1,
+            )
+            return [diag], None
         return [], module
     except Namel3ssError as err:
         diag = create_diagnostic(
@@ -99,3 +107,17 @@ def collect_diagnostics(paths: Iterable[Path], strict: bool) -> tuple[list[Diagn
 
     all_diags, summary = apply_strict_mode(all_diags, strict)
     return all_diags, summary
+
+
+def collect_lint(paths: Iterable[Path], config: linting.LintConfig | None = None) -> list[Diagnostic]:
+    ai_files = iter_ai_files(list(paths))
+    findings: list[Diagnostic] = []
+    config = config or linting.LintConfig()
+    for path in ai_files:
+        parse_diags, module = _parse_file(path)
+        findings.extend(parse_diags)
+        if module is None:
+            continue
+        lint_results = linting.lint_module(module, file=str(path), config=config)
+        findings.extend(f.to_diagnostic() for f in lint_results)
+    return findings

@@ -3,7 +3,7 @@
 ## CLI (n3)
 - parse, ir, run, graph, serve
 - run-agent, run-flow, page-ui, meta
-- diagnostics, bundle, build-target (server/worker/docker/serverless-aws/desktop/mobile)
+- diagnostics, lint, bundle, build/build-target (server/worker/docker/serverless-aws/serverless-cloudflare/desktop/mobile)
 - job-flow, job-agent, job-status
 - optimize (scan, list, apply, reject, overlays)
 - test-cov (pytest with coverage)
@@ -11,7 +11,7 @@
 ## HTTP
 - Health: `GET /health`
 - Parse/IR/UI: `POST /api/parse`, `/api/run-app`, `/api/run-flow`, `/api/pages`, `/api/page-ui`, `/api/meta`
-- Diagnostics/Bundles: `POST /api/diagnostics`, `/api/bundle`
+- Diagnostics/Bundles: `POST /api/diagnostics`, `/api/bundle` (diagnostics can include lint when requested)
 - Jobs: `POST /api/job/flow`, `GET /api/job/{job_id}`, `GET /api/jobs`, `POST /api/worker/run-once`
 - Metrics/Traces: `GET /api/metrics`, `GET /api/last-trace`, `GET /api/studio-summary`
 - RAG: `POST /api/rag/query`, `POST /api/rag/upload`

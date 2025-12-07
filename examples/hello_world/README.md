@@ -1,14 +1,16 @@
-# Hello World Example
+# Hello World
 
-A minimal Namel3ss app that renders a simple greeting and echoes user input.
+Minimal hello world page using the modern English-style DSL.
 
-## Run with the CLI
+Run locally:
 ```bash
-n3 example run hello_world
+n3 parse hello_world.ai
+n3 run hello-world --file hello_world.ai
 ```
 
-## Load in Studio
-Open the IDE with:
-```
-http://localhost:8000/studio?example=hello_world
-```
+What it shows:
+- Canonical page syntax (`page "home" at "/"`)
+- Modern English declarations (no legacy colon blocks)
+- A simple heading and text layout you can extend with inputs, buttons, and flows.
+
+Open in Studio for live editing: `n3 studio` and open the file in the Project sidebar.

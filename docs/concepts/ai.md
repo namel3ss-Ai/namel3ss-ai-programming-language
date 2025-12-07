@@ -6,6 +6,7 @@ Providers:
 - `dummy` (deterministic, CI-safe)
 - `openai` (Chat Completions API; uses `N3_OPENAI_API_KEY` and optional `N3_OPENAI_BASE_URL`)
 - `http_json` (generic HTTP POST for Ollama/LM Studio/custom gateways)
+- `gemini` (Google Gemini; uses `GEMINI_API_KEY` and optional `GEMINI_BASE_URL`, streaming + JSON mode supported)
 
 Per-model env overrides (uppercase model name):
 - `N3_MODEL_<NAME>_PROVIDER` (dummy | openai | http_json)
@@ -14,3 +15,4 @@ Per-model env overrides (uppercase model name):
 - `N3_MODEL_<NAME>_RESPONSE_PATH` (dot path for http_json response extraction)
 
 Requests are message-based (`messages=[{"role": "...", "content": "..."}]`); streaming is supported by providers that expose it (OpenAI).
+Gemini supports streaming and JSON-mode; toggle JSON-mode via the caller (e.g., agent/flow config) the same way you would for OpenAI.

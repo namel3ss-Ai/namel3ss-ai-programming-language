@@ -54,6 +54,12 @@ _DEFINITIONS: Dict[str, DiagnosticDefinition] = {
         default_severity="error",
         message_template="Field '{field}' on {kind} has invalid type or value",
     ),
+    "N3-1010": DiagnosticDefinition(
+        code="N3-1010",
+        category="lang-spec",
+        default_severity="error",
+        message_template="No declarations were found in the source file",
+    ),
     # Semantic
     "N3-2001": DiagnosticDefinition(
         code="N3-2001",

@@ -32,12 +32,9 @@ app "rag_qa_app":
   entry_page "qa_home"
   description "RAG-style Q&A over a small built-in knowledge note."
 
-page "qa_home":
-  route "/rag-qa"
-  title "RAG Q&A"
+page "qa_home" at "/rag-qa":
   section "prompt":
-    component "text":
-      value "Ask a question about Namel3ss capabilities."
+    heading "RAG Q&A"
+    text "Ask a question about Namel3ss capabilities and run the qa_flow."
   section "ask":
-    component "form":
-      value "Enter your question and run qa_flow."
+    text "This example focuses on backend flows; use Studio traces to inspect results."

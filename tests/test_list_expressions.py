@@ -140,6 +140,46 @@ def test_agent_list_usage():
     assert ctx.variables["val"] == 2
 
 
+def test_negative_indices_and_slices():
+    source = (
+        'flow "lists":\n'
+        '  step "s":\n'
+        '    let xs = [10, 20, 30, 40]\n'
+        '    let last = xs[-1]\n'
+        '    let second_last = xs[-2]\n'
+        '    let mid = xs[-3:-1]\n'
+        '    let head = xs[:-2]\n'
+        '    let tail = xs[-2:]\n'
+        '    do tool "echo"\n'
+    )
+    ir_prog = ast_to_ir(parse_source(source))
+    engine, tools, _ = _make_flow_engine(ir_prog)
+    ctx = ExecutionContext(app_name="test", request_id="req-neg")
+    result = engine.run_flow(ir_prog.flows["lists"], ctx)
+    assert not result.errors
+    assert ctx.variables["last"] == 40
+    assert ctx.variables["second_last"] == 30
+    assert ctx.variables["mid"] == [20, 30]
+    assert ctx.variables["head"] == [10, 20]
+    assert ctx.variables["tail"] == [30, 40]
+
+
+def test_negative_index_out_of_range():
+    source = (
+        'flow "badneg":\n'
+        '  step "s":\n'
+        '    let xs = [1, 2]\n'
+        '    let v = xs[-5]\n'
+        '    do tool "echo"\n'
+    )
+    ir_prog = ast_to_ir(parse_source(source))
+    engine, _, _ = _make_flow_engine(ir_prog)
+    ctx = ExecutionContext(app_name="test", request_id="req-badneg")
+    result = engine.run_flow(ir_prog.flows["badneg"], ctx)
+    assert result.errors
+    assert any("out of bounds" in err.error for err in result.errors)
+
+
 def test_agent_slice_error():
     branch = IRConditionalBranch(
         condition=None,

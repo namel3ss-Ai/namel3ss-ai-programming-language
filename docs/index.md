@@ -13,7 +13,8 @@ Namel3ss is an AI-native programming language and agent OS. It pairs a concise D
 Public surfaces (CLI commands, HTTP endpoints, Plugin/Deployment/Optimizer APIs) are stable for the 3.0.x line. Bug fixes may be shipped, but breaking changes will be announced with migration notes.
 
 ## Getting started fast
-- Install: `pip install -e .[dev]`
+- Install: `pip install namel3ss` (use `pip install -e .[dev]` when hacking on this repo)
 - Explore templates: `n3 init app-basic my-app`
 - Run your first app: `n3 serve --dry-run` then open Studio.
 - Read the quickstart guides under `docs/quickstart/`.
+- Deep dive: see the Learn Namel3ss book in `docs/book/`.

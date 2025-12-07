@@ -26,7 +26,8 @@ from .server import create_app
 from .runtime.engine import Engine
 from .secrets.manager import SecretsManager
 from .diagnostics import Diagnostic
-from .diagnostics.runner import apply_strict_mode, collect_diagnostics, iter_ai_files
+from .diagnostics.runner import apply_strict_mode, collect_diagnostics, collect_lint, iter_ai_files
+from .linting import LintConfig
 from .lang.formatter import format_source
 from .errors import ParseError
 from .templates.manager import list_templates, scaffold_project
@@ -98,6 +99,12 @@ def build_cli_parser() -> argparse.ArgumentParser:
     diag_cmd.add_argument("--strict", action="store_true", help="Treat warnings as errors")
     diag_cmd.add_argument("--json", action="store_true", help="Emit diagnostics as JSON")
     diag_cmd.add_argument("--summary-only", action="store_true", help="Only print the summary")
+    diag_cmd.add_argument("--lint", action="store_true", help="Include lint findings in the output")
+
+    lint_cmd = register("lint", help="Run lint rules on files or directories")
+    lint_cmd.add_argument("paths", nargs="*", type=Path, help="Files or directories to lint")
+    lint_cmd.add_argument("--file", type=Path, help="Legacy single-file flag")
+    lint_cmd.add_argument("--json", action="store_true", help="Emit lint results as JSON")
 
     bundle_cmd = register("bundle", help="Create an app bundle")
     bundle_cmd.add_argument("path", nargs="?", type=Path, help="Path to .ai file or project")
@@ -125,9 +132,20 @@ def build_cli_parser() -> argparse.ArgumentParser:
     mobile_cmd.add_argument("--no-expo-scaffold", action="store_true", help="Only emit config, do not scaffold Expo app")
 
     build_cmd = register("build-target", help="Build deployment target assets")
-    build_cmd.add_argument("target", choices=["server", "worker", "docker", "serverless-aws", "desktop", "mobile"])
+    build_cmd.add_argument(
+        "target", choices=["server", "worker", "docker", "serverless-aws", "serverless-cloudflare", "desktop", "mobile"]
+    )
     build_cmd.add_argument("--file", type=Path, required=True, help="Path to .ai file")
     build_cmd.add_argument("--output-dir", type=Path, required=True)
+
+    build_simple_cmd = register("build", help="Friendly build wrapper for common targets")
+    build_simple_cmd.add_argument(
+        "target",
+        choices=["server", "worker", "docker", "serverless-aws", "serverless-cloudflare", "desktop", "mobile"],
+        help="Target to build (desktop, mobile, serverless-aws, serverless-cloudflare, server, worker, docker)",
+    )
+    build_simple_cmd.add_argument("file", nargs="?", type=Path, help="Path to .ai file (optional)")
+    build_simple_cmd.add_argument("--output-dir", type=Path, help="Override output directory")
 
     optimize_cmd = register("optimize", help="Run optimizer actions")
     opt_sub = optimize_cmd.add_subparsers(dest="opt_command", required=True)
@@ -354,12 +372,16 @@ def main(argv: list[str] | None = None) -> None:
             return
 
         all_diags, summary = collect_diagnostics(ai_files, args.strict)
+        lint_findings = []
+        if args.lint:
+            lint_findings = collect_lint(ai_files, config=LintConfig.load(Path.cwd()))
         success = summary["errors"] == 0
 
         if args.json:
             payload = {
                 "success": success,
                 "diagnostics": [] if args.summary_only else [d.to_dict() for d in all_diags],
+                "lint": [] if args.summary_only else [d.to_dict() for d in lint_findings],
                 "summary": summary,
             }
             print(json.dumps(payload, indent=2))
@@ -371,8 +393,48 @@ def main(argv: list[str] | None = None) -> None:
                     print(_format_diagnostic(diag))
                     if diag.hint:
                         print(f"  hint: {diag.hint}")
+                for lint in lint_findings:
+                    print(_format_diagnostic(lint))
             print(f"Summary: {summary['errors']} errors, {summary['warnings']} warnings, {summary['infos']} infos across {len(ai_files)} files.")
 
+        if not success:
+            raise SystemExit(1)
+        return
+
+    if args.command == "lint":
+        input_paths = list(args.paths)
+        if args.file:
+            input_paths.append(args.file)
+        ai_files = iter_ai_files(input_paths)
+        if not ai_files:
+            print("No .ai files found.")
+            return
+        lint_results = collect_lint(ai_files, config=LintConfig.load(Path.cwd()))
+        error_count = sum(1 for d in lint_results if d.severity == "error")
+        success = error_count == 0
+        if args.json:
+            print(
+                json.dumps(
+                    {
+                        "success": success,
+                        "lint": [d.to_dict() for d in lint_results],
+                        "summary": {
+                            "warnings": sum(1 for d in lint_results if d.severity == "warning"),
+                            "infos": sum(1 for d in lint_results if d.severity == "info"),
+                            "errors": error_count,
+                        },
+                    },
+                    indent=2,
+                )
+            )
+        else:
+            if not lint_results:
+                print("No lint findings.")
+            for lint in lint_results:
+                print(_format_diagnostic(lint))
+            warn_count = sum(1 for d in lint_results if d.severity == "warning")
+            info_count = sum(1 for d in lint_results if d.severity == "info")
+            print(f"Summary: {error_count} errors, {warn_count} warnings, {info_count} infos across {len(ai_files)} files.")
         if not success:
             raise SystemExit(1)
         return
@@ -591,6 +653,50 @@ def main(argv: list[str] | None = None) -> None:
         builder = DeployBuilder(source, args.output_dir)
         target_cfg = DeployTargetConfig(kind=DeployTargetKind(args.target), name=args.target, output_dir=args.output_dir)
         artifacts = builder.build([target_cfg])
+        print(
+            json.dumps(
+                {"artifacts": [{"kind": str(a.kind), "path": str(a.path), "metadata": a.metadata} for a in artifacts]},
+                indent=2,
+            )
+        )
+        return
+    if args.command == "build":
+        from namel3ss.deploy.builder import DeployBuilder
+        from namel3ss.deploy.models import DeployTargetConfig, DeployTargetKind
+
+        target = args.target
+
+        def resolve_file() -> Path:
+            if args.file:
+                return args.file
+            # prefer app.ai
+            if Path("app.ai").exists():
+                return Path("app.ai")
+            ai_files = list(Path(".").glob("*.ai"))
+            if len(ai_files) == 1:
+                return ai_files[0]
+            raise SystemExit(
+                "No source file specified and no unique .ai file found. Please run: n3 build "
+                f"{target} <file.ai>."
+            )
+
+        src_file = resolve_file()
+        if not src_file.exists():
+            raise SystemExit(f"Source file not found: {src_file}")
+        out_dir = args.output_dir
+        if out_dir is None:
+            if target == "desktop":
+                out_dir = Path("build/desktop")
+            elif target == "mobile":
+                out_dir = Path("build/mobile")
+            else:
+                out_dir = Path(f"build/{target}")
+        out_dir.mkdir(parents=True, exist_ok=True)
+        source = src_file.read_text(encoding="utf-8")
+        builder = DeployBuilder(source, out_dir)
+        target_cfg = DeployTargetConfig(kind=DeployTargetKind(target), name=target, output_dir=out_dir)
+        artifacts = builder.build([target_cfg])
+        print(f"Building {target} app from {src_file} -> {out_dir}")
         print(
             json.dumps(
                 {"artifacts": [{"kind": str(a.kind), "path": str(a.path), "metadata": a.metadata} for a in artifacts]},

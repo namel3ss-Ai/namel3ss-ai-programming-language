@@ -36,11 +36,13 @@ from .security import (
     get_principal,
 )
 from .distributed.queue import global_job_queue
+from .distributed.file_watcher import FileWatcher
 from .distributed.scheduler import JobScheduler
 from .distributed.workers import Worker
 from .metrics.tracker import MetricsTracker
 from .studio.engine import StudioEngine
-from .diagnostics.runner import collect_diagnostics, iter_ai_files
+from .diagnostics.runner import collect_diagnostics, collect_lint, iter_ai_files
+from . import linting
 from .packaging.bundler import Bundler, make_server_bundle, make_worker_bundle
 from .secrets.manager import SecretsManager
 from .plugins.registry import PluginRegistry
@@ -104,6 +106,7 @@ class DiagnosticsRequest(BaseModel):
     paths: list[str]
     strict: bool = False
     summary_only: bool = False
+    lint: bool = False
 
 
 class UIManifestRequest(BaseModel):
@@ -226,8 +229,10 @@ def create_app() -> FastAPI:
     metrics_tracker = MetricsTracker()
     plugin_registry = PluginRegistry(Path(SecretsManager().get("N3_PLUGINS_DIR") or "plugins"), core_version=CORE_VERSION, tracer=Tracer())
     trigger_manager = TriggerManager(
-        job_queue=global_job_queue, secrets=SecretsManager(), tracer=Tracer(), metrics=metrics_tracker
+        job_queue=global_job_queue, secrets=SecretsManager(), tracer=Tracer(), metrics=metrics_tracker, project_root=project_root
     )
+    file_watcher = FileWatcher(trigger_manager, project_root)
+    trigger_manager.file_watcher = file_watcher
     optimizer_storage = OptimizerStorage(Path(SecretsManager().get("N3_OPTIMIZER_DB") or "optimizer.db"))
     overlay_store = OverlayStore(Path(SecretsManager().get("N3_OPTIMIZER_OVERLAYS") or "optimizer_overlays.json"))
 
@@ -258,6 +263,20 @@ def create_app() -> FastAPI:
         if path.name == "settings.ai":
             return "settings"
         return "file"
+
+    @app.on_event("startup")
+    async def _startup_file_watcher() -> None:  # pragma: no cover - integration
+        try:
+            await file_watcher.start()
+        except Exception:
+            pass
+
+    @app.on_event("shutdown")
+    async def _shutdown_file_watcher() -> None:  # pragma: no cover - integration
+        try:
+            await file_watcher.stop()
+        except Exception:
+            pass
 
     _IGNORED_DIRS = {".git", "__pycache__", "node_modules", ".venv", "venv", "dist", "build"}
 
@@ -934,10 +953,14 @@ def create_app() -> FastAPI:
             paths = [Path(p) for p in payload.paths]
             ai_files = iter_ai_files(paths)
             diags, summary = collect_diagnostics(ai_files, payload.strict)
+            lint_results: list[dict[str, Any]] = []
+            if payload.lint:
+                lint_results = [d.to_dict() for d in collect_lint(ai_files, config=linting.LintConfig.load(project_root))]
             success = summary["errors"] == 0
             return {
                 "success": success,
                 "diagnostics": [] if payload.summary_only else [d.to_dict() for d in diags],
+                "lint": [] if payload.summary_only else lint_results,
                 "summary": summary,
             }
         except Exception as exc:  # pragma: no cover

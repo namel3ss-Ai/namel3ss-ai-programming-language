@@ -30,12 +30,9 @@ app "support_bot_app":
   entry_page "support_home"
   description "Support assistant with memory and a simple logging tool."
 
-page "support_home":
-  route "/support"
-  title "Support Bot"
+page "support_home" at "/support":
   section "intro":
-    component "text":
-      value "Submit a support request and view the assistant response."
-  section "chat":
-    component "form":
-      value "Describe your issue (login, billing, errors)."
+    heading "Support Bot"
+    text "Describe an issue; the flow classifies it, routes to an agent, and logs the result."
+  section "how":
+    text "This example focuses on backend flows; open Studio to view traces when you run support_flow."

@@ -139,7 +139,7 @@ let prefix be xs[:2]
 let suffix be xs[2:]
 ```
 
-Indexing out of bounds or using negative indices raises a runtime error. Slices always return a new list without mutating the original.
+Negative indices are supported Python-style, so `xs[-1]` is the last item and `xs[:-1]` trims the tail. Indexing out of bounds raises a runtime error. Slices always return a new list without mutating the original.
 
 ### List built-ins and pipelines
 - English style: `length of xs`, `first of xs`, `last of xs`, `sorted form of xs`, `reverse of xs`, `unique elements of xs`, `sum of xs`

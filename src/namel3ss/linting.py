@@ -1,9 +1,16 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
-from typing import List, Optional, Set
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Dict, List, Optional, Set
+
+try:  # Python 3.11+
+    import tomllib
+except Exception:  # pragma: no cover - platform fallback
+    tomllib = None
 
 from . import ast_nodes
+from .diagnostics.structured import Diagnostic as StructuredDiagnostic
 from .parser import parse_source
 
 
@@ -15,14 +22,74 @@ class LintFinding:
     file: Optional[str] = None
     line: Optional[int] = None
     column: Optional[int] = None
+    span: Optional[object] = None
+
+    def to_diagnostic(self) -> StructuredDiagnostic:
+        return StructuredDiagnostic(
+            code=self.rule_id,
+            category="lint",
+            severity=self.severity,
+            message=self.message,
+            hint=None,
+            file=self.file,
+            line=self.line,
+            column=self.column,
+        )
 
 
-def lint_source(source: str, file: Optional[str] = None) -> List[LintFinding]:
+@dataclass
+class LintConfig:
+    """Simple lint configuration loaded from toml if available."""
+
+    rule_levels: Dict[str, str] = field(default_factory=dict)
+
+    def severity_for(self, rule_id: str, default: str) -> Optional[str]:
+        level = self.rule_levels.get(rule_id, default).lower()
+        if level in {"off", "none"}:
+            return None
+        return level
+
+    @classmethod
+    def load(cls, project_root: Optional[Path]) -> "LintConfig":
+        if project_root is None:
+            return cls()
+        cfg_path: Optional[Path] = None
+        for candidate in ("namel3ss.toml", "n3.config"):
+            p = project_root / candidate
+            if p.exists():
+                cfg_path = p
+                break
+        if not cfg_path or not tomllib:
+            return cls()
+        try:
+            data = tomllib.loads(cfg_path.read_text(encoding="utf-8"))
+        except Exception:  # pragma: no cover - fallback on invalid config
+            return cls()
+        lint_section = data.get("lint", {}) if isinstance(data, dict) else {}
+        alias_map = {
+            "unused_bindings": "N3-L001",
+            "unused_helper": "N3-L002",
+            "match_unreachable": "N3-L003",
+            "loop_bound": "N3-L004",
+            "shadowed_vars": "N3-L005",
+            "prefer_english_let": "N3-L006",
+        }
+        levels: Dict[str, str] = {}
+        for key, val in lint_section.items():
+            if not isinstance(val, str):
+                continue
+            rule_id = alias_map.get(key, key)
+            levels[rule_id] = val.lower()
+        return cls(rule_levels=levels)
+
+
+def lint_source(source: str, file: Optional[str] = None, config: Optional[LintConfig] = None) -> List[LintFinding]:
     module = parse_source(source)
-    return lint_module(module, file=file)
+    return lint_module(module, file=file, config=config)
 
 
-def lint_module(module: ast_nodes.Module, file: Optional[str] = None) -> List[LintFinding]:
+def lint_module(module: ast_nodes.Module, file: Optional[str] = None, config: Optional[LintConfig] = None) -> List[LintFinding]:
+    config = config or LintConfig()
     findings: list[LintFinding] = []
     helper_names: set[str] = set()
     helper_calls: set[str] = set()
@@ -41,19 +108,25 @@ def lint_module(module: ast_nodes.Module, file: Optional[str] = None) -> List[Li
                         helper_calls,
                         file=file,
                         external_used=used_all,
+                        config=config,
                     )
                 )
         if isinstance(decl, ast_nodes.HelperDecl):
-            findings.extend(_lint_statements(decl.body, helper_calls, file=file))
+            initial_scope = set(decl.params or [])
+            findings.extend(_lint_statements(decl.body, helper_calls, file=file, config=config, initial_scope=initial_scope))
         if isinstance(decl, ast_nodes.SettingsDecl):
             for env in decl.envs:
                 for entry in env.entries:
                     if isinstance(entry.expr, ast_nodes.Literal) and entry.expr.value is None:
-                        findings.append(_make("N3-6202", "warning", "Settings entry should have a value", file, entry.expr.span))
+                        finding = _make("N3-6202", "warning", "Settings entry should have a value", file, entry.expr.span, config)
+                        if finding:
+                            findings.append(finding)
 
     unused_helpers = helper_names - helper_calls
     for name in sorted(unused_helpers):
-        findings.append(_make("N3-L002", "warning", f"Helper '{name}' is never called", file, None))
+        finding = _make("N3-L002", "warning", f"Helper '{name}' is never called", file, None, config)
+        if finding:
+            findings.append(finding)
     return findings
 
 
@@ -66,6 +139,7 @@ def _collect_helper_calls(statements: list[ast_nodes.Statement | ast_nodes.FlowA
 
 def _collect_calls_in_statement(stmt: ast_nodes.Statement | ast_nodes.FlowAction) -> set[str]:
     calls: set[str] = set()
+
     def walk_expr(expr: ast_nodes.Expr | None):
         if expr is None:
             return
@@ -155,17 +229,22 @@ def _lint_statements(
     helper_calls: set[str],
     file: Optional[str],
     external_used: Optional[Set[str]] = None,
+    config: Optional[LintConfig] = None,
+    initial_scope: Optional[Set[str]] = None,
 ) -> list[LintFinding]:
+    config = config or LintConfig()
     findings: list[LintFinding] = []
-    scope_stack: list[Set[str]] = [set()]
-    declared_global: set[str] = set()
+    scope_stack: list[Set[str]] = [set(initial_scope or set())]
+    declared_global: set[str] = set(initial_scope or set())
     used: set[str] = set()
 
     def declare(name: str, span):
         nonlocal findings
         for scope in scope_stack:
             if name in scope:
-                findings.append(_make("N3-L005", "warning", f"Variable '{name}' shadows an outer variable", file, span))
+                finding = _make("N3-L005", "warning", f"Variable '{name}' shadows an outer variable", file, span, config)
+                if finding:
+                    findings.append(finding)
                 break
         scope_stack[-1].add(name)
         declared_global.add(name)
@@ -221,7 +300,12 @@ def _lint_statements(
         if isinstance(stmt, ast_nodes.LetStatement):
             declare(stmt.name, stmt.span)
             if stmt.uses_equals:
-                findings.append(_make("N3-L006", "warning", f"Prefer 'let {stmt.name} be ...' over '=' style", file, stmt.span))
+                finding = _make("N3-L006", "info", f"Prefer 'let {stmt.name} be ...' over '=' style", file, stmt.span, config)
+                if finding:
+                    findings.append(finding)
+                legacy = _make("N3-L007", "warning", "Legacy '=' assignment detected; prefer English 'be'", file, stmt.span, config)
+                if legacy:
+                    findings.append(legacy)
             walk_expr(stmt.expr)
         elif isinstance(stmt, ast_nodes.SetStatement):
             walk_expr(stmt.expr)
@@ -241,7 +325,9 @@ def _lint_statements(
                 if isinstance(br.pattern, ast_nodes.Literal):
                     lit_val = br.pattern.value
                     if lit_val in seen_literals:
-                        findings.append(_make("N3-L003", "warning", "Duplicate match branch is unreachable", file, br.pattern.span))
+                        finding = _make("N3-L003", "warning", "Duplicate match branch is unreachable", file, br.pattern.span, config)
+                        if finding:
+                            findings.append(finding)
                     else:
                         seen_literals.add(lit_val)
                 if isinstance(br.pattern, ast_nodes.Expr):
@@ -259,7 +345,9 @@ def _lint_statements(
             scope_stack.pop()
         elif isinstance(stmt, ast_nodes.RepeatUpToLoop):
             if isinstance(stmt.count, ast_nodes.Literal) and isinstance(stmt.count.value, (int, float)) and stmt.count.value > 1000:
-                findings.append(_make("N3-L004", "warning", "Loop bound is very large; consider lowering it", file, stmt.count.span))
+                finding = _make("N3-L004", "warning", "Loop bound is very large; consider lowering it", file, stmt.count.span, config)
+                if finding:
+                    findings.append(finding)
             walk_expr(stmt.count)
             scope_stack.append(set())
             for a in stmt.body:
@@ -293,7 +381,9 @@ def _lint_statements(
 
     for name in declared_global:
         if name not in used and (external_used is None or name not in external_used):
-            findings.append(_make("N3-L001", "warning", f"Variable '{name}' is never used", file, None))
+            finding = _make("N3-L001", "warning", f"Variable '{name}' is never used", file, None, config)
+            if finding:
+                findings.append(finding)
     return findings
 
 
@@ -404,7 +494,11 @@ def _actions_from_conditional(branches: Optional[list[ast_nodes.ConditionalBranc
     return actions
 
 
-def _make(rule_id: str, severity: str, msg: str, file: Optional[str], span) -> LintFinding:
-    line = getattr(span, "line", None)
-    column = getattr(span, "column", None)
-    return LintFinding(rule_id=rule_id, severity=severity, message=msg, file=file, line=line, column=column)
+def _make(rule_id: str, severity: str, msg: str, file: Optional[str], span, config: Optional[LintConfig]) -> Optional[LintFinding]:
+    config = config or LintConfig()
+    sev = config.severity_for(rule_id, severity)
+    if sev is None:
+        return None
+    line = getattr(span, "line", None) if span else None
+    column = getattr(span, "column", None) if span else None
+    return LintFinding(rule_id=rule_id, severity=sev, message=msg, file=file, line=line, column=column, span=span)

@@ -17,7 +17,7 @@ Namel3ss V3 is an AI-native programming language and agent OS that makes “writ
 - Studio + VS Code extension for day-to-day work
 
 ## Get started
-- Install: `pip install -e .[dev]`
+- Install: `pip install namel3ss` (or `pip install -e .[dev]` for contributors)
 - Scaffold: `n3 init app-basic my-app`
 - Run: `n3 serve --dry-run` then open Studio.
 - Explore examples in `examples/` and templates in `templates/`.

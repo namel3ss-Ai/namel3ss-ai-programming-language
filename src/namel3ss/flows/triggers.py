@@ -7,7 +7,9 @@ from __future__ import annotations
 import asyncio
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from typing import Any, Dict, Optional
+import fnmatch
 
 from ..distributed.queue import JobQueue
 from ..distributed.scheduler import JobScheduler
@@ -15,6 +17,7 @@ from ..metrics.tracker import MetricsTracker
 from ..obs.tracer import Tracer
 from ..secrets.manager import SecretsManager
 
+MAX_FILE_BYTES = 10 * 1024 * 1024
 
 @dataclass
 class FlowTrigger:
@@ -34,6 +37,7 @@ class TriggerManager:
         secrets: Optional[SecretsManager] = None,
         tracer: Optional[Tracer] = None,
         metrics: Optional[MetricsTracker] = None,
+        project_root: Optional[Path] = None,
     ) -> None:
         self.job_queue = job_queue
         self.scheduler = JobScheduler(job_queue)
@@ -42,18 +46,28 @@ class TriggerManager:
         self.metrics = metrics
         self._triggers: Dict[str, FlowTrigger] = {}
         self._lock = asyncio.Lock()
+        self.project_root = project_root or Path.cwd().resolve()
+        self.file_watcher = None  # populated by runtime if available
 
     async def a_register_trigger(self, trigger: FlowTrigger) -> None:
         async with self._lock:
+            if trigger.kind == "file":
+                self._validate_file_trigger(trigger)
             self._triggers[trigger.id] = trigger
             if trigger.kind == "schedule":
                 trigger.next_fire_at = self._compute_next_fire(trigger)
+            if trigger.kind == "file" and self.file_watcher:
+                self.file_watcher.add_trigger(trigger)
 
     def register_trigger(self, trigger: FlowTrigger) -> None:
         # Synchronous helper for callers without an event loop.
+        if trigger.kind == "file":
+            self._validate_file_trigger(trigger)
         if trigger.kind == "schedule":
             trigger.next_fire_at = self._compute_next_fire(trigger)
         self._triggers[trigger.id] = trigger
+        if trigger.kind == "file" and self.file_watcher:
+            self.file_watcher.add_trigger(trigger)
 
     async def a_fire_trigger(self, trigger_id: str, payload: dict | None = None):
         trigger = self._triggers.get(trigger_id)
@@ -108,8 +122,6 @@ class TriggerManager:
         return fired
 
     def _enqueue_trigger(self, trigger: FlowTrigger, payload: dict | None = None):
-        if trigger.kind == "file":
-            raise NotImplementedError("Waiting for Phase X")
         job_payload = {
             "payload": payload or {},
             "trigger_id": trigger.id,
@@ -127,6 +139,39 @@ class TriggerManager:
                 {"trigger_id": trigger.id, "trigger_kind": trigger.kind, "flow": trigger.flow_name},
             )
         return job
+
+    def notify_file_event(self, file_path: Path, event: str) -> None:
+        file_path = file_path.resolve()
+        for trigger in self._triggers.values():
+            if trigger.kind != "file" or not trigger.enabled:
+                continue
+            cfg = trigger.config or {}
+            base = cfg.get("path")
+            if not base:
+                continue
+            base_path = Path(base)
+            if not base_path.is_absolute():
+                base_path = (self.project_root / base_path).resolve()
+            if base_path not in file_path.parents and base_path != file_path.parent:
+                continue
+            pattern = cfg.get("pattern", "*")
+            if not fnmatch.fnmatch(file_path.name, pattern):
+                continue
+            include_content = bool(cfg.get("include_content"))
+            content = None
+            if include_content and file_path.exists() and file_path.is_file():
+                try:
+                    size = file_path.stat().st_size
+                    if size <= MAX_FILE_BYTES:
+                        content = file_path.read_text(encoding="utf-8", errors="ignore")
+                except OSError:
+                    content = None
+            payload = {
+                "event": event,
+                "file": str(file_path),
+                "content": content,
+            }
+            self._enqueue_trigger(trigger, payload)
 
     def _compute_next_fire(self, trigger: FlowTrigger, base_time: Optional[datetime] = None) -> Optional[datetime]:
         cfg = trigger.config or {}
@@ -153,3 +198,20 @@ class TriggerManager:
                     next_hour = next_hour + timedelta(hours=1)
                 return next_hour
         return now + timedelta(minutes=1)
+
+    def _validate_file_trigger(self, trigger: FlowTrigger) -> None:
+        cfg = trigger.config or {}
+        base = cfg.get("path")
+        if not base:
+            raise ValueError("File trigger requires a path")
+        path = Path(base)
+        if not path.is_absolute():
+            path = (self.project_root / path).resolve()
+        if self.project_root not in path.parents and self.project_root != path:
+            raise ValueError("File trigger path must be within project")
+        if not path.exists() or not path.is_dir():
+            raise ValueError("File trigger path must be an existing directory")
+        pattern = cfg.get("pattern", "*")
+        # fnmatch does not throw, but ensure non-empty string
+        if not isinstance(pattern, str) or not pattern:
+            raise ValueError("Invalid glob pattern for file trigger")

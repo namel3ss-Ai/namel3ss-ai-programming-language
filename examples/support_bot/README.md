@@ -4,13 +4,13 @@ A lightweight support assistant that classifies incoming issues, responds via an
 
 ## Run with the CLI
 ```bash
-n3 example run support_bot
+n3 run support_flow --file examples/support_bot/support_bot.ai
 ```
 
 ## Load in Studio
 Open the IDE with:
 ```
-http://localhost:8000/studio?example=support_bot
+http://localhost:8000/studio
 ```
 
 When you run via the CLI, you’ll see a trace link like:

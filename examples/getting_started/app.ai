@@ -1,13 +1,10 @@
 app "getting-started":
   entry_page "home"
 
-page "home":
-  route "/"
+page "home" at "/":
   section "hero":
-    component "text":
-      value "Getting Started with Namel3ss"
-    component "form":
-      value "Enter your name"
+    heading "Getting Started with Namel3ss"
+    text "This page uses the modern English-style DSL."
 
 model "default":
   provider "dummy"

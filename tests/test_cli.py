@@ -96,3 +96,11 @@ def test_cli_bundle_and_diagnostics_not_run_yet(tmp_path, capsys):
     main(["diagnostics", "--file", str(program_file)])
     diag_out = capsys.readouterr().out
     assert "[warning]" in diag_out or "[error]" in diag_out or "No diagnostics found" in diag_out
+
+
+def test_cli_lint_command(tmp_path, capsys):
+    program_file = tmp_path / "lint.ai"
+    program_file.write_text('flow "demo":\n  step "s":\n    let temp = 1\n', encoding="utf-8")
+    main(["lint", str(program_file)])
+    out = capsys.readouterr().out
+    assert "N3-L001" in out

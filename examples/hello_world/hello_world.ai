@@ -1,24 +1,8 @@
-model "hello-llm":
-  provider "openai"
-
-ai "echo":
-  model "hello-llm"
-  input from "user_input"
-  description "Echo a friendly greeting back to the user."
-
-flow "hello_flow":
-  description "Echo back a greeting."
-  step "reply":
-    kind "ai"
-    target "echo"
-
 app "hello-world":
+  description "Hello world sample that renders a welcome page."
   entry_page "home"
-  description "Hello world sample that echoes user text."
 
-page "home":
-  route "/"
-  title "Hello World"
-  section "greeting":
-    component "text":
-      value "Hello from Namel3ss!"
+page "home" at "/":
+  section "hero":
+    heading "Hello from Namel3ss"
+    text "Edit this example and rerun to see your changes."

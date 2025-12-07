@@ -118,6 +118,7 @@ Each block kind has required and optional fields aligned with the current IR:
   - Functional: `any(list, where: predicate)`, `all(list, where: predicate)`
   - Diagnostics: `N3-4200` any/all requires list, `N3-4201` predicate must be boolean.
 - Time/random helpers: `current timestamp`, `current date`, `random uuid` and their functional forms. Passing arguments raises `N3-4300`.
+- Canonical DSL: The English-style surface is the primary, modern syntax. Legacy symbolic/colon forms remain supported via automatic transformation, but lint will suggest migrating to the English forms. All examples in this spec use the modern syntax.
 - Pattern matching:
   - `match <expr>:` with `when <pattern>:` branches and optional `otherwise:`.
   - Patterns may be literals, comparisons, or success/error bindings (`when success as value:` / `when error as err:`).
@@ -126,7 +127,7 @@ Each block kind has required and optional fields aligned with the current IR:
   - `retry up to <expr> times:` with optional `with backoff`.
   - Count must be numeric and at least 1 (`N3-4500` / `N3-4501`).
 - Collections:
-  - List literals `[a, b, c]`, indexing `xs[0]`, slicing `xs[1:3]`, prefix/suffix slices `xs[:2]` / `xs[2:]`. Negative indices are not yet supported. Out-of-bounds indexing raises `N3-3205`.
+- List literals `[a, b, c]`, indexing `xs[0]`, slicing `xs[1:3]`, prefix/suffix slices `xs[:2]` / `xs[2:]`. Negative indices are supported (Python-style): `xs[-1]`, `xs[-3:-1]`, `xs[:-2]`. Out-of-bounds indexing raises `N3-3205`.
   - List built-ins available in English (`length of xs`, `first of xs`, `last of xs`, `sorted form of xs`, `reverse of xs`, `unique elements of xs`, `sum of xs`) and functional form (`length(xs)`, etc.). Non-list operands raise `N3-3200`; sorting incomparable elements raises `N3-3204`; `sum` requires numeric lists (`N3-3203`).
   - Filtering and mapping: `all xs where item > 1`, `all user.email from users`, plus `filter(xs, where: ...)` and `map(xs, to: ...)`. Predicates must be boolean (`N3-3201`); `map` requires list sources.
 - Records:

@@ -21,6 +21,7 @@ severity, plus location metadata.
 | Code     | Category   | Default Severity | Description |
 |----------|------------|------------------|-------------|
 | N3-0001  | syntax     | error            | Generic syntax/parse error. |
+| N3-1010  | lang-spec  | error            | No declarations were found in the source file. |
 | N3-1001  | lang-spec  | error            | Missing required field on a block. |
 | N3-1002  | lang-spec  | warning          | Unknown field on a block. |
 | N3-1003  | lang-spec  | error            | Invalid child block under a parent. |
@@ -149,3 +150,44 @@ severity, plus location metadata.
 
 See also `docs/language_spec_v3.md` for how these codes relate to specific
 language rules and contracts.
+
+## Linting (style & hygiene)
+
+Lint findings are softer, English-style hints that do not block execution. They
+carry the `lint` category and typically surface as warnings or infos.
+
+Current rules:
+
+| Code     | Default Severity | Description |
+|----------|------------------|-------------|
+| N3-L001  | warning          | Variable is declared but never used. |
+| N3-L002  | warning          | Helper is defined but never called. |
+| N3-L003  | warning          | Duplicate match branch is unreachable. |
+| N3-L004  | warning          | Loop bound is very large (heuristic). |
+| N3-L005  | warning          | Variable shadows an outer binding. |
+| N3-L006  | info             | Prefer `let x be ...` instead of `let x = ...` for English style. |
+| N3-L007  | warning          | Legacy syntax detected; prefer modern English-style forms. |
+
+Use `n3 lint` to run only lint rules, or `n3 diagnostics --lint` to include them
+alongside hard diagnostics. Lint severities can be tuned or disabled per rule by
+adding a `[lint]` section to `namel3ss.toml`, for example:
+
+```toml
+[lint]
+unused_bindings = "warning"
+shadowed_vars   = "off"
+prefer_english_let = "info"
+```
+
+### CLI examples
+
+```
+n3 lint app.ai
+n3 diagnostics --lint app.ai
+```
+
+Lint warnings do not cause a non-zero exit code unless they escalate to errors
+via configuration; diagnostics still fail on errors when using `n3 diagnostics`.
+
+Studio and the VS Code extension surface lint findings alongside diagnostics as
+soft warnings, making it easy to spot style issues without blocking execution.

@@ -23,3 +23,9 @@ This guide highlights key changes from earlier snapshots to the current 3.0.x re
 - Fast suite: `python -m pytest -m "not slow" -q -o addopts=''`
 - Docs: `mkdocs build --strict`
 - Studio: `cd studio && npm install && npm test`
+
+## Legacy syntax to English-style DSL
+- Prefer `let x be y` instead of `let x = y`.
+- Replace colon-based blocks with the modern English block structure and layout terms.
+- Keep using symbolic operators where needed, but English operators often read better (`plus`, `minus`, `times`, `divided by`).
+- Legacy syntax remains supported through the canonical parser and transformer, but lint warnings (e.g., N3-L007) will encourage migration to the modern surface.

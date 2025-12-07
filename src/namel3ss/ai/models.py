@@ -30,6 +30,7 @@ class ModelResponse:
     usage: Optional[TokenUsage] = None
     finish_reason: Optional[str] = None
     cost: Optional[float] = None
+    json: Optional[Any] = None
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -41,6 +42,7 @@ class ModelResponse:
             "usage": self.usage.to_dict() if self.usage else None,
             "finish_reason": self.finish_reason,
             "cost": self.cost,
+            "json": self.json,
         }
 
     # Backwards-compatibility helpers to behave dict-like where older code calls .get
@@ -60,6 +62,7 @@ class ModelStreamChunk:
     is_final: bool = False
     usage: Optional[TokenUsage] = None
     finish_reason: Optional[str] = None
+    json: Optional[Any] = None
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -70,4 +73,5 @@ class ModelStreamChunk:
             "is_final": self.is_final,
             "usage": self.usage.to_dict() if self.usage else None,
             "finish_reason": self.finish_reason,
+            "json": self.json,
         }

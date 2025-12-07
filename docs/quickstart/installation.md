@@ -1,7 +1,7 @@
 # Installation
 
 1. **Python 3.11+**: ensure it is available on PATH.
-2. **Install deps**: `pip install -e .[dev]`
+2. **Install deps**: `pip install namel3ss` (use `pip install -e .[dev]` only when developing this repo)
 3. **Studio (optional)**: inside `studio/` run `npm install`.
 4. **API keys**: set `OPENAI_API_KEY` if you want real model calls. Otherwise the deterministic dummy provider is used.
 5. **Run tests**: `n3 test-cov` or `pytest -m "not slow"`.

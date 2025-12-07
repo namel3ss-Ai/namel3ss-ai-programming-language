@@ -32,7 +32,7 @@ class DeployBuilder:
             elif target.kind == DeployTargetKind.SERVERLESS_AWS:
                 artifacts.append(self._build_lambda(target))
             elif target.kind == DeployTargetKind.SERVERLESS_CLOUDFLARE:
-                raise NotImplementedError("Waiting for Phase 9+ Cloudflare adapter")
+                artifacts.append(self._build_cloudflare(target))
             elif target.kind == DeployTargetKind.DESKTOP:
                 artifacts.append(self._build_desktop(target))
             elif target.kind == DeployTargetKind.MOBILE:
@@ -112,6 +112,88 @@ CMD ["python", "-m", "namel3ss.deploy.{entry_name.replace('.py','')}"]
                 zf.write(path, path.name)
         metadata = {"handler": "aws_lambda.lambda_handler"}
         return BuildArtifact(kind=target.kind, path=zip_path, metadata=metadata)
+
+    def _build_cloudflare(self, target: DeployTargetConfig) -> BuildArtifact:
+        out_dir = target.output_dir
+        out_dir.mkdir(parents=True, exist_ok=True)
+        source_path = self._write_source(out_dir)
+        worker_path = out_dir / "worker.js"
+        worker_path.write_text(self._cloudflare_worker_template(), encoding="utf-8")
+        wrangler_path = out_dir / "wrangler.toml"
+        wrangler_path.write_text(self._wrangler_content(target), encoding="utf-8")
+        readme = out_dir / "README.md"
+        readme.write_text(
+            "\n".join(
+                [
+                    "# Namel3ss Cloudflare Worker",
+                    "",
+                    "This bundle was generated for the `serverless-cloudflare` target.",
+                    "",
+                    "Quick start:",
+                    "  1) Install Wrangler: https://developers.cloudflare.com/workers/wrangler/install-and-update/",
+                    "  2) Configure account_id/routes in wrangler.toml as needed.",
+                    "  3) Run locally: `wrangler dev`",
+                    "  4) Deploy: `wrangler publish`",
+                    "",
+                    "Requests are optionally forwarded to `env.N3_ORIGIN` (configure in wrangler.toml [vars]).",
+                ]
+            ),
+            encoding="utf-8",
+        )
+        metadata = {
+            "handler": "worker.fetch",
+            "config": str(wrangler_path),
+            "notes": "Run `wrangler dev` or `wrangler publish` inside this directory.",
+            "source": str(source_path),
+        }
+        return BuildArtifact(kind=target.kind, path=worker_path, metadata=metadata)
+
+    def _cloudflare_worker_template(self) -> str:
+        return (
+            "// Cloudflare Worker entry for Namel3ss\n"
+            "export default {\n"
+            "  async fetch(request, env, ctx) {\n"
+            "    const method = request.method || 'GET';\n"
+            "    const forwardOrigin = env && env.N3_ORIGIN;\n"
+            "    if (forwardOrigin) {\n"
+            "      const url = new URL(request.url);\n"
+            "      const upstream = forwardOrigin.replace(/\\/$/, '') + url.pathname + url.search;\n"
+            "      const init = { method, headers: request.headers };\n"
+            "      if (!['GET','HEAD'].includes(method.toUpperCase())) {\n"
+            "        init.body = request.body;\n"
+            "      }\n"
+            "      return fetch(upstream, init);\n"
+            "    }\n"
+            "    return new Response('Namel3ss Cloudflare worker is running. Set N3_ORIGIN to forward requests.', { status: 200 });\n"
+            "  }\n"
+            "};\n"
+        )
+
+    def _wrangler_content(self, target: DeployTargetConfig) -> str:
+        name = target.options.get("service_name", "namel3ss-worker")
+        account_id = target.options.get("account_id", "")
+        route = target.options.get("route")
+        routes = target.options.get("routes")
+        compatibility_date = target.options.get("compatibility_date", "2024-01-01")
+        lines = [
+            f'name = "{name}"',
+            'main = "worker.js"',
+            f'compatibility_date = "{compatibility_date}"',
+        ]
+        if account_id:
+            lines.append(f'account_id = "{account_id}"')
+        if route:
+            lines.append(f'route = "{route}"')
+        if routes and isinstance(routes, list):
+            quoted = ", ".join([f'"{r}"' for r in routes])
+            lines.append(f"routes = [{quoted}]")
+        lines.append("\n[vars]")
+        env_map = dict(target.env or {})
+        env_map.setdefault("N3_ORIGIN", "http://localhost:8000")
+        env_map.setdefault("N3_SOURCE_PATH", "./app.ai")
+        for k, v in env_map.items():
+            lines.append(f'{k} = "{v}"')
+        return "\n".join(lines)
 
     def _build_desktop(self, target: DeployTargetConfig) -> BuildArtifact:
         out_dir = target.output_dir

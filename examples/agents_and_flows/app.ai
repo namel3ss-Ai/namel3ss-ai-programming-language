@@ -1,11 +1,10 @@
 app "agents-flows":
   entry_page "home"
 
-page "home":
-  route "/"
+page "home" at "/":
   section "info":
-    component "text":
-      value "Agents + Flows demo"
+    heading "Agents + Flows demo"
+    text "Run the orchestrate flow to see AI + agent steps executed."
 
 model "default":
   provider "dummy"
