@@ -14,6 +14,9 @@ Supported block kinds:
 - `agent`
 - `flow`
 - `memory`
+- `frame`
+- `macro`
+- UI pages with layout (Phase UI-1)
 - `plugin`
 - UI blocks: `section`, `component`
 
@@ -58,6 +61,19 @@ Each block kind has required and optional fields aligned with the current IR:
 - **memory**
   - required: `name`, `memory_type` (one of `conversation`, `user`, `global`)
 
+- **frame**
+  - required: `name`, `from file "<path>"`
+  - optional: `with delimiter ","`, `has headers`, `select col1, col2`, `where <expression>`
+  - semantics: loads CSV/tabular data lazily, applies optional `where` filters and `select` projections, and behaves like a list of record rows in expressions, filters/maps, aggregates, and loops.
+- **macro**
+  - required: `name`, `using ai "<model>"`, `description`
+  - optional: `sample`, `parameters`
+  - semantics: defines an AI-assisted macro that expands to Namel3ss code when invoked with `use macro "name"` (optionally with arguments). Expansions are parsed, linted, and merged at load-time.
+- **page (UI layout)**
+  - required: `name`, `at "<route>"` starting with `/`, layout block
+  - layout: `section`, `heading`, `text`, `image`, `use form "<name>"`, UI-2 controls (`state`, `input`, `button`, `when/otherwise` with `show:`)
+  - semantics: declares a UI page layout; UI-2 adds reactive state, inputs, buttons with `on click`, and conditional visibility.
+
 - **plugin**
   - required: `name`
   - optional: `description`
@@ -77,6 +93,11 @@ Each block kind has required and optional fields aligned with the current IR:
 ## Expressions & Values
 - Variables: `let <name> be <expression>` (or `let <name> = <expression>`) declares a variable in the current flow/agent scope. Redeclaring in the same scope is an error.
 - Mutation: `set <name> to <expression>` updates an existing variable. Assigning to an undefined variable is an error.
+- Frames: frame values behave like lists of record rows and can be iterated (`repeat for each row in sales_data`), filtered/mapped (`all row from sales_data where ...`), and aggregated (`sum of all row.revenue from sales_data`).
+- Macros: `use macro "name"` expands AI-generated code at load-time; macro definitions capture description/sample/parameters.
+- Built-in AI macro `crud_ui` generates CRUD flows, forms, and UI pages for an entity:
+  - `use macro "crud_ui" with: entity "Product" fields ["name", "price"]`
+- UI pages: `page "name" at "/route":` with layout elements for static rendering; sections group layout children; `use form` embeds previously declared forms. UI-2 adds `state`, `input "label" as var [type is ...]`, `button "Label": on click: ...`, and conditional blocks `when <expr>: show: ... otherwise: ...`.
 - Literals: strings, booleans (`true`/`false`), and numbers (int/float).
 - Operators:
   - Logical: `and`, `or`, `not`
@@ -126,6 +147,14 @@ Each block kind has required and optional fields aligned with the current IR:
   - `use module "name"` loads a module; `from "name" use helper|flow|agent "item"` records specific imports. Missing modules or symbols produce `N3-6100`/`N3-6101`; duplicate imports `N3-6103`.
 - Settings/environments:
   - Top-level `settings:` with nested `env "name":` blocks containing `key be expr` entries. Duplicate envs raise `N3-6200`; duplicate keys inside an env raise `N3-6201`.
+  - Optional `theme:` block: `<token> color be "<value>"` entries define UI theme tokens (e.g., `primary`, `accent`) for use in styling.
+- UI pages & layout:
+  - `page "name" at "/route":` defines a UI page. Layout elements: `section`, `heading`, `text`, `image`, `use form`, `state`, `input`, `button`, `when ... show ... otherwise ...`.
+  - Styling directives inside pages/sections/elements: `color is <token|string>`, `background color is ...`, `align is left|center|right`, `align vertically is top|middle|bottom`, `layout is row|column|two columns|three columns`, `padding|margin|gap is small|medium|large`.
+  - Reusable UI components: `component "Name": [takes params] render: <layout>`, invoked inside pages as `<Name> <expr>:` with optional named argument blocks matching declared parameters.
+- UI rendering & manifest:
+  - UI manifest v1 captures pages, routes, layout trees, styles, state, components, and theme tokens for frontend rendering.
+  - Backend bridge exposes `/api/ui/manifest` and `/api/ui/flow/execute` to let the frontend render pages and call flows with state/form data.
 
 ## Loops
 - For-each loops: `repeat for each <name> in <expr>:` followed by a block of statements. The iterable must evaluate to a list (`N3-3400`).

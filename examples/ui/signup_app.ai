@@ -1,0 +1,27 @@
+settings:
+  theme:
+    primary color be "#2563eb"
+    background color be "#0b1120"
+
+flow "register_user":
+  step "call_tool" kind "tool" target "echo" message "registering"
+
+page "signup" at "/signup":
+  state email is ""
+  state password is ""
+
+  heading "Create your account"
+    color is primary
+
+  input "Email" as email
+  input "Password" as password
+    type is secret
+
+  button "Register":
+    on click:
+      do flow "register_user" with email: email, password: password
+      go to page "dashboard"
+
+page "dashboard" at "/dashboard":
+  heading "Welcome!"
+  text "You made it to the dashboard."

@@ -41,6 +41,7 @@ from ..observability.metrics import default_metrics
 from ..observability.tracing import default_tracer
 from ..runtime.context import ExecutionContext, execute_ai_call_with_registry
 from ..runtime.expressions import EvaluationError, ExpressionEvaluator, VariableEnvironment
+from ..runtime.frames import FrameRegistry
 from ..secrets.manager import SecretsManager
 from ..tools.registry import ToolRegistry
 from .graph import (
@@ -79,6 +80,7 @@ class FlowEngine:
         self.metrics = metrics
         self.secrets = secrets
         self.max_parallel_tasks = max_parallel_tasks
+        self.frame_registry = FrameRegistry(program.frames if program else {})
 
     def _build_runtime_context(self, context: ExecutionContext) -> FlowRuntimeContext:
         return FlowRuntimeContext(
@@ -92,6 +94,7 @@ class FlowEngine:
             secrets=context.secrets or self.secrets,
             memory_engine=context.memory_engine,
             rag_engine=context.rag_engine,
+            frames=self.frame_registry,
             execution_context=context,
             max_parallel_tasks=self.max_parallel_tasks,
             parallel_semaphore=asyncio.Semaphore(self.max_parallel_tasks),
@@ -891,7 +894,7 @@ class FlowEngine:
             return expr.group_name
         return str(expr)
 
-    def _resolve_identifier(self, name: str, state: FlowState) -> tuple[bool, Any]:
+    def _resolve_identifier(self, name: str, state: FlowState, runtime_ctx: FlowRuntimeContext | None) -> tuple[bool, Any]:
         env = getattr(state, "variables", None)
         if env and env.has(name):
             return True, env.resolve(name)
@@ -915,6 +918,9 @@ class FlowEngine:
             found = True
         elif parts[0] in state.context:
             value = state.context.get(parts[0])
+            found = True
+        elif runtime_ctx and runtime_ctx.frames and parts[0] in getattr(runtime_ctx.frames, "frames", {}):
+            value = runtime_ctx.frames.get_rows(parts[0])
             found = True
         else:
             return False, None
@@ -1081,7 +1087,7 @@ class FlowEngine:
         env = getattr(state, "variables", None) or getattr(runtime_ctx, "variables", None) or VariableEnvironment()
         return ExpressionEvaluator(
             env,
-            resolver=lambda name: self._resolve_identifier(name, state),
+            resolver=lambda name: self._resolve_identifier(name, state, runtime_ctx),
             rulegroup_resolver=lambda expr: self._eval_rulegroup(expr, state, runtime_ctx) if runtime_ctx else (False, None),
             helper_resolver=lambda name, args: self._call_helper(name, args, state, runtime_ctx),
         )
@@ -1138,7 +1144,7 @@ class FlowEngine:
             raise Namel3ssError(str(exc))
 
     def _match_pattern(self, pattern: ast_nodes.PatternExpr, state: FlowState, runtime_ctx: FlowRuntimeContext) -> tuple[bool, Any]:
-        found, subject = self._resolve_identifier(pattern.subject.name, state)
+        found, subject = self._resolve_identifier(pattern.subject.name, state, runtime_ctx)
         if not found or not isinstance(subject, dict):
             return False, None
         for pair in pattern.pairs:

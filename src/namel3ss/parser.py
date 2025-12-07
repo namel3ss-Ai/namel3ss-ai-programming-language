@@ -59,16 +59,34 @@ class Parser:
             return self.parse_agent()
         if token.value == "memory":
             return self.parse_memory()
+        if token.value == "frame":
+            return self.parse_frame()
+        if token.value == "macro":
+            return self.parse_macro()
         if token.value == "flow":
             return self.parse_flow()
         if token.value == "plugin":
             return self.parse_plugin()
         if token.value == "settings":
             return self.parse_settings()
+        if token.value == "component":
+            return self.parse_ui_component_decl()
+        if token.value in {"heading", "text", "image"}:
+            raise self.error("N3U-1300: layout element outside of a page or section", token)
+        if token.value == "state":
+            raise self.error("N3U-2000: state declared outside a page", token)
+        if token.value == "input":
+            raise self.error("N3U-2100: input outside of a page or section", token)
+        if token.value == "button":
+            raise self.error("N3U-2200: button outside of a page or section", token)
+        if token.value in {"when", "otherwise", "show"}:
+            raise self.error("N3U-2300: conditional outside of a page or section", token)
         raise self.error(f"Unexpected declaration '{token.value}'", token)
 
     def parse_use(self) -> ast_nodes.UseImport:
         start = self.consume("KEYWORD", "use")
+        if self.peek().value == "macro":
+            return self.parse_macro_use(start)
         if self.peek().value == "module":
             self.consume("KEYWORD", "module")
             mod = self.consume("STRING")
@@ -258,6 +276,31 @@ class Parser:
     def parse_page(self) -> ast_nodes.PageDecl:
         start = self.consume("KEYWORD", "page")
         name = self.consume("STRING")
+        # English-style: page "name" at "/route":
+        if self.peek().value == "at":
+            self.consume("KEYWORD", "at")
+            route_tok = self.consume("STRING")
+            if not (route_tok.value or "").startswith("/"):
+                raise self.error("N3U-1001: page route must begin with '/'", route_tok)
+            self.consume("COLON")
+            self.consume("NEWLINE")
+            layout: list[ast_nodes.LayoutElement] = []
+            styles: list[ast_nodes.UIStyle] = []
+            if self.check("INDENT"):
+                self.consume("INDENT")
+                layout, styles = self.parse_layout_block([])
+                self.consume("DEDENT")
+            self.optional_newline()
+            if not layout:
+                raise self.error("N3U-1004: page must contain at least one layout element", start)
+            return ast_nodes.PageDecl(
+                name=name.value or "",
+                route=route_tok.value or "",
+                layout=layout,
+                styles=styles,
+                span=self._span(start),
+            )
+
         self.consume("COLON")
         self.consume("NEWLINE")
         self.consume("INDENT")
@@ -588,6 +631,547 @@ class Parser:
             name=name.value or "", memory_type=memory_type, span=self._span(start)
         )
 
+    def parse_frame(self) -> ast_nodes.FrameDecl:
+        start = self.consume("KEYWORD", "frame")
+        name_tok = self.consume("STRING")
+        self.consume("COLON")
+        self.consume("NEWLINE")
+
+        source_kind = None
+        source_path = None
+        delimiter = None
+        has_headers = False
+        select_cols: list[str] = []
+        where_expr = None
+
+        if self.check("INDENT"):
+            self.consume("INDENT")
+            while not self.check("DEDENT"):
+                if self.match("NEWLINE"):
+                    continue
+                tok = self.peek()
+                if tok.value == "from":
+                    self.consume("KEYWORD", "from")
+                    if self.peek().value == "file":
+                        self.consume("KEYWORD", "file")
+                        source_kind = "file"
+                    else:
+                        raise self.error("N3F-1001: invalid frame configuration", self.peek())
+                    path_tok = self.consume("STRING")
+                    source_path = path_tok.value
+                    self.optional_newline()
+                    continue
+                if tok.value == "with":
+                    self.consume("KEYWORD", "with")
+                    if self.peek().value != "delimiter":
+                        raise self.error("N3F-1001: invalid frame configuration", self.peek())
+                    self.consume("KEYWORD", "delimiter")
+                    delim_tok = self.consume("STRING")
+                    delimiter = delim_tok.value or ","
+                    self.optional_newline()
+                    continue
+                if tok.value == "has":
+                    self.consume("KEYWORD", "has")
+                    if self.peek().value != "headers":
+                        raise self.error("N3F-1001: invalid frame configuration", self.peek())
+                    self.consume("KEYWORD", "headers")
+                    has_headers = True
+                    self.optional_newline()
+                    continue
+                if tok.value == "select":
+                    self.consume("KEYWORD", "select")
+                    select_cols = []
+                    while True:
+                        col_tok = self.consume_any({"IDENT", "KEYWORD"})
+                        select_cols.append(col_tok.value or "")
+                        if self.match("COMMA"):
+                            continue
+                        break
+                    self.optional_newline()
+                    continue
+                if tok.value == "where":
+                    self.consume("KEYWORD", "where")
+                    where_expr = self.parse_expression()
+                    self.optional_newline()
+                    continue
+                raise self.error("N3F-1001: invalid frame configuration", tok)
+            self.consume("DEDENT")
+        self.optional_newline()
+
+        return ast_nodes.FrameDecl(
+            name=name_tok.value or "",
+            source_kind=source_kind,
+            source_path=source_path,
+            delimiter=delimiter,
+            has_headers=has_headers,
+            select_cols=select_cols,
+            where=where_expr,
+            span=self._span(start),
+        )
+
+    def parse_macro(self) -> ast_nodes.MacroDecl:
+        start = self.consume("KEYWORD", "macro")
+        name_tok = self.consume("STRING")
+        self.consume("KEYWORD", "using")
+        self.consume("KEYWORD", "ai")
+        model_tok = self.consume("STRING")
+        self.consume("COLON")
+        self.consume("NEWLINE")
+        description = None
+        sample = None
+        params: list[str] = []
+        if self.check("INDENT"):
+            self.consume("INDENT")
+            while not self.check("DEDENT"):
+                if self.match("NEWLINE"):
+                    continue
+                tok = self.consume_any({"KEYWORD"})
+                if tok.value == "description":
+                    desc_tok = self.consume("STRING")
+                    description = desc_tok.value
+                    self.optional_newline()
+                    continue
+                if tok.value == "sample":
+                    sample_tok = self.consume("STRING")
+                    sample = sample_tok.value
+                    self.optional_newline()
+                    continue
+                if tok.value == "parameters":
+                    params = []
+                    while True:
+                        p_tok = self.consume_any({"IDENT", "KEYWORD"})
+                        params.append(p_tok.value or "")
+                        if self.match("COMMA"):
+                            continue
+                        break
+                    self.optional_newline()
+                    continue
+                raise self.error("N3M-1002: invalid macro clause", tok)
+            self.consume("DEDENT")
+        self.optional_newline()
+        if not description:
+            raise self.error("N3M-1000: macro missing description", start)
+        return ast_nodes.MacroDecl(
+            name=name_tok.value or "",
+            ai_model=model_tok.value or "",
+            description=description,
+            sample=sample,
+            parameters=params,
+            span=self._span(start),
+        )
+
+    def parse_macro_use(self, start_tok) -> ast_nodes.MacroUse:
+        self.consume("KEYWORD", "macro")
+        name_tok = self.consume("STRING")
+        args: dict[str, ast_nodes.Expr] = {}
+        if self.peek().value == "with":
+            self.consume("KEYWORD", "with")
+            self.consume("COLON")
+            self.consume("NEWLINE")
+            self.consume("INDENT")
+            while not self.check("DEDENT"):
+                if self.match("NEWLINE"):
+                    continue
+                key_tok = self.consume_any({"IDENT", "KEYWORD"})
+                value_expr = self.parse_expression()
+                args[key_tok.value or ""] = value_expr
+                self.optional_newline()
+            self.consume("DEDENT")
+        self.optional_newline()
+        return ast_nodes.MacroUse(macro_name=name_tok.value or "", args=args, span=self._span(start_tok))
+
+    def parse_ui_component_decl(self) -> ast_nodes.UIComponentDecl:
+        start_tok = self.consume("KEYWORD", "component")
+        name_tok = self.consume("STRING")
+        params: list[str] = []
+        render_layout: list[ast_nodes.LayoutElement] = []
+        styles: list[ast_nodes.UIStyle] = []
+        self.consume("COLON")
+        self.consume("NEWLINE")
+        if self.check("INDENT"):
+            self.consume("INDENT")
+            while not self.check("DEDENT"):
+                if self.match("NEWLINE"):
+                    continue
+                tok = self.peek()
+                if tok.value == "takes":
+                    self.consume("KEYWORD", "takes")
+                    while True:
+                        ident_tok = self.consume_any({"IDENT", "KEYWORD"})
+                        params.append(ident_tok.value or "")
+                        if self.match_value("COMMA", ","):
+                            continue
+                        break
+                    self.optional_newline()
+                    continue
+                if tok.value == "render":
+                    self.consume("KEYWORD", "render")
+                    self.consume("COLON")
+                    self.consume("NEWLINE")
+                    if self.check("INDENT"):
+                        self.consume("INDENT")
+                        render_layout, styles = self.parse_layout_block([])
+                        self.consume("DEDENT")
+                    self.optional_newline()
+                    continue
+                raise self.error("N3U-3501: missing render block", tok)
+            self.consume("DEDENT")
+        self.optional_newline()
+        if not render_layout:
+            raise self.error("N3U-3501: missing render block", start_tok)
+        return ast_nodes.UIComponentDecl(
+            name=name_tok.value or "",
+            params=params,
+            render=render_layout,
+            styles=styles,
+            span=self._span(start_tok),
+        )
+
+    def _is_style_token(self, tok: Token) -> bool:
+        return tok.value in {
+            "color",
+            "background",
+            "align",
+            "padding",
+            "margin",
+            "gap",
+            "layout",
+        }
+
+    def _parse_style_block(self) -> list[ast_nodes.UIStyle]:
+        styles: list[ast_nodes.UIStyle] = []
+        while not self.check("DEDENT") and not self.check("EOF"):
+            if self.match("NEWLINE"):
+                continue
+            tok = self.peek()
+            if not self._is_style_token(tok):
+                break
+            styles.append(self.parse_style_line())
+            self.optional_newline()
+        return styles
+
+    def parse_style_line(self) -> ast_nodes.UIStyle:
+        tok = self.consume("KEYWORD")
+        kind = tok.value or ""
+        value: object = None
+        if kind == "color":
+            self.consume("KEYWORD", "is")
+            if self.check("STRING"):
+                val_tok = self.consume("STRING")
+                value = val_tok.value or ""
+            else:
+                ident_tok = self.consume_any({"IDENT", "KEYWORD"})
+                value = ident_tok.value or ""
+            return ast_nodes.UIStyle(kind="color", value=value, span=self._span(tok))
+        if kind == "background":
+            self.consume("KEYWORD", "color")
+            self.consume("KEYWORD", "is")
+            if self.check("STRING"):
+                val_tok = self.consume("STRING")
+                value = val_tok.value or ""
+            else:
+                ident_tok = self.consume_any({"IDENT", "KEYWORD"})
+                value = ident_tok.value or ""
+            return ast_nodes.UIStyle(kind="background", value=value, span=self._span(tok))
+        if kind == "align":
+            if self.peek().value == "vertically":
+                self.consume("KEYWORD", "vertically")
+                self.consume("KEYWORD", "is")
+                val_tok = self.consume_any({"IDENT", "KEYWORD"})
+                if (val_tok.value or "") not in {"top", "middle", "bottom"}:
+                    raise self.error("N3U-3200: invalid alignment keyword", val_tok)
+                return ast_nodes.UIStyle(kind="align_vertical", value=val_tok.value or "", span=self._span(tok))
+            self.consume("KEYWORD", "is")
+            val_tok = self.consume_any({"IDENT", "KEYWORD"})
+            if (val_tok.value or "") not in {"left", "center", "right"}:
+                raise self.error("N3U-3200: invalid alignment keyword", val_tok)
+            return ast_nodes.UIStyle(kind="align", value=val_tok.value or "", span=self._span(tok))
+        if kind == "layout":
+            self.consume("KEYWORD", "is")
+            if self.peek().value in {"two", "three"}:
+                first = self.consume_any({"IDENT", "KEYWORD"})
+                second = self.consume_any({"IDENT", "KEYWORD"})
+                value = f"{first.value} {second.value}"
+            else:
+                val_tok = self.consume_any({"IDENT", "KEYWORD"})
+                value = val_tok.value or ""
+            if value not in {"row", "column", "two columns", "three columns"}:
+                raise self.error("N3U-3300: invalid layout type", tok)
+            return ast_nodes.UIStyle(kind="layout", value=value, span=self._span(tok))
+        if kind in {"padding", "margin", "gap"}:
+            self.consume("KEYWORD", "is")
+            val_tok = self.consume_any({"IDENT", "KEYWORD"})
+            if (val_tok.value or "") not in {"small", "medium", "large"}:
+                raise self.error("N3U-3400: invalid spacing size", val_tok)
+            return ast_nodes.UIStyle(kind=kind, value=val_tok.value or "", span=self._span(tok))
+        raise self.error("N3U-3101: style outside of a page or section", tok)
+
+    def parse_layout_block(self, container_styles: list[ast_nodes.UIStyle] | None = None) -> tuple[list[ast_nodes.LayoutElement], list[ast_nodes.UIStyle]]:
+        elements: list[ast_nodes.LayoutElement] = []
+        styles: list[ast_nodes.UIStyle] = container_styles or []
+        last_element: ast_nodes.LayoutElement | None = None
+        while not self.check("DEDENT"):
+            if self.match("NEWLINE"):
+                continue
+            if self.peek().type == "INDENT":
+                self.consume("INDENT")
+                if last_element is None:
+                    raise self.error("N3U-3101: style outside of a page or section", self.peek())
+                last_element.styles.extend(self._parse_style_block())
+                self.consume("DEDENT")
+                self.optional_newline()
+                continue
+            tok = self.peek()
+            if self._is_style_token(tok):
+                styles.extend(self._parse_style_block())
+                continue
+            if tok.value == "section":
+                sec = self.parse_layout_section()
+                elements.append(sec)
+                last_element = sec
+                continue
+            if tok.value == "state":
+                state_tok = self.consume("KEYWORD", "state")
+                name_tok = self.consume_any({"IDENT"})
+                self.consume("KEYWORD", "is")
+                expr = self.parse_expression()
+                node = ast_nodes.UIStateDecl(name=name_tok.value or "", expr=expr, span=self._span(state_tok))
+                elements.append(node)
+                last_element = node
+                self.optional_newline()
+                continue
+            if tok.value == "heading":
+                self.consume("KEYWORD", "heading")
+                txt_tok = self.consume("STRING")
+                node = ast_nodes.HeadingNode(text=txt_tok.value or "", span=self._span(txt_tok))
+                elements.append(node)
+                last_element = node
+                self.optional_newline()
+                continue
+            if tok.value == "text":
+                start_tok = self.consume("KEYWORD", "text")
+                if self.check("STRING") and self.peek_offset(1).type in {"NEWLINE", "DEDENT", "EOF"}:
+                    txt_tok = self.consume("STRING")
+                    node = ast_nodes.TextNode(text=txt_tok.value or "", span=self._span(txt_tok))
+                else:
+                    expr = self.parse_expression()
+                    literal_text = expr.value if isinstance(expr, ast_nodes.Literal) and isinstance(expr.value, str) else ""
+                    node = ast_nodes.TextNode(text=literal_text, expr=expr, span=self._span(start_tok))
+                elements.append(node)
+                last_element = node
+                self.optional_newline()
+                continue
+            if tok.value == "image":
+                self.consume("KEYWORD", "image")
+                url_tok = self.consume("STRING")
+                node = ast_nodes.ImageNode(url=url_tok.value or "", span=self._span(url_tok))
+                elements.append(node)
+                last_element = node
+                self.optional_newline()
+                continue
+            if tok.value == "input":
+                start_tok = self.consume("KEYWORD", "input")
+                label_tok = self.consume("STRING")
+                self.consume("KEYWORD", "as")
+                var_tok = self.consume_any({"IDENT"})
+                field_type = None
+                if self.peek().value == "type":
+                    self.consume("KEYWORD", "type")
+                    self.consume("KEYWORD", "is")
+                    type_tok = self.consume_any({"IDENT", "KEYWORD"})
+                    field_type = type_tok.value
+                node = ast_nodes.UIInputNode(
+                    label=label_tok.value or "",
+                    var_name=var_tok.value or "",
+                    field_type=field_type,
+                    span=self._span(start_tok),
+                )
+                elements.append(node)
+                last_element = node
+                self.optional_newline()
+                continue
+            if tok.value == "button":
+                node = self.parse_button()
+                elements.append(node)
+                last_element = node
+                continue
+            if tok.value == "when":
+                node = self.parse_ui_conditional()
+                elements.append(node)
+                last_element = node
+                continue
+            if tok.value == "use":
+                self.consume("KEYWORD", "use")
+                if self.peek().value != "form":
+                    raise self.error("N3U-1201: invalid form reference", self.peek())
+                self.consume("KEYWORD", "form")
+                form_tok = self.consume("STRING")
+                node = ast_nodes.EmbedFormNode(form_name=form_tok.value or "", span=self._span(form_tok))
+                elements.append(node)
+                last_element = node
+                self.optional_newline()
+                continue
+            if tok.type == "IDENT":
+                node = self.parse_component_call()
+                elements.append(node)
+                last_element = node
+                continue
+            raise self.error("N3U-1300: layout element outside of page/section", tok)
+        return elements, styles
+
+    def parse_layout_section(self) -> ast_nodes.SectionDecl:
+        start = self.consume("KEYWORD", "section")
+        name_tok = self.consume("STRING")
+        self.consume("COLON")
+        self.consume("NEWLINE")
+        layout: list[ast_nodes.LayoutElement] = []
+        styles: list[ast_nodes.UIStyle] = []
+        if self.check("INDENT"):
+            self.consume("INDENT")
+            layout, styles = self.parse_layout_block([])
+            self.consume("DEDENT")
+        self.optional_newline()
+        return ast_nodes.SectionDecl(name=name_tok.value or "", layout=layout, styles=styles, span=self._span(start))
+
+    def parse_component_call(self) -> ast_nodes.UIComponentCall:
+        name_tok = self.consume_any({"IDENT"})
+        args: list[ast_nodes.Expr] = []
+        named_args: dict[str, list[ast_nodes.Statement | ast_nodes.FlowAction]] = {}
+        # optional positional expression before colon
+        if not self.check("COLON"):
+            args.append(self.parse_expression())
+        if self.peek().value == ":" or self.check("COLON"):
+            self.consume("COLON")
+            self.consume("NEWLINE")
+            if self.check("INDENT"):
+                self.consume("INDENT")
+                while not self.check("DEDENT"):
+                    if self.match("NEWLINE"):
+                        continue
+                    key_tok = self.consume_any({"IDENT", "KEYWORD"})
+                    self.consume("COLON")
+                    block_items: list[ast_nodes.Statement | ast_nodes.FlowAction] = []
+                    if self.check("NEWLINE"):
+                        self.consume("NEWLINE")
+                        if self.check("INDENT"):
+                            self.consume("INDENT")
+                            while not self.check("DEDENT"):
+                                if self.match("NEWLINE"):
+                                    continue
+                                if self.peek().value in {"do", "go"}:
+                                    block_items.append(self.parse_statement_or_action())
+                                    self.optional_newline()
+                                    continue
+                                block_items.append(self.parse_statement_or_action())
+                            self.consume("DEDENT")
+                    named_args[key_tok.value or ""] = block_items
+                    self.optional_newline()
+                self.consume("DEDENT")
+        self.optional_newline()
+        return ast_nodes.UIComponentCall(name=name_tok.value or "", args=args, named_args=named_args, span=self._span(name_tok))
+
+    def parse_button(self) -> ast_nodes.UIButtonNode:
+        start_tok = self.consume("KEYWORD", "button")
+        label_tok = self.consume_any({"STRING", "IDENT"})
+        self.consume("COLON")
+        self.consume("NEWLINE")
+        if not self.check("INDENT"):
+            raise self.error("N3U-2201: on click missing or empty", self.peek())
+        self.consume("INDENT")
+        handler: ast_nodes.UIClickHandler | None = None
+        label_expr = None
+        if label_tok.type == "IDENT":
+            label_expr = ast_nodes.Identifier(name=label_tok.value or "", span=self._span(label_tok))
+        while not self.check("DEDENT"):
+            if self.match("NEWLINE"):
+                continue
+            tok = self.peek()
+            if tok.value == "on":
+                self.consume("KEYWORD", "on")
+                self.consume("KEYWORD", "click")
+                self.consume("COLON")
+                self.consume("NEWLINE")
+                self.consume("INDENT")
+                actions: list[ast_nodes.FlowAction] = []
+                while not self.check("DEDENT"):
+                    if self.match("NEWLINE"):
+                        continue
+                    if self.peek().value == "do":
+                        actions.append(self._parse_do_action())
+                        self.optional_newline()
+                        continue
+                    if self.peek().value == "go":
+                        actions.append(self.parse_goto_action(allow_page=True))
+                        self.optional_newline()
+                        continue
+                    raise self.error("N3U-2202: invalid action in click handler", self.peek())
+                self.consume("DEDENT")
+                handler = ast_nodes.UIClickHandler(actions=actions, span=self._span(tok))
+                self.optional_newline()
+                continue
+            raise self.error("N3U-2201: on click missing or empty", tok)
+        self.consume("DEDENT")
+        self.optional_newline()
+        if not handler or not handler.actions:
+            raise self.error("N3U-2201: on click missing or empty", start_tok)
+        return ast_nodes.UIButtonNode(label=label_tok.value or "", label_expr=label_expr, handler=handler, span=self._span(start_tok))
+
+    def parse_ui_conditional(self) -> ast_nodes.UIConditional:
+        start_tok = self.consume("KEYWORD", "when")
+        condition = self.parse_condition_expr()
+        self.consume("COLON")
+        self.consume("NEWLINE")
+        self.consume("INDENT")
+        when_children: list[ast_nodes.LayoutElement] = []
+        otherwise_children: list[ast_nodes.LayoutElement] = []
+        has_show = False
+        while not self.check("DEDENT"):
+            if self.match("NEWLINE"):
+                continue
+            if self.peek().value == "show":
+                has_show = True
+                self.consume("KEYWORD", "show")
+                self.consume("COLON")
+                self.consume("NEWLINE")
+                if self.check("INDENT"):
+                    self.consume("INDENT")
+                    when_children, _ = self.parse_layout_block([])
+                    self.consume("DEDENT")
+                self.optional_newline()
+                continue
+            raise self.error("N3U-2302: unexpected content inside conditional", self.peek())
+        self.consume("DEDENT")
+        self.optional_newline()
+        if self.peek().value == "otherwise":
+            self.consume("KEYWORD", "otherwise")
+            self.consume("COLON")
+            self.consume("NEWLINE")
+            self.consume("INDENT")
+            while not self.check("DEDENT"):
+                if self.match("NEWLINE"):
+                    continue
+                if self.peek().value == "show":
+                    self.consume("KEYWORD", "show")
+                    self.consume("COLON")
+                    self.consume("NEWLINE")
+                    if self.check("INDENT"):
+                        self.consume("INDENT")
+                        otherwise_children, _ = self.parse_layout_block([])
+                        self.consume("DEDENT")
+                    self.optional_newline()
+                    continue
+                raise self.error("N3U-2302: unexpected content inside conditional", self.peek())
+            self.consume("DEDENT")
+            self.optional_newline()
+        if not has_show or (not when_children and not otherwise_children):
+            raise self.error("N3U-2302: empty conditional blocks", start_tok)
+        return ast_nodes.UIConditional(
+            condition=condition,
+            when_children=when_children,
+            otherwise_children=otherwise_children,
+            span=self._span(start_tok),
+        )
+
     def parse_flow(self) -> ast_nodes.FlowDecl:
         start = self.consume("KEYWORD", "flow")
         name = self.consume("STRING")
@@ -684,8 +1268,35 @@ class Parser:
         self.consume("INDENT")
         envs: list[ast_nodes.EnvConfig] = []
         seen_envs: set[str] = set()
+        theme_entries: list[ast_nodes.ThemeEntry] = []
+        seen_theme: set[str] = set()
         while not self.check("DEDENT"):
             if self.match("NEWLINE"):
+                continue
+            if self.peek().value == "theme":
+                self.consume("KEYWORD", "theme")
+                self.consume("COLON")
+                self.consume("NEWLINE")
+                self.consume("INDENT")
+                while not self.check("DEDENT"):
+                    if self.match("NEWLINE"):
+                        continue
+                    key_tok = self.consume_any({"IDENT", "KEYWORD"})
+                    if self.peek().value != "color":
+                        raise self.error("N3U-3001: invalid color literal", self.peek())
+                    self.consume("KEYWORD", "color")
+                    self.consume("KEYWORD", "be")
+                    if not self.check("STRING"):
+                        raise self.error("N3U-3001: invalid color literal", self.peek())
+                    val_tok = self.consume("STRING")
+                    key = key_tok.value or ""
+                    if key in seen_theme:
+                        raise self.error("N3U-3002: duplicate theme key", key_tok)
+                    seen_theme.add(key)
+                    theme_entries.append(ast_nodes.ThemeEntry(key=key, value=val_tok.value or "", span=self._span(val_tok)))
+                    self.optional_newline()
+                self.consume("DEDENT")
+                self.optional_newline()
                 continue
             self.consume("KEYWORD", "env")
             env_name_tok = self.consume("STRING")
@@ -715,7 +1326,7 @@ class Parser:
             envs.append(ast_nodes.EnvConfig(name=env_name, entries=entries, span=self._span(env_name_tok)))
         self.consume("DEDENT")
         self.optional_newline()
-        return ast_nodes.SettingsDecl(envs=envs, span=self._span(start))
+        return ast_nodes.SettingsDecl(envs=envs, theme=theme_entries, span=self._span(start))
 
     def parse_section(self) -> ast_nodes.SectionDecl:
         section_name_token = self.consume("STRING")
@@ -1335,10 +1946,22 @@ class Parser:
     def _parse_do_action(self) -> ast_nodes.FlowAction:
         do_token = self.consume("KEYWORD", "do")
         kind_tok = self.consume_any({"KEYWORD", "IDENT"})
-        if kind_tok.value not in {"ai", "agent", "tool"}:
+        if kind_tok.value not in {"ai", "agent", "tool", "flow"}:
             raise self.error(f"Unsupported action kind '{kind_tok.value}'", kind_tok)
         target_tok = self.consume("STRING")
         message = None
+        args: dict[str, ast_nodes.Expr] = {}
+        if kind_tok.value == "flow" and self.peek().value == "with":
+            self.consume("KEYWORD", "with")
+            while True:
+                key_tok = self.consume_any({"IDENT", "KEYWORD"})
+                self.consume("COLON")
+                val_expr = self.parse_expression()
+                args[key_tok.value or ""] = val_expr
+                if self.peek().type == "COMMA":
+                    self.consume("COMMA")
+                    continue
+                break
         if kind_tok.value == "tool" and self.peek().value == "with":
             self.consume("KEYWORD", "with")
             self.consume("KEYWORD", "message")
@@ -1357,6 +1980,7 @@ class Parser:
             kind=kind_tok.value or "",
             target=target_tok.value or "",
             message=message,
+            args=args,
             span=self._span(do_token),
         )
 
@@ -1518,14 +2142,19 @@ class Parser:
             self.optional_newline()
         return actions
 
-    def parse_goto_action(self) -> ast_nodes.FlowAction:
+    def parse_goto_action(self, allow_page: bool = False) -> ast_nodes.FlowAction:
         go_tok = self.consume("KEYWORD", "go")
         self.consume("KEYWORD", "to")
-        self.consume("KEYWORD", "flow")
+        target_kind_tok = self.consume_any({"KEYWORD", "IDENT"})
+        if target_kind_tok.value not in {"flow", "page"}:
+            raise self.error("Expected 'flow' or 'page' after 'go to'.", target_kind_tok)
         if not self.check("STRING"):
-            raise self.error("Expected a string literal flow name after 'go to flow'.", self.peek())
+            raise self.error("Expected a string literal name after go to.", self.peek())
         target_tok = self.consume("STRING")
-        return ast_nodes.FlowAction(kind="goto_flow", target=target_tok.value or "", span=self._span(go_tok))
+        kind = "goto_flow" if target_kind_tok.value == "flow" else "goto_page"
+        if target_kind_tok.value == "page" and not allow_page:
+            raise self.error("Unexpected 'go to page' in this context.", target_kind_tok)
+        return ast_nodes.FlowAction(kind=kind, target=target_tok.value or "", span=self._span(go_tok))
 
     def parse_expression(self) -> ast_nodes.Expr:
         return self.parse_or()
@@ -1915,7 +2544,16 @@ class Parser:
         if self.peek().value == "from":
             self.consume("KEYWORD", "from")
             source_expr = self.parse_expression()
+            predicate = None
+            if self.peek().value == "where":
+                self.consume("KEYWORD", "where")
+                predicate = self.parse_expression()
             var_name = first_tok.value.split(".")[0] if first_tok.value else "item"
+            if predicate is not None:
+                filtered = ast_nodes.FilterExpression(source=source_expr, var_name=var_name, predicate=predicate)
+                if isinstance(first_expr, ast_nodes.Identifier) and first_expr.name == var_name:
+                    return filtered
+                return ast_nodes.MapExpression(source=filtered, var_name=var_name, mapper=first_expr)
             return ast_nodes.MapExpression(source=source_expr, var_name=var_name, mapper=first_expr)
         raise self.error("Expected 'where' or 'from' after 'all' expression", self.peek())
 

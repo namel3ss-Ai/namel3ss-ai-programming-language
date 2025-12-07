@@ -1,0 +1,3 @@
+use macro "crud_ui" with:
+  entity "Product"
+  fields ["name", "price", "quantity"]

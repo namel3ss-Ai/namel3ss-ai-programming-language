@@ -22,6 +22,7 @@ from ..errors import Namel3ssError
 from ..flows.engine import FlowEngine
 from ..flows.triggers import TriggerManager
 from ..ir import IRProgram
+from ..macros import MacroExpander, default_macro_ai_callback, expand_macros
 from ..memory.engine import MemoryEngine, PersistentMemoryEngine, ShardedMemoryEngine
 from ..memory.models import MemorySpaceConfig, MemoryType
 from ..metrics.tracker import MetricsTracker
@@ -151,6 +152,7 @@ class Engine:
     def _load_program(source: str, filename: str) -> IRProgram:
         tokens = lexer.Lexer(source, filename=filename).tokenize()
         module = parser.Parser(tokens).parse_module()
+        module = expand_macros(module, default_macro_ai_callback)
         return ir.ast_to_ir(module)
 
     def build_graph(self, program: IRProgram) -> Graph:

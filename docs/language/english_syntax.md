@@ -333,6 +333,175 @@ retry up to 3 times with backoff:
   do tool "fetch_remote" with url: endpoint
 ```
 
+## Frames & Data
+
+Declare reusable tabular data and query it in English:
+
+```ai
+frame "sales_data":
+  from file "sales.csv"
+  has headers
+  select region, revenue, country
+
+flow "be_revenue":
+  step "filter":
+    let be_sales be all row from sales_data where row.country is "BE"
+    let total be sum of all row.revenue from be_sales
+
+    repeat for each row in be_sales:
+      log info "Row" with { region: row.region, revenue: row.revenue }
+```
+
+Frames load lazily from CSV files, optionally apply `where` filters and `select` projections, and behave like lists of records in expressions, filters/maps, aggregates, and loops.
+
+## AI-Assisted Macros
+
+Define high-level instructions that an AI expands into Namel3ss code:
+
+```ai
+macro "greet_user" using ai "codegen":
+  description "Generate a greeting flow."
+
+use macro "greet_user"
+```
+
+Parameterized macros accept arguments:
+
+```ai
+macro "crud_for_entity" using ai "codegen":
+  description "Generate CRUD flows for an entity."
+  parameters entity, fields
+
+use macro "crud_for_entity" with:
+  entity "Product"
+  fields ["name", "price"]
+```
+
+The expansion is parsed, linted, validated, and merged at load-time. Expansions must be valid Namel3ss code (no backticks/HTML); oversized or recursive expansions are rejected.
+
+### Built-in AI UI Macro: CRUD UI
+
+Generate fullstack CRUD UI and flows in one line:
+
+```ai
+use macro "crud_ui" with:
+  entity "Product"
+  fields ["name", "price", "quantity"]
+```
+
+The macro produces flows (list/create/update/delete/detail), a form, and UI pages (list/create/edit/detail/delete) with state, inputs, buttons, navigation, and basic styling.
+
+## UI Pages & Layout (Phase UI-1)
+
+Declare static UI pages with headings, text, images, sections, and embedded forms:
+
+```ai
+page "home" at "/":
+  heading "Welcome"
+  text "Select an option below"
+
+page "signup" at "/signup":
+  section "form_section":
+    heading "Create your account"
+    use form "Signup Form"
+```
+
+Pages require a name, a route beginning with `/`, and at least one layout element. Layout elements are limited to `section`, `heading`, `text`, `image`, and `use form ...`.
+
+## UI Interactivity & State (Phase UI-2)
+
+Reactive state, inputs, buttons, and conditional visibility:
+
+```ai
+page "signup" at "/signup":
+  state name is ""
+
+  heading "Create your account"
+  input "Your name" as name
+
+  button "Continue":
+    on click:
+      do flow "register_user" with name: name
+
+page "hello" at "/hello":
+  state name is ""
+
+  input "Your name" as name
+
+  when name is not "":
+    show:
+      text "Hello, friend!"
+  otherwise:
+    show:
+      text "Enter your name to continue."
+```
+
+Controls must live inside pages/sections. Supported input types: `text`, `number`, `email`, `secret`, `long_text`, `date`. Buttons require an `on click` handler that can `do flow ...` or `go to page ...`. Conditionals switch layout reactively based on expressions.
+
+## UI Styling & Theming (Phase UI-3)
+
+- Theme tokens in `settings`:
+
+```ai
+settings:
+  theme:
+    primary color be "#2563eb"
+    background color be "#0b1120"
+```
+
+- Styles on elements (indent under the element) or at the container level:
+
+```ai
+page "home" at "/":
+  layout is column
+  padding is large
+
+  heading "Welcome"
+    color is primary
+
+  text "Choose a path"
+    align is center
+```
+
+Supported styles:
+- `color is <token|string>`
+- `background color is <token|string>`
+- `align is left|center|right`
+- `align vertically is top|middle|bottom`
+- `layout is row|column|two columns|three columns`
+- `padding|margin|gap is small|medium|large`
+
+## UI Components (Phase UI-3)
+
+Declare reusable components:
+
+```ai
+component "PrimaryButton":
+  takes label, action
+  render:
+    button label:
+      on click:
+        do action
+```
+
+Use components inside pages:
+
+```ai
+page "welcome" at "/":
+  PrimaryButton "Get Started":
+    action:
+      go to page "signup"
+```
+
+## UI Rendering & Fullstack Integration (Phase UI-4)
+
+- Build a UI manifest from your `.ai` code; the manifest contains pages, routes, layout, styles, state, events, and theme tokens.
+- Backend bridge endpoints:
+  - `POST /api/ui/manifest` with `{ code }` → manifest JSON (versioned).
+  - `POST /api/ui/flow/execute` with `{ source, flow, args }` → runs a flow with arguments collected from UI state/forms.
+- Frontend consumes the manifest to render pages, bind state to inputs, dispatch click events, and navigate via `go to page`.
+- Conditionals (`when ... show ... otherwise ...`) are evaluated reactively against UI state; styling maps to theme tokens and layout (row/column/two/three columns, spacing, alignment).
+
 ## Style & Linting (Phase 7)
 
 - Preferred English style is captured in `docs/language/style_guide.md`.

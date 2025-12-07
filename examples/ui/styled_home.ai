@@ -1,0 +1,22 @@
+settings:
+  theme:
+    primary color be "#2563eb"
+    background color be "#0b1120"
+
+component "PrimaryButton":
+  takes label, action
+  render:
+    button label:
+      on click:
+        do action
+
+page "home" at "/":
+  layout is column
+  padding is medium
+
+  heading "Welcome to Namel3ss"
+    color is primary
+
+  PrimaryButton "Get Started":
+    action:
+      go to page "signup"

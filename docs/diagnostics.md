@@ -41,6 +41,69 @@ severity, plus location metadata.
 | N3-3205  | semantic   | error            | Index out of bounds. |
 | N3-3300  | semantic   | error            | Unknown record field. |
 | N3-3301  | semantic   | error            | Invalid record key. |
+| N3F-1000 | semantic   | error            | Frame source missing. |
+| N3F-1001 | semantic   | error            | Invalid frame configuration. |
+| N3F-1002 | semantic   | error            | Unknown column in frame select. |
+| N3F-1003 | semantic   | error            | Frame `where` clause must be boolean. |
+| N3F-1100 | semantic   | error            | Frame is not loaded or cannot be resolved. |
+| N3F-1101 | semantic   | error            | List operation is not applicable to frame value. |
+| N3F-1200 | semantic   | error            | Invalid frame expression in aggregate. |
+| N3F-1201 | semantic   | error            | Invalid mapping expression for frame. |
+| N3M-1000 | semantic   | error            | Macro missing description. |
+| N3M-1001 | semantic   | error            | Duplicate macro name. |
+| N3M-1002 | semantic   | error            | Invalid macro clause. |
+| N3M-1100 | semantic   | error            | Macro not found. |
+| N3M-1101 | semantic   | error            | Invalid macro arguments. |
+| N3M-1102 | semantic   | error            | AI returned invalid or empty code. |
+| N3M-1103 | semantic   | error            | Macro expansion produced no declarations. |
+| N3M-1200 | semantic   | error            | AI generation failed for macro. |
+| N3M-1201 | semantic   | error            | AI output parse error. |
+| N3M-1202 | semantic   | error            | AI output failed lint checks. |
+| N3M-1203 | semantic   | error            | Name conflict while merging macro expansion. |
+| N3M-1300 | semantic   | error            | Macro expansion too large. |
+| N3M-1301 | semantic   | error            | Disallowed syntax in macro expansion. |
+| N3M-1302 | semantic   | error            | Recursive macro detected. |
+| N3M-5000 | semantic   | error            | Macro `crud_ui` requires a non-empty entity name. |
+| N3M-5001 | semantic   | error            | Macro `crud_ui` requires a list of fields. |
+| N3M-5002 | semantic   | error            | Macro `crud_ui` produced invalid code. |
+| N3M-5003 | semantic   | error            | Macro `crud_ui` produced naming conflicts. |
+| N3U-1000 | semantic   | error            | Page must have a name. |
+| N3U-1001 | semantic   | error            | Page route must begin with "/". |
+| N3U-1002 | semantic   | error            | Duplicate page name. |
+| N3U-1003 | semantic   | error            | Duplicate route path. |
+| N3U-1004 | semantic   | error            | Page must contain at least one layout element. |
+| N3U-1100 | semantic   | error            | Duplicate section name on page. |
+| N3U-1200 | semantic   | error            | Form not found for embedding. |
+| N3U-1201 | semantic   | error            | Invalid form reference. |
+| N3U-1300 | semantic   | error            | Layout element outside of a page or section. |
+| N3U-2000 | semantic   | error            | State must be declared inside a page. |
+| N3U-2001 | semantic   | error            | Duplicate state name on a page. |
+| N3U-2002 | semantic   | error            | Invalid state initializer. |
+| N3U-2100 | semantic   | error            | Input must be inside a page or section. |
+| N3U-2101 | semantic   | error            | Invalid input type. |
+| N3U-2102 | semantic   | error            | Variable name conflicts with an existing declaration. |
+| N3U-2200 | semantic   | error            | Button must be inside a page or section. |
+| N3U-2201 | semantic   | error            | Button must have an `on click` handler. |
+| N3U-2202 | semantic   | error            | Invalid action in click handler. |
+| N3U-2300 | semantic   | error            | Conditional must be inside a page or section. |
+| N3U-2301 | semantic   | error            | Invalid conditional expression. |
+| N3U-2302 | semantic   | error            | Empty or invalid conditional blocks. |
+| N3U-3000 | semantic   | error            | Theme must be declared inside settings. |
+| N3U-3001 | semantic   | error            | Invalid color literal. |
+| N3U-3002 | semantic   | error            | Duplicate theme key. |
+| N3U-3100 | semantic   | error            | Invalid color token. |
+| N3U-3101 | semantic   | error            | Style directive is in an invalid position. |
+| N3U-3200 | semantic   | error            | Invalid alignment keyword. |
+| N3U-3201 | semantic   | error            | Alignment not allowed here. |
+| N3U-3300 | semantic   | error            | Invalid layout type. |
+| N3U-3400 | semantic   | error            | Invalid spacing size. |
+| N3U-3401 | semantic   | error            | Spacing directive is outside a UI block. |
+| N3U-3500 | semantic   | error            | Component name conflicts with existing declaration. |
+| N3U-3501 | semantic   | error            | Component render block is missing. |
+| N3U-3502 | semantic   | error            | Invalid component parameter list. |
+| N3U-3600 | semantic   | error            | Component not found. |
+| N3U-3601 | semantic   | error            | Component argument mismatch. |
+| N3U-3602 | semantic   | error            | Unknown component parameter. |
 | N3-3400  | semantic   | error            | For-each loop requires a list value. |
 | N3-3401  | semantic   | error            | Repeat-up-to requires a numeric count. |
 | N3-3402  | semantic   | error            | Invalid loop bounds. |

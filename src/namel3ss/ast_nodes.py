@@ -5,7 +5,7 @@ AST node definitions for the Namel3ss V3 language.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import List, Optional, Union
+from typing import Dict, List, Optional, Union
 
 
 @dataclass
@@ -54,6 +54,8 @@ class PageDecl:
     agents: List["PageAgentRef"] = field(default_factory=list)
     memories: List["PageMemoryRef"] = field(default_factory=list)
     sections: List["SectionDecl"] = field(default_factory=list)
+    layout: List["LayoutElement"] = field(default_factory=list)
+    styles: List["UIStyle"] = field(default_factory=list)
     span: Optional[Span] = None
 
 
@@ -131,6 +133,41 @@ class MemoryDecl:
 
 
 @dataclass
+class FrameDecl:
+    """frame \"name\": data source and query."""
+
+    name: str
+    source_kind: str | None = None
+    source_path: str | None = None
+    delimiter: str | None = None
+    has_headers: bool = False
+    select_cols: List[str] = field(default_factory=list)
+    where: Optional["Expr"] = None
+    span: Optional[Span] = None
+
+
+@dataclass
+class MacroDecl:
+    """macro \"name\" using ai \"model\": description/sample/parameters."""
+
+    name: str
+    ai_model: str
+    description: str | None = None
+    sample: str | None = None
+    parameters: List[str] = field(default_factory=list)
+    span: Optional[Span] = None
+
+
+@dataclass
+class MacroUse:
+    """use macro \"name\" with arguments."""
+
+    macro_name: str
+    args: Dict[str, Expr] = field(default_factory=dict)
+    span: Optional[Span] = None
+
+
+@dataclass
 class HelperDecl:
     """define helper \"name\": reusable helper."""
 
@@ -171,8 +208,16 @@ class EnvConfig:
 
 
 @dataclass
+class ThemeEntry:
+    key: str
+    value: str
+    span: Optional[Span] = None
+
+
+@dataclass
 class SettingsDecl:
     envs: List[EnvConfig] = field(default_factory=list)
+    theme: List[ThemeEntry] = field(default_factory=list)
     span: Optional[Span] = None
 
 
@@ -200,6 +245,8 @@ class SectionDecl:
 
     name: str
     components: List[ComponentDecl] = field(default_factory=list)
+    layout: List["LayoutElement"] = field(default_factory=list)
+    styles: List["UIStyle"] = field(default_factory=list)
     span: Optional[Span] = None
 
 
@@ -474,6 +521,7 @@ class FlowAction:
     kind: str
     target: str
     message: Optional[str] = None
+    args: Dict[str, Expr] = field(default_factory=dict)
     span: Optional[Span] = None
 
 
@@ -516,6 +564,89 @@ class RuleGroupDecl:
     span: Optional[Span] = None
 
 
+# Layout elements (UI-1)
+@dataclass
+class LayoutElement:
+    span: Optional[Span] = None
+    styles: List["UIStyle"] = field(default_factory=list)
+
+
+@dataclass
+class HeadingNode(LayoutElement):
+    text: str = ""
+
+
+@dataclass
+class TextNode(LayoutElement):
+    text: str = ""
+    expr: Expr | None = None
+
+
+@dataclass
+class ImageNode(LayoutElement):
+    url: str = ""
+
+
+@dataclass
+class EmbedFormNode(LayoutElement):
+    form_name: str = ""
+
+
+@dataclass
+class UIStyle:
+    kind: str
+    value: object
+    span: Optional[Span] = None
+
+
+@dataclass
+class UIComponentDecl:
+    name: str
+    params: List[str] = field(default_factory=list)
+    render: List["LayoutElement"] = field(default_factory=list)
+    styles: List[UIStyle] = field(default_factory=list)
+    span: Optional[Span] = None
+
+
+@dataclass
+class UIComponentCall(LayoutElement):
+    name: str = ""
+    args: List[Expr] = field(default_factory=list)
+    named_args: Dict[str, List["Statement | FlowAction"]] = field(default_factory=dict)
+
+
+@dataclass
+class UIStateDecl(LayoutElement):
+    name: str = ""
+    expr: Expr | None = None
+
+
+@dataclass
+class UIInputNode(LayoutElement):
+    label: str = ""
+    var_name: str = ""
+    field_type: str | None = None
+
+
+@dataclass
+class UIClickHandler(LayoutElement):
+    actions: List[FlowAction] = field(default_factory=list)
+
+
+@dataclass
+class UIButtonNode(LayoutElement):
+    label: str = ""
+    label_expr: Expr | None = None
+    handler: Optional[UIClickHandler] = None
+
+
+@dataclass
+class UIConditional(LayoutElement):
+    condition: Expr | None = None
+    when_children: List["LayoutElement"] = field(default_factory=list)
+    otherwise_children: List["LayoutElement"] = field(default_factory=list)
+
+
 Declaration = Union[
     UseImport,
     AppDecl,
@@ -524,6 +655,9 @@ Declaration = Union[
     AICallDecl,
     AgentDecl,
     MemoryDecl,
+    FrameDecl,
+    MacroDecl,
+    MacroUse,
     HelperDecl,
     ModuleUse,
     ImportDecl,
@@ -532,4 +666,5 @@ Declaration = Union[
     PluginDecl,
     ConditionMacroDecl,
     RuleGroupDecl,
+    UIComponentDecl,
 ]

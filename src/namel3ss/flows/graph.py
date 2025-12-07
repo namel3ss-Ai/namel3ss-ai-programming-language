@@ -92,6 +92,7 @@ class FlowRuntimeContext:
     secrets: Any = None
     memory_engine: Any = None
     rag_engine: Any = None
+    frames: Any = None
     execution_context: Any = None
     max_parallel_tasks: int = 4
     parallel_semaphore: asyncio.Semaphore | None = None

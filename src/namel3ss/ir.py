@@ -31,6 +31,9 @@ class IRPage:
     agents: List[str] = field(default_factory=list)
     memories: List[str] = field(default_factory=list)
     sections: List["IRSection"] = field(default_factory=list)
+    layout: List["IRLayoutElement"] = field(default_factory=list)
+    ui_states: List["IRUIState"] = field(default_factory=list)
+    styles: List["IRUIStyle"] = field(default_factory=list)
 
 
 @dataclass
@@ -87,6 +90,7 @@ class IREnvConfig:
 @dataclass
 class IRSettings:
     envs: dict[str, IREnvConfig] = field(default_factory=dict)
+    theme: dict[str, str] = field(default_factory=dict)
 
 
 @dataclass
@@ -108,9 +112,10 @@ class IRFlow:
 
 @dataclass
 class IRAction:
-    kind: Literal["ai", "agent", "tool", "goto_flow"]
+    kind: Literal["ai", "agent", "tool", "goto_flow", "flow", "goto_page"]
     target: str
     message: str | None = None
+    args: dict[str, ast_nodes.Expr] = field(default_factory=dict)
 
 
 @dataclass
@@ -229,6 +234,110 @@ class IRComponent:
 class IRSection:
     name: str
     components: List[IRComponent] = field(default_factory=list)
+    layout: List["IRLayoutElement"] = field(default_factory=list)
+    styles: List["IRUIStyle"] = field(default_factory=list)
+
+
+@dataclass
+class IRHeading:
+    text: str
+    styles: List["IRUIStyle"] = field(default_factory=list)
+
+
+@dataclass
+class IRText:
+    text: str
+    expr: ast_nodes.Expr | None = None
+    styles: List["IRUIStyle"] = field(default_factory=list)
+
+
+@dataclass
+class IRImage:
+    url: str
+    styles: List["IRUIStyle"] = field(default_factory=list)
+
+
+@dataclass
+class IREmbedForm:
+    form_name: str
+    styles: List["IRUIStyle"] = field(default_factory=list)
+
+
+@dataclass
+class IRUIState:
+    name: str
+    initial: object = None
+
+
+@dataclass
+class IRUIInput:
+    label: str
+    var_name: str
+    field_type: str | None = None
+    styles: list["IRUIStyle"] = field(default_factory=list)
+
+
+@dataclass
+class IRUIEventAction:
+    kind: Literal["flow", "goto_page", "goto_flow"]
+    target: str
+    args: dict[str, ast_nodes.Expr] = field(default_factory=dict)
+
+
+@dataclass
+class IRUIButton:
+    label: str
+    actions: list[IRUIEventAction] = field(default_factory=list)
+    styles: list["IRUIStyle"] = field(default_factory=list)
+    label_expr: ast_nodes.Expr | None = None
+
+
+@dataclass
+class IRUIShowBlock:
+    layout: list["IRLayoutElement"] = field(default_factory=list)
+
+
+@dataclass
+class IRUIConditional:
+    condition: ast_nodes.Expr | None = None
+    when_block: IRUIShowBlock | None = None
+    otherwise_block: IRUIShowBlock | None = None
+
+
+@dataclass
+class IRUIStyle:
+    kind: str
+    value: object
+
+
+@dataclass
+class IRUIComponent:
+    name: str
+    params: list[str] = field(default_factory=list)
+    render: list["IRLayoutElement"] = field(default_factory=list)
+    styles: list[IRUIStyle] = field(default_factory=list)
+
+
+@dataclass
+class IRUIComponentCall:
+    name: str
+    args: list[ast_nodes.Expr] = field(default_factory=list)
+    named_args: dict[str, list["IRStatement"]] = field(default_factory=dict)
+    styles: list[IRUIStyle] = field(default_factory=list)
+
+
+IRLayoutElement = IRHeading | IRText | IRImage | IREmbedForm | IRSection | IRUIInput | IRUIButton | IRUIConditional | IRUIComponentCall
+
+
+@dataclass
+class IRFrame:
+    name: str
+    source_kind: str = "file"
+    path: str | None = None
+    delimiter: str | None = None
+    has_headers: bool = False
+    select_cols: list[str] = field(default_factory=list)
+    where: ast_nodes.Expr | None = None
 
 
 @dataclass
@@ -239,12 +348,14 @@ class IRProgram:
     ai_calls: Dict[str, IRAiCall] = field(default_factory=dict)
     agents: Dict[str, IRAgent] = field(default_factory=dict)
     memories: Dict[str, IRMemory] = field(default_factory=dict)
+    frames: Dict[str, IRFrame] = field(default_factory=dict)
     flows: Dict[str, IRFlow] = field(default_factory=dict)
     plugins: Dict[str, "IRPlugin"] = field(default_factory=dict)
     rulegroups: Dict[str, Dict[str, ast_nodes.Expr]] = field(default_factory=dict)
     helpers: Dict[str, IRHelper] = field(default_factory=dict)
     imports: List[IRImport] = field(default_factory=list)
     settings: IRSettings | None = None
+    ui_components: Dict[str, IRUIComponent] = field(default_factory=dict)
 
 
 @dataclass
@@ -258,6 +369,7 @@ def ast_to_ir(module: ast_nodes.Module) -> IRProgram:
     allowed_memory_types = {"conversation", "user", "global"}
     macro_defs: dict[str, ast_nodes.Expr] = {}
     rulegroups: dict[str, dict[str, ast_nodes.Expr]] = {}
+    page_routes: dict[str, str] = {}
     for decl in module.declarations:
         if isinstance(decl, ast_nodes.ConditionMacroDecl):
             if decl.name in macro_defs:
@@ -336,7 +448,7 @@ def ast_to_ir(module: ast_nodes.Module) -> IRProgram:
 
     def lower_statement(stmt: ast_nodes.Statement | ast_nodes.FlowAction) -> IRStatement:
         if isinstance(stmt, ast_nodes.FlowAction):
-            return IRAction(kind=stmt.kind, target=stmt.target, message=stmt.message)
+            return IRAction(kind=stmt.kind, target=stmt.target, message=stmt.message, args=stmt.args)
         if isinstance(stmt, ast_nodes.LetStatement):
             return IRLet(name=stmt.name, expr=stmt.expr)
         if isinstance(stmt, ast_nodes.SetStatement):
@@ -395,6 +507,74 @@ def ast_to_ir(module: ast_nodes.Module) -> IRProgram:
             macro_origin=macro_origin,
         )
 
+    def lower_styles(styles: list[ast_nodes.UIStyle]) -> list[IRUIStyle]:
+        return [IRUIStyle(kind=s.kind, value=s.value) for s in styles]
+
+    def lower_layout_element(
+        el: ast_nodes.LayoutElement,
+        collected_states: list[IRUIState] | None = None,
+    ) -> IRLayoutElement | None:
+        if isinstance(el, ast_nodes.UIStateDecl):
+            if collected_states is None:
+                return None
+            val = None
+            if isinstance(el.expr, ast_nodes.Literal):
+                val = el.expr.value
+                if not isinstance(val, (str, int, float, bool)) and val is not None:
+                    raise IRError("N3U-2002: invalid state initializer", getattr(el, "span", None) and getattr(el.span, "line", None))
+            else:
+                raise IRError("N3U-2002: invalid state initializer", getattr(el, "span", None) and getattr(el.span, "line", None))
+            collected_states.append(IRUIState(name=el.name, initial=val))
+            return None
+        if isinstance(el, ast_nodes.HeadingNode):
+            return IRHeading(text=el.text, styles=lower_styles(el.styles))
+        if isinstance(el, ast_nodes.TextNode):
+            return IRText(text=el.text, expr=getattr(el, "expr", None), styles=lower_styles(el.styles))
+        if isinstance(el, ast_nodes.ImageNode):
+            return IRImage(url=el.url, styles=lower_styles(el.styles))
+        if isinstance(el, ast_nodes.EmbedFormNode):
+            return IREmbedForm(form_name=el.form_name, styles=lower_styles(el.styles))
+        if isinstance(el, ast_nodes.SectionDecl):
+            sec_children_raw = [lower_layout_element(child, collected_states) for child in el.layout]
+            sec_children = [c for c in sec_children_raw if c is not None]
+            return IRSection(name=el.name, components=[], layout=sec_children, styles=lower_styles(el.styles))
+        if isinstance(el, ast_nodes.UIInputNode):
+            if el.field_type and el.field_type not in {"text", "number", "email", "secret", "long_text", "date"}:
+                raise IRError("N3U-2101: invalid input type", getattr(el, "span", None) and getattr(el.span, "line", None))
+            return IRUIInput(label=el.label, var_name=el.var_name, field_type=el.field_type, styles=lower_styles(el.styles))
+        if isinstance(el, ast_nodes.UIButtonNode):
+            actions: list[IRUIEventAction] = []
+            if el.handler:
+                for act in el.handler.actions:
+                    if act.kind == "flow":
+                        actions.append(IRUIEventAction(kind="flow", target=act.target, args=act.args))
+                    elif act.kind == "goto_page":
+                        actions.append(IRUIEventAction(kind="goto_page", target=act.target, args=act.args))
+                    elif act.kind == "goto_flow":
+                        actions.append(IRUIEventAction(kind="goto_flow", target=act.target, args=act.args))
+                    else:
+                        raise IRError("N3U-2202: invalid action in click handler", getattr(act, "span", None) and getattr(act.span, "line", None))
+            return IRUIButton(label=el.label, label_expr=getattr(el, "label_expr", None), actions=actions, styles=lower_styles(el.styles))
+        if isinstance(el, ast_nodes.UIConditional):
+            when_children_raw = [lower_layout_element(child, collected_states) for child in el.when_children]
+            otherwise_children_raw = [lower_layout_element(child, collected_states) for child in el.otherwise_children]
+            when_block = IRUIShowBlock(layout=[c for c in when_children_raw if c is not None])
+            otherwise_block = None
+            if el.otherwise_children:
+                otherwise_block = IRUIShowBlock(layout=[c for c in otherwise_children_raw if c is not None])
+            return IRUIConditional(condition=el.condition, when_block=when_block, otherwise_block=otherwise_block)
+        if isinstance(el, ast_nodes.UIComponentCall):
+            return IRUIComponentCall(
+                name=el.name,
+                args=list(el.args),
+                named_args={
+                    key: [lower_statement(a) if isinstance(a, ast_nodes.FlowAction) else lower_statement(a) for a in actions]
+                    for key, actions in el.named_args.items()
+                },
+                styles=lower_styles(el.styles),
+            )
+        raise IRError("Unsupported layout element", getattr(el, "span", None) and getattr(el.span, "line", None))
+
     for decl in module.declarations:
         if isinstance(decl, ast_nodes.ConditionMacroDecl):
             continue
@@ -410,31 +590,62 @@ def ast_to_ir(module: ast_nodes.Module) -> IRProgram:
                 description=decl.description,
                 entry_page=decl.entry_page,
             )
+        elif isinstance(decl, ast_nodes.UIComponentDecl):
+            if decl.name in program.ui_components:
+                raise IRError("N3U-3500: component name conflicts", decl.span and decl.span.line)
+            comp_layout_raw = [lower_layout_element(el, None) for el in decl.render]
+            comp_layout = [c for c in comp_layout_raw if c is not None]
+            program.ui_components[decl.name] = IRUIComponent(
+                name=decl.name,
+                params=list(decl.params),
+                render=comp_layout,
+                styles=lower_styles(decl.styles),
+            )
         elif isinstance(decl, ast_nodes.PageDecl):
             if decl.name in program.pages:
                 raise IRError(
-                    f"Duplicate page '{decl.name}'", decl.span and decl.span.line
+                    f"N3U-1002: duplicate page '{decl.name}'", decl.span and decl.span.line
                 )
-            sections = [
-                IRSection(
-                    name=sec.name,
-                    components=[
-                        IRComponent(
-                            type=comp.type,
-                            props={prop.key: prop.value for prop in comp.props},
-                        )
-                        for comp in sec.components
-                    ],
+            if decl.route:
+                if decl.route in page_routes:
+                    raise IRError(
+                        f"N3U-1003: duplicate route '{decl.route}'", decl.span and decl.span.line
+                    )
+                page_routes[decl.route] = decl.name
+
+            collected_states: list[IRUIState] = []
+
+            sections: list[IRSection] = []
+            for sec in decl.sections:
+                sec_children_raw = [lower_layout_element(child, collected_states) for child in sec.layout]
+                sec_children = [c for c in sec_children_raw if c is not None]
+                sections.append(
+                    IRSection(
+                        name=sec.name,
+                        components=[
+                            IRComponent(
+                                type=comp.type,
+                                props={prop.key: prop.value for prop in comp.props},
+                            )
+                            for comp in sec.components
+                        ],
+                        layout=sec_children,
+                        styles=lower_styles(sec.styles),
+                    )
                 )
-                for sec in decl.sections
-            ]
             # validate duplicate section names
-            section_names = [s.name for s in sections]
+            section_names = [s.name for s in sections] + [el.name for el in decl.layout if isinstance(el, ast_nodes.SectionDecl)]
             if len(section_names) != len(set(section_names)):
                 raise IRError(
-                    f"Duplicate section name in page '{decl.name}'",
+                    f"N3U-1100: duplicate section name in page '{decl.name}'",
                     decl.span and decl.span.line,
                 )
+            layout_nodes_raw: list[IRLayoutElement | None] = [lower_layout_element(el, collected_states) for el in decl.layout]
+            layout_nodes = [ln for ln in layout_nodes_raw if ln is not None]
+            # deduplicate states by name
+            state_names = [s.name for s in collected_states]
+            if len(state_names) != len(set(state_names)):
+                raise IRError("N3U-2001: duplicate state name", decl.span and decl.span.line)
             program.pages[decl.name] = IRPage(
                 name=decl.name,
                 title=decl.title,
@@ -445,6 +656,9 @@ def ast_to_ir(module: ast_nodes.Module) -> IRProgram:
                 agents=[ref.name for ref in decl.agents],
                 memories=[ref.name for ref in decl.memories],
                 sections=sections,
+                layout=layout_nodes,
+                ui_states=collected_states,
+                styles=lower_styles(decl.styles),
             )
         elif isinstance(decl, ast_nodes.ModelDecl):
             if decl.name in program.models:
@@ -487,6 +701,23 @@ def ast_to_ir(module: ast_nodes.Module) -> IRProgram:
                 )
             program.memories[decl.name] = IRMemory(
                 name=decl.name, memory_type=decl.memory_type
+            )
+        elif isinstance(decl, ast_nodes.FrameDecl):
+            if decl.name in program.frames:
+                raise IRError(
+                    f"Duplicate frame '{decl.name}'", decl.span and decl.span.line
+                )
+            if not decl.source_path:
+                raise IRError("N3F-1000: frame source not specified", decl.span and decl.span.line)
+            where_expr, _ = transform_expr(decl.where)
+            program.frames[decl.name] = IRFrame(
+                name=decl.name,
+                source_kind=decl.source_kind or "file",
+                path=decl.source_path,
+                delimiter=decl.delimiter,
+                has_headers=decl.has_headers,
+                select_cols=decl.select_cols or [],
+                where=where_expr,
             )
         elif isinstance(decl, ast_nodes.FlowDecl):
             if decl.name in program.flows:
@@ -568,7 +799,12 @@ def ast_to_ir(module: ast_nodes.Module) -> IRProgram:
                         raise IRError(f"N3-6201: duplicate key '{entry.key}' in env '{env.name}'", env.span and env.span.line)
                     entry_map[entry.key] = entry.expr
                 env_map[env.name] = IREnvConfig(name=env.name, entries=entry_map)
-            program.settings = IRSettings(envs=env_map)
+            theme_map: dict[str, str] = {}
+            for entry in decl.theme:
+                if entry.key in theme_map:
+                    raise IRError("N3U-3002: duplicate theme key", entry.span and entry.span.line)
+                theme_map[entry.key] = entry.value
+            program.settings = IRSettings(envs=env_map, theme=theme_map)
         elif isinstance(decl, ast_nodes.UseImport):
             # Imports are acknowledged but not expanded in this minimal slice.
             continue

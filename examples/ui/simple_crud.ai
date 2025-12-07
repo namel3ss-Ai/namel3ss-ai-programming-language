@@ -1,0 +1,21 @@
+flow "list_items":
+  step "fetch" kind "tool" target "echo" message "list"
+
+flow "create_item":
+  step "create" kind "tool" target "echo" message "create"
+
+page "items" at "/items":
+  heading "Items"
+  text "A simple CRUD surface"
+
+  button "New item":
+    on click:
+      do flow "create_item"
+
+  when true:
+    show:
+      text "Listing items..."
+
+page "item_detail" at "/items/:id":
+  heading "Detail"
+  text "Details will go here."

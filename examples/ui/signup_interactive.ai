@@ -1,0 +1,16 @@
+page "signup" at "/signup":
+  state name is ""
+
+  heading "Create your account"
+  input "Your name" as name
+
+  button "Continue":
+    on click:
+      do flow "register_user" with name: name
+
+  when name is not "":
+    show:
+      text "Thanks for signing up!"
+  otherwise:
+    show:
+      text "Please enter your name to continue."

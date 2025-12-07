@@ -1,0 +1,5 @@
+macro "greet_user" using ai "codegen":
+  description "Generate a flow that greets the user by asking their name."
+  sample "flow \"greet\":\n  step \"hi\":\n    ask user for \"Name\" as name\n    log info \"hi\""
+
+use macro "greet_user"

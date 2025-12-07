@@ -1,0 +1,9 @@
+form "Signup Form" as signup_form:
+  field "Email" as email
+    type is text
+
+page "home" at "/":
+  heading "Welcome to Namel3ss"
+  text "Let's get started."
+  section "cta":
+    use form "Signup Form"

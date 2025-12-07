@@ -28,6 +28,17 @@ let total = base + bonus
 - Bounded repetition: `repeat up to 5 times:` with reasonable limits.
 - Favor English list built-ins: `length of xs`, `sorted form of xs`.
 
+## Frames and Data
+- Name frames descriptively: `frame "sales_data": ...`.
+- Prefer `has headers` plus `select` to keep row records lean.
+- Filter with `all row from sales_data where ...` and aggregate with `sum of all row.revenue from sales_data`.
+
+## Macros
+- Keep macro descriptions concise and directive: “Generate CRUD flows for an entity.”
+- Provide samples for few-shot quality.
+- Limit parameters to simple, clear names; prefer structured argument values (lists/records) over ambiguous strings.
+- Macro expansions must return clean Namel3ss code only—no Markdown/backticks.
+
 ## Pattern Matching
 - Order branches from most specific to most general.
 - Include an `otherwise` branch when possible.

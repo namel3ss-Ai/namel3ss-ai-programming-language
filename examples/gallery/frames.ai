@@ -1,0 +1,13 @@
+frame "sales_data":
+  from file "sales.csv"
+  has headers
+  select region, revenue, country
+
+flow "be_revenue":
+  step "filter":
+    let be_sales be all row from sales_data where row.country is "BE"
+    let total be sum of all row.revenue from be_sales
+    log info "Total BE revenue" with { total: total }
+
+    repeat for each row in be_sales:
+      log info "Row" with { region: row.region, revenue: row.revenue }

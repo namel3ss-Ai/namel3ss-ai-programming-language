@@ -49,6 +49,7 @@ from .optimizer.overlays import OverlayStore
 from .optimizer.engine import OptimizerEngine
 from .optimizer.apply import SuggestionApplier
 from .examples.manager import resolve_example_path, get_examples_root
+from .ui.manifest import build_ui_manifest
 
 BASE_DIR = Path(__file__).resolve().parents[2]
 STUDIO_STATIC_DIR = BASE_DIR / "studio" / "static"
@@ -81,6 +82,16 @@ class DiagnosticsRequest(BaseModel):
     paths: list[str]
     strict: bool = False
     summary_only: bool = False
+
+
+class UIManifestRequest(BaseModel):
+    code: str
+
+
+class UIFlowExecuteRequest(BaseModel):
+    source: str
+    flow: str
+    args: dict[str, Any] = {}
 
 
 class BundleRequest(BaseModel):
@@ -432,6 +443,33 @@ def create_app() -> FastAPI:
             raise
         except Exception as exc:  # pragma: no cover
             raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    @app.post("/api/ui/manifest")
+    def api_ui_manifest(payload: UIManifestRequest, principal: Principal = Depends(get_principal)) -> Dict[str, Any]:
+        if not can_view_pages(principal.role):
+            raise HTTPException(status_code=403, detail="Forbidden")
+        try:
+            engine = Engine.from_source(payload.code, trigger_manager=trigger_manager, plugin_registry=plugin_registry)
+            manifest = build_ui_manifest(engine.program)
+            return manifest
+        except Exception as exc:  # pragma: no cover
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    @app.post("/api/ui/flow/execute")
+    def api_ui_flow_execute(payload: UIFlowExecuteRequest, principal: Principal = Depends(get_principal)) -> Dict[str, Any]:
+        if not can_run_flow(principal.role):
+            raise HTTPException(status_code=403, detail="Forbidden")
+        try:
+            engine = Engine.from_source(
+                payload.source,
+                metrics_tracker=metrics_tracker,
+                trigger_manager=trigger_manager,
+                plugin_registry=plugin_registry,
+            )
+            result = engine.execute_flow(payload.flow, principal_role=principal.role.value, payload={"state": payload.args})
+            return {"success": True, "result": result}
+        except Exception as exc:  # pragma: no cover
+            return {"success": False, "error": str(exc)}
 
     @app.post("/api/flows")
     def api_flows(

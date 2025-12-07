@@ -34,6 +34,7 @@ from ..observability.metrics import default_metrics
 from ..observability.tracing import default_tracer
 from ..runtime.context import ExecutionContext, execute_ai_call_with_registry
 from ..runtime.expressions import EvaluationError, ExpressionEvaluator, VariableEnvironment
+from ..runtime.frames import FrameRegistry
 from ..tools.registry import ToolRegistry
 from .evaluation import AgentEvaluation, AgentEvaluator
 from .evaluators import AgentStepEvaluator, DeterministicEvaluator, OpenAIEvaluator
@@ -65,6 +66,7 @@ class AgentRunner:
         self.config = config or AgentConfig()
         self._planner = AgentPlanner(router=self.router, agent_config=self.config)
         self._evaluator = AgentEvaluator(router=self.router)
+        self.frame_registry = FrameRegistry(program.frames if program else {})
 
     def build_plan(self, agent: IRAgent, page_ai_fallback: Optional[str] = None) -> AgentExecutionPlan:
         steps: list[AgentStep] = []
@@ -409,6 +411,8 @@ class AgentRunner:
             current = getattr(context, parts[0], None)
         elif parts[0] in getattr(context, "variables", {}):
             current = context.variables.get(parts[0])
+        elif self.frame_registry and parts[0] in getattr(self.frame_registry, "frames", {}):
+            current = self.frame_registry.get_rows(parts[0])
         else:
             return False, None
         for part in parts[1:]:

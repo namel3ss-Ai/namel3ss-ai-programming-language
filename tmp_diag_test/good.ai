@@ -1,0 +1,4 @@
+app "a":
+  entry_page "home"
+page "home":
+  route "/"
