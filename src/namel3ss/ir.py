@@ -48,6 +48,9 @@ class IRAiCall:
     model_name: str | None = None
     input_source: str | None = None
     description: str | None = None
+    system_prompt: str | None = None
+    memory_name: str | None = None
+    tools: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -55,6 +58,8 @@ class IRAgent:
     name: str
     goal: str | None = None
     personality: str | None = None
+    system_prompt: str | None = None
+    memory_name: str | None = None
     conditional_branches: list["IRConditionalBranch"] | None = None
 
 
@@ -62,6 +67,7 @@ class IRAgent:
 class IRMemory:
     name: str
     memory_type: str | None = None
+    retention: str | None = None
 
 
 @dataclass
@@ -96,11 +102,26 @@ class IRSettings:
 @dataclass
 class IRFlowStep:
     name: str
-    kind: Literal["ai", "agent", "tool", "condition", "goto_flow", "script"]
+    kind: Literal[
+        "ai",
+        "agent",
+        "tool",
+        "condition",
+        "goto_flow",
+        "script",
+        "frame_insert",
+        "frame_query",
+        "frame_update",
+        "frame_delete",
+        "vector_index_frame",
+        "vector_query",
+    ]
     target: str
     message: str | None = None
+    params: dict[str, object] = field(default_factory=dict)
     conditional_branches: list["IRConditionalBranch"] | None = None
     statements: list["IRStatement"] | None = None
+    when_expr: ast_nodes.Expr | None = None
 
 
 @dataclass
@@ -112,7 +133,19 @@ class IRFlow:
 
 @dataclass
 class IRAction:
-    kind: Literal["ai", "agent", "tool", "goto_flow", "flow", "goto_page"]
+    kind: Literal[
+        "ai",
+        "agent",
+        "tool",
+        "goto_flow",
+        "flow",
+        "goto_page",
+        "frame_insert",
+        "frame_query",
+        "frame_update",
+        "frame_delete",
+        "vector_index_frame",
+    ]
     target: str
     message: str | None = None
     args: dict[str, ast_nodes.Expr] = field(default_factory=dict)
@@ -128,6 +161,13 @@ class IRLet:
 class IRSet:
     name: str
     expr: ast_nodes.Expr | None = None
+
+
+@dataclass
+class IRTryCatch:
+    try_body: list["IRStatement"] = field(default_factory=list)
+    error_name: str = "err"
+    catch_body: list["IRStatement"] = field(default_factory=list)
 
 
 @dataclass
@@ -212,7 +252,7 @@ class IRRetry:
     body: list["IRStatement"] = field(default_factory=list)
 
 
-IRStatement = IRAction | IRLet | IRSet | IRIf | IRForEach | IRRepeatUpTo | IRMatch | IRRetry | IRAskUser | IRForm | IRLog | IRNote | IRCheckpoint | IRReturn
+IRStatement = IRAction | IRLet | IRSet | IRTryCatch | IRIf | IRForEach | IRRepeatUpTo | IRMatch | IRRetry | IRAskUser | IRForm | IRLog | IRNote | IRCheckpoint | IRReturn
 
 
 @dataclass
@@ -274,13 +314,16 @@ class IRUIInput:
     label: str
     var_name: str
     field_type: str | None = None
+    validation: dict[str, object] | None = None
     styles: list["IRUIStyle"] = field(default_factory=list)
 
 
 @dataclass
 class IRUIEventAction:
-    kind: Literal["flow", "goto_page", "goto_flow"]
-    target: str
+    kind: Literal["flow", "goto_page", "goto_flow", "navigate"]
+    target: str | None = None
+    target_path: str | None = None
+    target_page: str | None = None
     args: dict[str, ast_nodes.Expr] = field(default_factory=dict)
 
 
@@ -326,7 +369,53 @@ class IRUIComponentCall:
     styles: list[IRUIStyle] = field(default_factory=list)
 
 
-IRLayoutElement = IRHeading | IRText | IRImage | IREmbedForm | IRSection | IRUIInput | IRUIButton | IRUIConditional | IRUIComponentCall
+@dataclass
+class IRCard:
+    title: str | None = None
+    layout: list["IRLayoutElement"] = field(default_factory=list)
+    styles: list["IRUIStyle"] = field(default_factory=list)
+
+
+@dataclass
+class IRRow:
+    layout: list["IRLayoutElement"] = field(default_factory=list)
+    styles: list["IRUIStyle"] = field(default_factory=list)
+
+
+@dataclass
+class IRColumn:
+    layout: list["IRLayoutElement"] = field(default_factory=list)
+    styles: list["IRUIStyle"] = field(default_factory=list)
+
+
+@dataclass
+class IRTextarea:
+    label: str
+    var_name: str | None = None
+    validation: dict[str, object] | None = None
+    styles: list["IRUIStyle"] = field(default_factory=list)
+
+
+@dataclass
+class IRBadge:
+    text: str
+    styles: list["IRUIStyle"] = field(default_factory=list)
+
+@dataclass
+class IRMessageList:
+    layout: list["IRMessage"]
+    styles: list["IRUIStyle"] = field(default_factory=list)
+
+
+@dataclass
+class IRMessage:
+    name: str | None
+    role: Expr | None
+    text_expr: Expr | None
+    styles: list["IRUIStyle"] = field(default_factory=list)
+
+
+IRLayoutElement = IRHeading | IRText | IRImage | IREmbedForm | IRSection | IRUIInput | IRUIButton | IRUIConditional | IRUIComponentCall | IRCard | IRRow | IRColumn | IRTextarea | IRBadge | IRMessageList | IRMessage
 
 
 @dataclass
@@ -334,10 +423,24 @@ class IRFrame:
     name: str
     source_kind: str = "file"
     path: str | None = None
+    backend: str | None = None
+    table: str | None = None
+    primary_key: str | None = None
     delimiter: str | None = None
     has_headers: bool = False
     select_cols: list[str] = field(default_factory=list)
     where: ast_nodes.Expr | None = None
+
+
+@dataclass
+class IRVectorStore:
+    name: str
+    backend: str
+    frame: str
+    text_column: str
+    id_column: str
+    embedding_model: str
+    options: dict[str, str] = field(default_factory=dict)
 
 
 @dataclass
@@ -349,6 +452,7 @@ class IRProgram:
     agents: Dict[str, IRAgent] = field(default_factory=dict)
     memories: Dict[str, IRMemory] = field(default_factory=dict)
     frames: Dict[str, IRFrame] = field(default_factory=dict)
+    vector_stores: Dict[str, IRVectorStore] = field(default_factory=dict)
     flows: Dict[str, IRFlow] = field(default_factory=dict)
     plugins: Dict[str, "IRPlugin"] = field(default_factory=dict)
     rulegroups: Dict[str, Dict[str, ast_nodes.Expr]] = field(default_factory=dict)
@@ -356,6 +460,7 @@ class IRProgram:
     imports: List[IRImport] = field(default_factory=list)
     settings: IRSettings | None = None
     ui_components: Dict[str, IRUIComponent] = field(default_factory=dict)
+    tools: Dict[str, IRTool] = field(default_factory=dict)
 
 
 @dataclass
@@ -364,11 +469,24 @@ class IRPlugin:
     description: str | None = None
 
 
+@dataclass
+class IRTool:
+    name: str
+    kind: str | None = None
+    method: str | None = None
+    url_template: str | None = None
+    headers: Dict[str, Expr] = field(default_factory=dict)
+    body_template: Expr | None = None
+
+
 def ast_to_ir(module: ast_nodes.Module) -> IRProgram:
     program = IRProgram()
+    page_names = {decl.name for decl in module.declarations if isinstance(decl, ast_nodes.PageDecl)}
     allowed_memory_types = {"conversation", "user", "global"}
     macro_defs: dict[str, ast_nodes.Expr] = {}
     rulegroups: dict[str, dict[str, ast_nodes.Expr]] = {}
+    ai_memory_refs: list[tuple[str, str, int | None]] = []
+    agent_memory_refs: list[tuple[str, str, int | None]] = []
     page_routes: dict[str, str] = {}
     for decl in module.declarations:
         if isinstance(decl, ast_nodes.ConditionMacroDecl):
@@ -453,6 +571,10 @@ def ast_to_ir(module: ast_nodes.Module) -> IRProgram:
             return IRLet(name=stmt.name, expr=stmt.expr)
         if isinstance(stmt, ast_nodes.SetStatement):
             return IRSet(name=stmt.name, expr=stmt.expr)
+        if isinstance(stmt, ast_nodes.TryCatchStatement):
+            try_body = [lower_statement(s) for s in stmt.try_block]
+            catch_body = [lower_statement(s) for s in stmt.catch_block]
+            return IRTryCatch(try_body=try_body, error_name=stmt.error_identifier, catch_body=catch_body)
         if isinstance(stmt, ast_nodes.IfStatement):
             branches = [lower_branch(br) for br in stmt.branches]
             return IRIf(branches=branches)
@@ -490,9 +612,12 @@ def ast_to_ir(module: ast_nodes.Module) -> IRProgram:
         raise IRError(f"Unsupported statement type '{type(stmt).__name__}'", getattr(stmt, "span", None) and getattr(stmt.span, "line", None))
 
     def lower_branch(br: ast_nodes.ConditionalBranch) -> IRConditionalBranch:
-        cond, macro_origin = transform_expr(br.condition)
-        if macro_origin is None and isinstance(br.condition, ast_nodes.Identifier) and br.condition.name in macro_defs:
-            macro_origin = br.condition.name
+        cond = None
+        macro_origin = None
+        if br.condition is not None:
+            cond, macro_origin = transform_expr(br.condition)
+            if macro_origin is None and isinstance(br.condition, ast_nodes.Identifier) and br.condition.name in macro_defs:
+                macro_origin = br.condition.name
         if br.binding and br.binding in macro_defs:
             raise IRError(
                 f"Binding name '{br.binding}' conflicts with condition macro.",
@@ -541,7 +666,21 @@ def ast_to_ir(module: ast_nodes.Module) -> IRProgram:
         if isinstance(el, ast_nodes.UIInputNode):
             if el.field_type and el.field_type not in {"text", "number", "email", "secret", "long_text", "date"}:
                 raise IRError("N3U-2101: invalid input type", getattr(el, "span", None) and getattr(el.span, "line", None))
-            return IRUIInput(label=el.label, var_name=el.var_name, field_type=el.field_type, styles=lower_styles(el.styles))
+            validation = None
+            if getattr(el, "validation", None):
+                v = el.validation
+                validation = {
+                    key: getattr(v, key)
+                    for key in ["required", "min_length", "max_length", "pattern", "message"]
+                    if getattr(v, key) is not None
+                }
+            return IRUIInput(
+                label=el.label,
+                var_name=el.var_name,
+                field_type=el.field_type,
+                validation=validation,
+                styles=lower_styles(el.styles),
+            )
         if isinstance(el, ast_nodes.UIButtonNode):
             actions: list[IRUIEventAction] = []
             if el.handler:
@@ -552,9 +691,56 @@ def ast_to_ir(module: ast_nodes.Module) -> IRProgram:
                         actions.append(IRUIEventAction(kind="goto_page", target=act.target, args=act.args))
                     elif act.kind == "goto_flow":
                         actions.append(IRUIEventAction(kind="goto_flow", target=act.target, args=act.args))
+                    elif act.kind == "navigate":
+                        if not act.target_path and not act.target_page_name:
+                            raise IRError("N3L-950: navigate action must specify a path or page.", getattr(act, "span", None) and getattr(act.span, "line", None))
+                        if act.target_page_name and act.target_page_name not in page_names:
+                            raise IRError(
+                                f"N3L-951: Page '{act.target_page_name}' referenced in navigate action does not exist.",
+                                getattr(act, "span", None) and getattr(act.span, "line", None),
+                            )
+                        actions.append(
+                            IRUIEventAction(
+                                kind="navigate",
+                                target=act.target_page_name or act.target_path,
+                                target_path=act.target_path,
+                                target_page=act.target_page_name,
+                                args={},
+                            )
+                        )
                     else:
                         raise IRError("N3U-2202: invalid action in click handler", getattr(act, "span", None) and getattr(act.span, "line", None))
             return IRUIButton(label=el.label, label_expr=getattr(el, "label_expr", None), actions=actions, styles=lower_styles(el.styles))
+        if isinstance(el, ast_nodes.CardNode):
+            children_raw = [lower_layout_element(child, collected_states) for child in el.children]
+            children = [c for c in children_raw if c is not None]
+            return IRCard(title=el.title or None, layout=children, styles=lower_styles(el.styles))
+        if isinstance(el, ast_nodes.RowNode):
+            children_raw = [lower_layout_element(child, collected_states) for child in el.children]
+            children = [c for c in children_raw if c is not None]
+            return IRRow(layout=children, styles=lower_styles(el.styles))
+        if isinstance(el, ast_nodes.ColumnNode):
+            children_raw = [lower_layout_element(child, collected_states) for child in el.children]
+            children = [c for c in children_raw if c is not None]
+            return IRColumn(layout=children, styles=lower_styles(el.styles))
+        if isinstance(el, ast_nodes.TextareaNode):
+            validation = None
+            if getattr(el, "validation", None):
+                v = el.validation
+                validation = {
+                    key: getattr(v, key)
+                    for key in ["required", "min_length", "max_length", "pattern", "message"]
+                    if getattr(v, key) is not None
+                }
+            return IRTextarea(label=el.label, var_name=el.var_name, validation=validation, styles=lower_styles(el.styles))
+        if isinstance(el, ast_nodes.BadgeNode):
+            return IRBadge(text=el.text, styles=lower_styles(el.styles))
+        if isinstance(el, ast_nodes.MessageListNode):
+            children_raw = [lower_layout_element(child, collected_states) for child in el.children]
+            children = [c for c in children_raw if c is not None]
+            return IRMessageList(layout=children, styles=lower_styles(el.styles))
+        if isinstance(el, ast_nodes.MessageNode):
+            return IRMessage(name=el.name, role=el.role, text_expr=el.text_expr, styles=lower_styles(el.styles))
         if isinstance(el, ast_nodes.UIConditional):
             when_children_raw = [lower_layout_element(child, collected_states) for child in el.when_children]
             otherwise_children_raw = [lower_layout_element(child, collected_states) for child in el.otherwise_children]
@@ -676,7 +862,12 @@ def ast_to_ir(module: ast_nodes.Module) -> IRProgram:
                 model_name=decl.model_name,
                 input_source=decl.input_source,
                 description=getattr(decl, "description", None),
+                system_prompt=getattr(decl, "system_prompt", None),
+                memory_name=getattr(decl, "memory_name", None),
+                tools=list(getattr(decl, "tools", []) or []),
             )
+            if getattr(decl, "memory_name", None):
+                ai_memory_refs.append((decl.name, decl.memory_name or "", decl.span and decl.span.line))
         elif isinstance(decl, ast_nodes.AgentDecl):
             if decl.name in program.agents:
                 raise IRError(
@@ -687,12 +878,19 @@ def ast_to_ir(module: ast_nodes.Module) -> IRProgram:
             if getattr(decl, "conditional_branches", None):
                 agent_branches = [lower_branch(br) for br in decl.conditional_branches or []]
             program.agents[decl.name] = IRAgent(
-                name=decl.name, goal=decl.goal, personality=decl.personality, conditional_branches=agent_branches
+                name=decl.name, goal=decl.goal, personality=decl.personality, conditional_branches=agent_branches, system_prompt=getattr(decl, "system_prompt", None), memory_name=getattr(decl, "memory_name", None)
             )
+            if getattr(decl, "memory_name", None):
+                agent_memory_refs.append((decl.name, decl.memory_name or "", decl.span and decl.span.line))
         elif isinstance(decl, ast_nodes.MemoryDecl):
             if decl.name in program.memories:
                 raise IRError(
                     f"Duplicate memory '{decl.name}'", decl.span and decl.span.line
+                )
+            if not decl.memory_type:
+                raise IRError(
+                    f"Memory '{decl.name}' must specify a type.",
+                    decl.span and decl.span.line,
                 )
             if decl.memory_type and decl.memory_type not in allowed_memory_types:
                 raise IRError(
@@ -700,24 +898,93 @@ def ast_to_ir(module: ast_nodes.Module) -> IRProgram:
                     decl.span and decl.span.line,
                 )
             program.memories[decl.name] = IRMemory(
-                name=decl.name, memory_type=decl.memory_type
+                name=decl.name, memory_type=decl.memory_type, retention=decl.retention
             )
         elif isinstance(decl, ast_nodes.FrameDecl):
             if decl.name in program.frames:
                 raise IRError(
                     f"Duplicate frame '{decl.name}'", decl.span and decl.span.line
                 )
-            if not decl.source_path:
+            if not (decl.source_path or decl.backend):
                 raise IRError("N3F-1000: frame source not specified", decl.span and decl.span.line)
+            if decl.backend and decl.backend not in {"memory", "sqlite", "postgres"}:
+                raise IRError(
+                    f"Unsupported frame backend '{decl.backend}'", decl.span and decl.span.line
+                )
             where_expr, _ = transform_expr(decl.where)
             program.frames[decl.name] = IRFrame(
                 name=decl.name,
-                source_kind=decl.source_kind or "file",
+                source_kind=decl.source_kind or decl.backend or "file",
                 path=decl.source_path,
+                backend=decl.backend,
+                table=decl.table,
+                primary_key=decl.primary_key,
                 delimiter=decl.delimiter,
                 has_headers=decl.has_headers,
                 select_cols=decl.select_cols or [],
                 where=where_expr,
+            )
+        elif isinstance(decl, ast_nodes.VectorStoreDecl):
+            if decl.name in program.vector_stores:
+                raise IRError(f"Duplicate vector_store '{decl.name}'", decl.span and decl.span.line)
+            if not decl.backend:
+                raise IRError(f"N3L-900: Vector store '{decl.name}' must specify a backend.", decl.span and decl.span.line)
+            if not decl.frame:
+                raise IRError(f"N3L-901: Vector store '{decl.name}' must reference a frame.", decl.span and decl.span.line)
+            if decl.frame not in program.frames:
+                raise IRError(
+                    f"N3L-901: Vector store '{decl.name}' references unknown frame '{decl.frame}'.",
+                    decl.span and decl.span.line,
+                )
+            if not decl.embedding_model:
+                raise IRError(
+                    f"N3L-902: Vector store '{decl.name}' must specify an embedding_model.", decl.span and decl.span.line
+                )
+            if not decl.text_column or not decl.id_column:
+                raise IRError(
+                    f"N3L-903: Vector store '{decl.name}' must specify text_column and id_column.",
+                    decl.span and decl.span.line,
+                )
+            program.vector_stores[decl.name] = IRVectorStore(
+                name=decl.name,
+                backend=decl.backend,
+                frame=decl.frame,
+                text_column=decl.text_column,
+                id_column=decl.id_column,
+                embedding_model=decl.embedding_model,
+                options=decl.options or {},
+            )
+        elif isinstance(decl, ast_nodes.ToolDeclaration):
+            if decl.name in program.tools:
+                raise IRError(f"Duplicate tool '{decl.name}'", decl.span and decl.span.line)
+            if not decl.kind or decl.kind != "http_json":
+                raise IRError(
+                    f"N3L-960: Tool '{decl.name}' must specify kind 'http_json' (only 'http_json' is supported in this phase).",
+                    decl.span and decl.span.line,
+                )
+            if not decl.method or decl.method.upper() not in {"GET", "POST"}:
+                raise IRError(
+                    f"N3L-961: Tool '{decl.name}' must specify method 'GET' or 'POST'.",
+                    decl.span and decl.span.line,
+                )
+            if not decl.url_template:
+                raise IRError(
+                    f"N3L-962: Tool '{decl.name}' must define a non-empty url_template.",
+                    decl.span and decl.span.line,
+                )
+            for key in decl.headers.keys():
+                if not key:
+                    raise IRError(
+                        f"N3L-962: Tool '{decl.name}' has an empty header name.",
+                        decl.span and decl.span.line,
+                    )
+            program.tools[decl.name] = IRTool(
+                name=decl.name,
+                kind=decl.kind,
+                method=decl.method.upper() if decl.method else None,
+                url_template=decl.url_template,
+                headers=decl.headers or {},
+                body_template=decl.body_template,
             )
         elif isinstance(decl, ast_nodes.FlowDecl):
             if decl.name in program.flows:
@@ -734,7 +1001,9 @@ def ast_to_ir(module: ast_nodes.Module) -> IRProgram:
                             kind="script",
                             target=step.target or step.name,
                             message=getattr(step, "message", None),
+                            params=getattr(step, "params", {}) or {},
                             statements=ir_statements,
+                            when_expr=getattr(step, "when_expr", None),
                         )
                     )
                 elif step.conditional_branches:
@@ -745,19 +1014,55 @@ def ast_to_ir(module: ast_nodes.Module) -> IRProgram:
                             kind="condition",
                             target=step.name,
                             conditional_branches=branches,
+                            params=getattr(step, "params", {}) or {},
+                            when_expr=getattr(step, "when_expr", None),
                         )
                     )
                 else:
-                    if step.kind not in ("ai", "agent", "tool", "goto_flow"):
+                    if step.kind not in (
+                        "ai",
+                        "agent",
+                        "tool",
+                        "goto_flow",
+                        "frame_insert",
+                        "frame_query",
+                        "frame_update",
+                        "frame_delete",
+                        "vector_index_frame",
+                        "vector_query",
+                    ):
                         raise IRError(
                             f"Unsupported step kind '{step.kind}'", step.span and step.span.line
                         )
+                    if step.kind == "tool":
+                        if not step.target:
+                            raise IRError(
+                                "N3L-963: Tool call step must specify a target tool.", step.span and step.span.line
+                            )
+                        if step.target not in program.tools:
+                            raise IRError(
+                                f"N3L-964: Tool '{step.target}' used in step '{step.name}' is not declared.",
+                                step.span and step.span.line,
+                            )
+                    if step.kind in {"vector_index_frame", "vector_query"}:
+                        vector_store_name = (step.params or {}).get("vector_store") or step.target
+                        if not vector_store_name:
+                            raise IRError("N3L-930: vector step must specify a 'vector_store'.", step.span and step.span.line)
+                        if vector_store_name not in program.vector_stores:
+                            raise IRError(
+                                f"N3L-931: Vector store '{vector_store_name}' is not declared.",
+                                step.span and step.span.line,
+                            )
+                        if step.kind == "vector_query" and "query_text" not in (step.params or {}):
+                            raise IRError("N3L-941: vector_query step must define 'query_text'.", step.span and step.span.line)
                     flow_steps.append(
                         IRFlowStep(
                             name=step.name,
                             kind=step.kind,
                             target=step.target,
                             message=getattr(step, "message", None),
+                            params=getattr(step, "params", {}) or {},
+                            when_expr=getattr(step, "when_expr", None),
                         )
                     )
             program.flows[decl.name] = IRFlow(
@@ -822,6 +1127,12 @@ def ast_to_ir(module: ast_nodes.Module) -> IRProgram:
             raise IRError(
                 f"AI call '{ai_call.name}' references missing model '{ai_call.model_name}'"
             )
+        for tool_name in getattr(ai_call, "tools", []) or []:
+            if tool_name not in program.tools and tool_name not in BUILTIN_TOOL_NAMES:
+                raise IRError(
+                    f"N3L-970: AI '{ai_call.name}' references unknown tool '{tool_name}'.",
+                    None,
+                )
 
     for page in program.pages.values():
         for ai_call_name in page.ai_calls:
@@ -840,6 +1151,20 @@ def ast_to_ir(module: ast_nodes.Module) -> IRProgram:
                     f"Page '{page.name}' references missing memory '{memory_name}'"
                 )
 
+    # Validate memory references for ai and agents now that memories are collected.
+    for ai_name, mem_name, line in ai_memory_refs:
+        if mem_name not in program.memories:
+            raise IRError(
+                f"AI block '{ai_name}' references unknown memory '{mem_name}'.",
+                line,
+            )
+    for agent_name, mem_name, line in agent_memory_refs:
+        if mem_name not in program.memories:
+            raise IRError(
+                f"Agent '{agent_name}' references unknown memory '{mem_name}'.",
+                line,
+            )
+
     program.rulegroups = rulegroups
 
     for flow in program.flows.values():
@@ -855,12 +1180,18 @@ def ast_to_ir(module: ast_nodes.Module) -> IRProgram:
                         f"Flow '{flow.name}' references missing agent '{step.target}'"
                     )
             elif step.kind == "tool":
-                if step.target not in BUILTIN_TOOL_NAMES:
+                if step.target not in program.tools and step.target not in BUILTIN_TOOL_NAMES:
                     raise IRError(
                         f"Flow '{flow.name}' references missing tool '{step.target}'"
                     )
             elif step.kind in {"condition", "script"}:
                 continue
+            elif step.kind in {"frame_insert", "frame_query"}:
+                if step.target not in program.frames:
+                    raise IRError(
+                        f"Flow '{flow.name}' references missing frame '{step.target}'",
+                        None,
+                    )
             elif step.kind == "goto_flow":
                 # Flow redirection target validated at runtime; keep IR flexible.
                 continue

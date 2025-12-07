@@ -84,6 +84,8 @@ def _format_decl(decl: ast_nodes.Declaration, level: int) -> List[str]:
         body: List[str] = []
         if decl.model_name:
             body.append(_indent(level + 1, f"model {_q(decl.model_name)}"))
+        if getattr(decl, "system_prompt", None):
+            body.append(_indent(level + 1, f"system {_q(decl.system_prompt or '')}"))
         if decl.input_source:
             body.append(_indent(level + 1, f"input from {_q(decl.input_source)}"))
         if getattr(decl, "description", None):
@@ -95,6 +97,8 @@ def _format_decl(decl: ast_nodes.Declaration, level: int) -> List[str]:
             body.append(_indent(level + 1, f"goal {_q(decl.goal)}"))
         if decl.personality:
             body.append(_indent(level + 1, f"personality {_q(decl.personality)}"))
+        if getattr(decl, "system_prompt", None):
+            body.append(_indent(level + 1, f"system {_q(decl.system_prompt or '')}"))
         return [_indent(level, f"agent {_q(decl.name)}:")] + body
     if isinstance(decl, ast_nodes.MemoryDecl):
         body: List[str] = []

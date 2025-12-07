@@ -33,6 +33,7 @@ from ..ir import (
     IRRepeatUpTo,
     IRRetry,
     IRReturn,
+    IRTryCatch,
     IRSet,
     IRStatement,
 )
@@ -40,10 +41,14 @@ from ..metrics.tracker import MetricsTracker
 from ..observability.metrics import default_metrics
 from ..observability.tracing import default_tracer
 from ..runtime.context import ExecutionContext, execute_ai_call_with_registry
+from ..runtime.eventlog import EventLogger
 from ..runtime.expressions import EvaluationError, ExpressionEvaluator, VariableEnvironment
 from ..runtime.frames import FrameRegistry
+from ..runtime.vectorstores import VectorStoreRegistry
 from ..secrets.manager import SecretsManager
-from ..tools.registry import ToolRegistry
+from ..tools.registry import ToolRegistry, ToolConfig
+from ..memory.engine import MemoryEngine
+from ..memory.models import MemorySpaceConfig, MemoryType
 from .graph import (
     FlowError,
     FlowGraph,
@@ -81,8 +86,34 @@ class FlowEngine:
         self.secrets = secrets
         self.max_parallel_tasks = max_parallel_tasks
         self.frame_registry = FrameRegistry(program.frames if program else {})
+        self.vector_registry = VectorStoreRegistry(program, secrets=secrets) if program else None
+        # Register program-defined tools into the shared registry
+        if program and getattr(program, "tools", None):
+            for tool in program.tools.values():
+                if tool.name not in self.tool_registry.tools:
+                    self.tool_registry.register(
+                        ToolConfig(
+                            name=tool.name,
+                            kind=tool.kind,
+                            method=tool.method,
+                            url_template=tool.url_template,
+                            headers=tool.headers,
+                            body_template=tool.body_template,
+                        )
+                    )
 
     def _build_runtime_context(self, context: ExecutionContext) -> FlowRuntimeContext:
+        mem_engine = context.memory_engine
+        if mem_engine is None and self.program and self.program.memories:
+            spaces = [
+                MemorySpaceConfig(
+                    name=mem.name,
+                    type=MemoryType(mem.memory_type or MemoryType.CONVERSATION),
+                    retention_policy=mem.retention,
+                )
+                for mem in self.program.memories.values()
+            ]
+            mem_engine = MemoryEngine(spaces=spaces)
         return FlowRuntimeContext(
             program=self.program,
             model_registry=self.model_registry,
@@ -92,13 +123,18 @@ class FlowEngine:
             tracer=context.tracer,
             metrics=context.metrics or self.metrics,
             secrets=context.secrets or self.secrets,
-            memory_engine=context.memory_engine,
+            memory_engine=mem_engine,
             rag_engine=context.rag_engine,
             frames=self.frame_registry,
+            vectorstores=self.vector_registry,
             execution_context=context,
             max_parallel_tasks=self.max_parallel_tasks,
             parallel_semaphore=asyncio.Semaphore(self.max_parallel_tasks),
             variables=None,
+            event_logger=EventLogger(
+                self.frame_registry,
+                session_id=context.metadata.get("session_id") if context.metadata else context.request_id,
+            ),
         )
 
     def run_flow(
@@ -131,6 +167,18 @@ class FlowEngine:
             if tracer:
                 tracer.start_flow(current_flow.name)
                 tracer.record_flow_graph_build(current_flow.name, graph)
+            if runtime_ctx.event_logger:
+                try:
+                    runtime_ctx.event_logger.log(
+                        {
+                            "kind": "flow",
+                            "event_type": "start",
+                            "flow_name": current_flow.name,
+                            "status": "running",
+                        }
+                    )
+                except Exception:
+                    pass
             state.context["flow_name"] = current_flow.name
             state.context.pop("__redirect_flow__", None)
             result = await self.a_run_flow(
@@ -142,6 +190,19 @@ class FlowEngine:
             )
             if tracer:
                 tracer.end_flow()
+            if runtime_ctx.event_logger:
+                try:
+                    runtime_ctx.event_logger.log(
+                        {
+                            "kind": "flow",
+                            "event_type": "end",
+                            "flow_name": current_flow.name,
+                            "status": "error" if result and result.errors else "success",
+                            "message": result.errors[0].error if result and result.errors else None,
+                        }
+                    )
+                except Exception:
+                    pass
             redirect_to = result.redirect_to
             if not redirect_to:
                 break
@@ -408,21 +469,291 @@ class FlowEngine:
                 if target not in runtime_ctx.program.ai_calls:
                     raise Namel3ssError(f"Flow AI target '{target}' not found")
                 ai_call = runtime_ctx.program.ai_calls[target]
+                if runtime_ctx.event_logger:
+                    try:
+                        runtime_ctx.event_logger.log(
+                            {
+                                "kind": "ai",
+                                "event_type": "start",
+                                "flow_name": state.context.get("flow_name"),
+                                "step_name": step_name,
+                                "ai_name": ai_call.name,
+                                "model": ai_call.model_name,
+                                "status": "running",
+                            }
+                        )
+                    except Exception:
+                        pass
                 output = execute_ai_call_with_registry(
                     ai_call, runtime_ctx.model_registry, runtime_ctx.router, base_context
                 )
+                if runtime_ctx.event_logger:
+                    try:
+                        runtime_ctx.event_logger.log(
+                            {
+                                "kind": "ai",
+                                "event_type": "end",
+                                "flow_name": state.context.get("flow_name"),
+                                "step_name": step_name,
+                                "ai_name": ai_call.name,
+                                "model": ai_call.model_name,
+                                "status": "success",
+                            }
+                        )
+                    except Exception:
+                        pass
             elif node.kind == "agent":
                 raw_output = runtime_ctx.agent_runner.run(target, base_context)
                 output = asdict(raw_output) if is_dataclass(raw_output) else raw_output
             elif node.kind == "tool":
-                tool = runtime_ctx.tool_registry.get(target)
-                if not tool:
-                    raise Namel3ssError(f"Flow tool target '{target}' not found")
-                tool_kwargs = node.config.get("params") or {}
-                tool_kwargs.setdefault("message", state.get("last_output", ""))
-                output = tool.run(**tool_kwargs)
-                if runtime_ctx.metrics:
-                    runtime_ctx.metrics.record_tool_call(provider=target, cost=0.0005)
+                output = await self._execute_tool_call(node, state, runtime_ctx)
+            elif node.kind in {"frame_insert", "frame_query", "frame_update", "frame_delete"}:
+                params = node.config.get("params") or {}
+                frame_name = params.get("frame") or target
+                if not frame_name:
+                    raise Namel3ssError(
+                        "N3L-831: frame_insert/frame_query/frame_update/frame_delete requires a frame name."
+                    )
+                evaluator = self._build_evaluator(state, runtime_ctx)
+                operation = node.kind.replace("frame_", "")
+                if runtime_ctx.event_logger:
+                    try:
+                        runtime_ctx.event_logger.log(
+                            {
+                                "kind": "frame",
+                                "event_type": "start",
+                                "operation": operation,
+                                "frame_name": frame_name,
+                                "flow_name": state.context.get("flow_name"),
+                                "step_name": step_name,
+                                "status": "running",
+                            }
+                        )
+                    except Exception:
+                        pass
+                if node.kind == "frame_insert":
+                    values_expr = params.get("values") or {}
+                    if not isinstance(values_expr, dict) or not values_expr:
+                        raise Namel3ssError("N3L-832: frame_insert requires non-empty values.")
+                    row: dict[str, Any] = {}
+                    for k, v in values_expr.items():
+                        row[k] = evaluator.evaluate(v) if isinstance(v, ast_nodes.Expr) else v
+                    runtime_ctx.frames.insert(frame_name, row)
+                    output = row
+                elif node.kind == "frame_query":
+                    filters_expr = params.get("where") or {}
+                    filters: dict[str, Any] = {}
+                    if isinstance(filters_expr, dict):
+                        for k, v in filters_expr.items():
+                            filters[k] = evaluator.evaluate(v) if isinstance(v, ast_nodes.Expr) else v
+                    output = runtime_ctx.frames.query(frame_name, filters)
+                elif node.kind == "frame_update":
+                    set_expr = params.get("set") or {}
+                    if not isinstance(set_expr, dict) or not set_expr:
+                        raise Namel3ssError("N3L-840: frame_update step must define a non-empty 'set' block.")
+                    filters_expr = params.get("where") or {}
+                    filters: dict[str, Any] = {}
+                    if isinstance(filters_expr, dict):
+                        for k, v in filters_expr.items():
+                            filters[k] = evaluator.evaluate(v) if isinstance(v, ast_nodes.Expr) else v
+                    updates: dict[str, Any] = {}
+                    for k, v in set_expr.items():
+                        updates[k] = evaluator.evaluate(v) if isinstance(v, ast_nodes.Expr) else v
+                    output = runtime_ctx.frames.update(frame_name, filters, updates)
+                else:  # frame_delete
+                    filters_expr = params.get("where") or {}
+                    if not filters_expr:
+                        raise Namel3ssError("N3L-841: frame_delete step requires a 'where' block to avoid deleting all rows.")
+                    filters: dict[str, Any] = {}
+                    if isinstance(filters_expr, dict):
+                        for k, v in filters_expr.items():
+                            filters[k] = evaluator.evaluate(v) if isinstance(v, ast_nodes.Expr) else v
+                    output = runtime_ctx.frames.delete(frame_name, filters)
+                if runtime_ctx.event_logger:
+                    try:
+                        payload = {
+                            "kind": "frame",
+                            "event_type": "end",
+                            "operation": operation,
+                            "frame_name": frame_name,
+                            "flow_name": state.context.get("flow_name"),
+                            "step_name": step_name,
+                            "status": "success",
+                        }
+                        if node.kind in {"frame_query", "frame_update", "frame_delete"}:
+                            payload["row_count"] = output if isinstance(output, (int, float)) else (len(output) if isinstance(output, list) else None)
+                        runtime_ctx.event_logger.log(payload)
+                    except Exception:
+                        pass
+            elif node.kind == "vector_index_frame":
+                params = node.config.get("params") or {}
+                vector_store_name = params.get("vector_store") or target
+                if not vector_store_name:
+                    raise Namel3ssError("N3L-930: vector_index_frame step must specify a 'vector_store'.")
+                if not runtime_ctx.vectorstores:
+                    raise Namel3ssError("Vector store registry unavailable.")
+                evaluator = self._build_evaluator(state, runtime_ctx)
+                cfg = runtime_ctx.vectorstores.get(vector_store_name)
+                filters_expr = params.get("where") or {}
+                filters: dict[str, Any] = {}
+                if isinstance(filters_expr, dict):
+                    for k, v in filters_expr.items():
+                        filters[k] = evaluator.evaluate(v) if isinstance(v, ast_nodes.Expr) else v
+                if runtime_ctx.event_logger:
+                    try:
+                        runtime_ctx.event_logger.log(
+                            {
+                                "kind": "vector",
+                                "event_type": "start",
+                                "operation": "index_frame",
+                                "vector_store": vector_store_name,
+                                "frame": cfg.frame,
+                                "flow_name": state.context.get("flow_name"),
+                                "step_name": step_name,
+                                "status": "running",
+                            }
+                        )
+                    except Exception:
+                        pass
+                try:
+                    rows = runtime_ctx.frames.query(cfg.frame, filters)
+                    ids: list[str] = []
+                    texts: list[str] = []
+                    if isinstance(rows, list):
+                        for row in rows:
+                            if not isinstance(row, dict):
+                                continue
+                            id_val = row.get(cfg.id_column)
+                            text_val = row.get(cfg.text_column)
+                            if id_val is None or text_val is None:
+                                continue
+                            ids.append(str(id_val))
+                            texts.append(str(text_val))
+                    runtime_ctx.vectorstores.index_texts(vector_store_name, ids, texts)
+                    output = len(ids)
+                    if runtime_ctx.event_logger:
+                        try:
+                            runtime_ctx.event_logger.log(
+                                {
+                                    "kind": "vector",
+                                    "event_type": "end",
+                                    "operation": "index_frame",
+                                    "vector_store": vector_store_name,
+                                    "frame": cfg.frame,
+                                    "flow_name": state.context.get("flow_name"),
+                                    "step_name": step_name,
+                                    "status": "success",
+                                    "row_count": output,
+                                }
+                            )
+                        except Exception:
+                            pass
+                except Exception as exc:
+                    if runtime_ctx.event_logger:
+                        try:
+                            runtime_ctx.event_logger.log(
+                                {
+                                    "kind": "vector",
+                                    "event_type": "error",
+                                    "operation": "index_frame",
+                                    "vector_store": vector_store_name,
+                                    "frame": cfg.frame,
+                                    "flow_name": state.context.get("flow_name"),
+                                    "step_name": step_name,
+                                    "status": "error",
+                                    "message": str(exc),
+                                }
+                            )
+                        except Exception:
+                            pass
+                    raise
+            elif node.kind == "vector_query":
+                params = node.config.get("params") or {}
+                vector_store_name = params.get("vector_store") or target
+                if not vector_store_name:
+                    raise Namel3ssError("N3L-930: vector_index_frame step must specify a 'vector_store'.")
+                if not runtime_ctx.vectorstores:
+                    raise Namel3ssError("Vector store registry unavailable.")
+                evaluator = self._build_evaluator(state, runtime_ctx)
+                cfg = runtime_ctx.vectorstores.get(vector_store_name)
+                query_expr = params.get("query_text")
+                if query_expr is None:
+                    raise Namel3ssError("N3L-941: vector_query step must define 'query_text'.")
+                query_text = evaluator.evaluate(query_expr) if isinstance(query_expr, ast_nodes.Expr) else query_expr
+                top_k_expr = params.get("top_k")
+                top_k_val = 5
+                if top_k_expr is not None:
+                    top_k_val = evaluator.evaluate(top_k_expr) if isinstance(top_k_expr, ast_nodes.Expr) else top_k_expr
+                try:
+                    top_k_int = int(top_k_val)
+                except Exception:
+                    raise Namel3ssError("N3L-941: top_k must be an integer value.")
+                if top_k_int < 1:
+                    raise Namel3ssError("N3L-941: top_k must be at least 1.")
+                if runtime_ctx.event_logger:
+                    try:
+                        runtime_ctx.event_logger.log(
+                            {
+                                "kind": "vector",
+                                "event_type": "start",
+                                "operation": "query",
+                                "vector_store": vector_store_name,
+                                "frame": cfg.frame,
+                                "flow_name": state.context.get("flow_name"),
+                                "step_name": step_name,
+                                "status": "running",
+                            }
+                        )
+                    except Exception:
+                        pass
+                try:
+                    matches = runtime_ctx.vectorstores.query(vector_store_name, str(query_text), top_k_int, frames=runtime_ctx.frames)
+                    # Build context string
+                    context_parts: list[str] = []
+                    enriched: list[dict] = []
+                    for idx, m in enumerate(matches, start=1):
+                        text_val = m.get("text")
+                        enriched.append(m)
+                        if text_val:
+                            context_parts.append(f"Document {idx}:\n{text_val}")
+                    context = "\n\n".join(context_parts)
+                    output = {"matches": enriched, "context": context}
+                    if runtime_ctx.event_logger:
+                        try:
+                            runtime_ctx.event_logger.log(
+                                {
+                                    "kind": "vector",
+                                    "event_type": "end",
+                                    "operation": "query",
+                                    "vector_store": vector_store_name,
+                                    "frame": cfg.frame,
+                                    "flow_name": state.context.get("flow_name"),
+                                    "step_name": step_name,
+                                    "status": "success",
+                                    "match_count": len(matches),
+                                }
+                            )
+                        except Exception:
+                            pass
+                except Exception as exc:
+                    if runtime_ctx.event_logger:
+                        try:
+                            runtime_ctx.event_logger.log(
+                                {
+                                    "kind": "vector",
+                                    "event_type": "error",
+                                    "operation": "query",
+                                    "vector_store": vector_store_name,
+                                    "frame": cfg.frame,
+                                    "flow_name": state.context.get("flow_name"),
+                                    "step_name": step_name,
+                                    "status": "error",
+                                    "message": str(exc),
+                                }
+                            )
+                        except Exception:
+                            pass
+                    raise
             elif node.kind == "rag":
                 if not runtime_ctx.rag_engine:
                     raise Namel3ssError("RAG engine unavailable for rag step")
@@ -651,6 +982,16 @@ class FlowEngine:
             state.set("last_output", value)
             return value
         if isinstance(stmt, IRSet):
+            # Support state.<field> assignment
+            if stmt.name.startswith("state."):
+                field = stmt.name[len("state.") :]
+                if not field:
+                    raise Namel3ssError("N3F-410: set statements must update 'state.<field>'.")
+                value = evaluator.evaluate(stmt.expr) if stmt.expr is not None else None
+                state.set(stmt.name, value)
+                state.set(field, value)
+                state.set("last_output", value)
+                return value
             if not env.has(stmt.name):
                 raise Namel3ssError(f"Variable '{stmt.name}' is not defined")
             value = evaluator.evaluate(stmt.expr) if stmt.expr is not None else None
@@ -661,6 +1002,33 @@ class FlowEngine:
         if isinstance(stmt, IRIf):
             await self._execute_ir_if(stmt, state, runtime_ctx, prefix)
             return state.get("last_output")
+        if isinstance(stmt, IRTryCatch):
+            try:
+                last_output = None
+                for body_stmt in stmt.try_body:
+                    last_output = await self._execute_statement(body_stmt, state, runtime_ctx, f"{prefix}.try", allow_return=allow_return)
+                return last_output
+            except Exception as exc:  # pragma: no cover - evaluated via tests
+                err_obj = {"kind": exc.__class__.__name__, "message": str(exc)}
+                had_prev = env.has(stmt.error_name)
+                prev_val = env.resolve(stmt.error_name) if had_prev else None
+                if had_prev:
+                    env.assign(stmt.error_name, err_obj)
+                else:
+                    env.declare(stmt.error_name, err_obj)
+                state.set(stmt.error_name, err_obj)
+                state.set("last_output", err_obj)
+                try:
+                    for body_stmt in stmt.catch_body:
+                        await self._execute_statement(body_stmt, state, runtime_ctx, f"{prefix}.catch", allow_return=allow_return)
+                finally:
+                    if had_prev:
+                        env.assign(stmt.error_name, prev_val)
+                        state.set(stmt.error_name, prev_val)
+                    else:
+                        env.remove(stmt.error_name)
+                        state.data.pop(stmt.error_name, None)
+                return state.get("last_output")
         if isinstance(stmt, IRForEach):
             iterable_val = evaluator.evaluate(stmt.iterable) if stmt.iterable is not None else None
             if not isinstance(iterable_val, list):
@@ -826,8 +1194,46 @@ class FlowEngine:
     async def _execute_with_timing(
         self, node: FlowNode, state: FlowState, runtime_ctx: FlowRuntimeContext
     ) -> Optional[FlowStepResult]:
+        # Evaluate conditional guard (when) if present
+        when_expr = node.config.get("when")
+        if when_expr is not None:
+            evaluator = self._build_evaluator(state, runtime_ctx)
+            try:
+                cond_val = evaluator.evaluate(when_expr)
+            except EvaluationError as exc:  # pragma: no cover - flows expression errors already covered elsewhere
+                raise Namel3ssError(str(exc))
+            if not cond_val:
+                # Optionally log skip
+                if runtime_ctx.event_logger:
+                    try:
+                        runtime_ctx.event_logger.log(
+                            {
+                                "kind": "flow",
+                                "event_type": "step_skipped",
+                                "flow_name": state.context.get("flow_name"),
+                                "step": node.config.get("step_name", node.id),
+                                "reason": "when evaluated to false",
+                            }
+                        )
+                    except Exception:
+                        pass
+                return None
+
         timeout = node.config.get("timeout_seconds")
         start = time.monotonic()
+        if runtime_ctx.event_logger:
+            try:
+                runtime_ctx.event_logger.log(
+                    {
+                        "kind": "step",
+                        "event_type": "start",
+                        "flow_name": state.context.get("flow_name"),
+                        "step_name": node.id,
+                        "status": "running",
+                    }
+                )
+            except Exception:
+                pass
         async def run_inner():
             if node.config.get("simulate_duration"):
                 await asyncio.sleep(float(node.config["simulate_duration"]))
@@ -840,12 +1246,39 @@ class FlowEngine:
                 result = await run_inner()
         except Exception as exc:
             duration = time.monotonic() - start
+            if runtime_ctx.event_logger:
+                try:
+                    runtime_ctx.event_logger.log(
+                        {
+                            "kind": "step",
+                            "event_type": "error",
+                            "flow_name": state.context.get("flow_name"),
+                            "step_name": node.id,
+                            "status": "error",
+                            "message": str(exc),
+                        }
+                    )
+                except Exception:
+                    pass
             raise TimedStepError(exc, duration) from exc
         duration = time.monotonic() - start
         if result:
             result.duration_seconds = duration if duration > 0 else 1e-6
             result.cost = self._extract_cost(result.output)
             default_metrics.record_step(result.node_id or result.step_name, result.duration_seconds, result.cost)
+        if runtime_ctx.event_logger:
+            try:
+                runtime_ctx.event_logger.log(
+                    {
+                        "kind": "step",
+                        "event_type": "end",
+                        "flow_name": state.context.get("flow_name"),
+                        "step_name": node.id,
+                        "status": "success",
+                    }
+                )
+            except Exception:
+                pass
         return result
 
     def _extract_duration(self, exc: Exception) -> float:
@@ -898,6 +1331,14 @@ class FlowEngine:
         env = getattr(state, "variables", None)
         if env and env.has(name):
             return True, env.resolve(name)
+        if name == "state":
+            return True, state.data
+        if name.startswith("state."):
+            field = name[len("state.") :]
+            if field and field in state.data:
+                return True, state.get(field)
+        if name in state.data:
+            return True, state.get(name)
         if env and "." in name:
             parts = name.split(".")
             if env.has(parts[0]):
@@ -1092,6 +1533,136 @@ class FlowEngine:
             helper_resolver=lambda name, args: self._call_helper(name, args, state, runtime_ctx),
         )
 
+    def _http_json_request(self, method: str, url: str, headers: dict[str, str], body: bytes | None) -> dict:
+        import json
+        import urllib.error
+        import urllib.request
+
+        req = urllib.request.Request(url, data=body, headers=headers, method=method)
+        try:  # pragma: no cover - exercised via monkeypatch in tests
+            with urllib.request.urlopen(req, timeout=15) as resp:
+                text = resp.read().decode("utf-8")
+                try:
+                    return json.loads(text)
+                except ValueError as exc:  # pragma: no cover - fallback
+                    raise Namel3ssError("N3F-964: invalid JSON from tool") from exc
+        except urllib.error.HTTPError as exc:  # pragma: no cover - fallback
+            raise Namel3ssError(f"N3F-963: Tool HTTP error {exc.code}") from exc
+        except urllib.error.URLError as exc:  # pragma: no cover - fallback
+            raise Namel3ssError(f"N3F-963: Tool HTTP error {exc}") from exc
+
+    async def _execute_tool_call(self, node, state: FlowState, runtime_ctx: FlowRuntimeContext):
+        target = node.config.get("target") if isinstance(node.config, dict) else None
+        tool_cfg = runtime_ctx.tool_registry.get(target)
+        if not tool_cfg:
+            raise Namel3ssError(f"N3L-964: Tool '{target}' is not declared.")
+
+        evaluator = self._build_evaluator(state, runtime_ctx)
+        args_exprs = (node.config.get("params") or {}).get("args", {}) if isinstance(node.config, dict) else {}
+        arg_values: dict[str, Any] = {}
+        for k, expr in args_exprs.items():
+            arg_values[k] = evaluator.evaluate(expr)
+
+        headers: dict[str, str] = {}
+        for hk, h_expr in (tool_cfg.headers or {}).items():
+            try:
+                headers[hk] = str(evaluator.evaluate(h_expr))
+            except Exception:
+                headers[hk] = ""
+
+        method = (tool_cfg.method or "GET").upper()
+
+        try:
+            url = tool_cfg.url_template.format(**{k: str(v) for k, v in arg_values.items()})
+        except KeyError as exc:
+            missing = str(exc).strip("'\"")
+            raise Namel3ssError(
+                f"N3F-965: Missing arg '{missing}' for tool '{tool_cfg.name}' url_template."
+            )
+
+        body_bytes: bytes | None = None
+        if tool_cfg.body_template is not None:
+            body_val = evaluator.evaluate(tool_cfg.body_template)
+            if isinstance(body_val, (dict, list)):
+                import json
+
+                body_bytes = json.dumps(body_val).encode("utf-8")
+                headers.setdefault("Content-Type", "application/json")
+            elif isinstance(body_val, str):
+                body_bytes = body_val.encode("utf-8")
+            else:
+                import json
+
+                body_bytes = json.dumps(body_val).encode("utf-8")
+                headers.setdefault("Content-Type", "application/json")
+
+        if runtime_ctx.event_logger:
+            try:
+                runtime_ctx.event_logger.log(
+                    {
+                        "kind": "tool",
+                        "event_type": "start",
+                        "tool": tool_cfg.name,
+                        "step": node.id,
+                        "flow_name": state.context.get("flow_name"),
+                        "status": "running",
+                    }
+                )
+            except Exception:
+                pass
+
+        try:
+            data = self._http_json_request(method, url, headers, body_bytes)
+            if runtime_ctx.event_logger:
+                try:
+                    runtime_ctx.event_logger.log(
+                        {
+                            "kind": "tool",
+                            "event_type": "end",
+                            "tool": tool_cfg.name,
+                            "step": node.id,
+                            "flow_name": state.context.get("flow_name"),
+                            "status": "success",
+                        }
+                    )
+                except Exception:
+                    pass
+            return data
+        except Namel3ssError as exc:
+            if runtime_ctx.event_logger:
+                try:
+                    runtime_ctx.event_logger.log(
+                        {
+                            "kind": "tool",
+                            "event_type": "error",
+                            "tool": tool_cfg.name,
+                            "step": node.id,
+                            "flow_name": state.context.get("flow_name"),
+                            "status": "error",
+                            "message": str(exc),
+                        }
+                    )
+                except Exception:
+                    pass
+            raise
+        except Exception as exc:
+            if runtime_ctx.event_logger:
+                try:
+                    runtime_ctx.event_logger.log(
+                        {
+                            "kind": "tool",
+                            "event_type": "error",
+                            "tool": tool_cfg.name,
+                            "step": node.id,
+                            "flow_name": state.context.get("flow_name"),
+                            "status": "error",
+                            "message": str(exc),
+                        }
+                    )
+                except Exception:
+                    pass
+            raise Namel3ssError(f"N3F-963: Tool '{tool_cfg.name}' failed with HTTP error: {exc}")
+
     def _eval_rulegroup(self, expr: ast_nodes.RuleGroupRefExpr, state: FlowState, runtime_ctx: FlowRuntimeContext) -> tuple[bool, Any]:
         groups = getattr(runtime_ctx.program, "rulegroups", {}) if runtime_ctx else {}
         rules = groups.get(expr.group_name) or {}
@@ -1276,6 +1847,7 @@ class FlowEngine:
                     "target": action.target,
                     "step_name": f"{node.id}.{action.target}",
                     "reason": "conditional",
+                    "params": action.args or {},
                 }
                 if action.message:
                     cfg["params"] = {"message": action.message}

@@ -93,11 +93,13 @@ class FlowRuntimeContext:
     memory_engine: Any = None
     rag_engine: Any = None
     frames: Any = None
+    vectorstores: Any = None
     execution_context: Any = None
     max_parallel_tasks: int = 4
     parallel_semaphore: asyncio.Semaphore | None = None
     step_results: list | None = None
     variables: VariableEnvironment | None = None
+    event_logger: Any = None
 
 
 def flow_ir_to_graph(flow: IRFlow) -> FlowGraph:
@@ -120,7 +122,9 @@ def flow_ir_to_graph(flow: IRFlow) -> FlowGraph:
                 "step_name": step.name,
                 "branches": getattr(step, "conditional_branches", None),
                 "message": getattr(step, "message", None),
+                "params": getattr(step, "params", {}) or {},
                 "statements": getattr(step, "statements", None),
+                "when": getattr(step, "when_expr", None),
                 "reason": "unconditional" if step.kind == "goto_flow" else None,
             },
             next_ids=[],

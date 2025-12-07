@@ -60,6 +60,32 @@ class MemoryEngine:
     def list_all(self, space: str | None = None) -> List[MemoryItem]:
         return self.store.list(space)
 
+    def load_conversation(self, space: str, session_id: str | None = None, limit: int = 50) -> list[dict]:
+        session = session_id or "default"
+        items = self.store.list(space)
+        filtered = [
+            item for item in items if item.metadata.get("session_id") in {session, None}
+        ]
+        return [
+            {"role": item.metadata.get("role", "user"), "content": item.content}
+            for item in filtered[-limit:]
+        ]
+
+    def append_conversation(self, space: str, session_id: str | None, messages: list[dict]) -> None:
+        session = session_id or "default"
+        for msg in messages:
+            role = msg.get("role", "user")
+            content = msg.get("content", "")
+            item = MemoryItem(
+                id=str(uuid4()),
+                space=space,
+                type=MemoryType.CONVERSATION,
+                content=content,
+                metadata={"role": role, "session_id": session},
+            )
+            added = self.store.add(item)
+            self._notify_triggers(space, added)
+
     def _notify_triggers(self, space: str, item: MemoryItem) -> None:
         if self.trigger_manager:
             try:

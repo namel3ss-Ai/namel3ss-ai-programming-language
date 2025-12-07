@@ -61,6 +61,158 @@ page "support_home":
 - `app "name": starts at page "home"` → app entry page + description.
 - `page "name": found at route "/"; titled "..."` → page declaration; `show text:` / `show form asking:` map to text/form components.
 
+## System prompts
+
+Inside an `ai` (or `agent`) block you may set exactly one system prompt:
+
+```ai
+ai "bot":
+  model "gpt-4.1"
+  system "You are a helpful assistant."
+  input from user_text
+```
+
+Only one `system` line is allowed per block, and it must appear inside `ai`/`agent` blocks.
+
+## Local variables (let)
+
+Inside flow steps you can bind locals with either operator:
+
+```
+let answer = step.ask.output
+let summary be answer.summary
+```
+
+`=` and `be` are equivalent. Locals are scoped to the flow execution and must be defined before use.
+
+## Flow state (set state.*)
+
+Flow state is a scoped dictionary you can update as you run:
+
+```
+let answer be step.ask.output
+set state.answer = answer
+set state.ok be true
+```
+
+`set state.<field> = expr` and `set state.<field> be expr` are equivalent. Fields are created or updated on demand; this phase supports shallow fields like `state.answer`.
+
+## Conditionals (if / else)
+
+Flows can branch at runtime using `if` with an optional `else`:
+
+```ai
+flow "check":
+  step "grade":
+    kind "script"
+    let score = step.test.output
+
+    if score >= 50:
+      set state.result be "pass"
+    else:
+      set state.result be "fail"
+```
+
+Conditions can read locals, state, literals, and previous step outputs. The `else` block is optional; if omitted, the flow continues when the condition is false.
+
+## Error handling (try / catch)
+
+Catch runtime errors and keep your flow alive:
+
+```ai
+flow "safe_call":
+  step "s":
+    kind "script"
+    try:
+      step "dangerous":
+        kind "ai"
+        target "bot"
+    catch err:
+      set state.error_message be err.message
+```
+
+The identifier after `catch` (e.g., `err`) holds a simple error object with `message` and `kind`. If the try block succeeds, the catch block is skipped.
+
+## Loops (for each)
+
+Iterate over a list and bind each element to a loop variable:
+
+```ai
+flow "process_items":
+  let items be state.items
+
+  for each item in items:
+    set state.last_item be item
+```
+
+The right-hand expression is evaluated once and must be a list (or list-like). The loop runs sequentially over the elements. The loop variable behaves like a local inside the body; after the loop, it retains the last value according to the current execution model.
+
+## Conversation memory
+
+Declare a named conversation memory and attach it to an AI:
+
+```ai
+memory "support_chat":
+  type "conversation"
+  retention "30 days"  # optional hint
+
+ai "support_bot":
+  model "gpt-4.1-mini"
+  system "You are a helpful support assistant."
+  memory "support_chat"
+```
+
+When this AI is called, recent messages from `support_chat` (for the current session/request) are loaded and prepended. The new user + assistant messages are appended back to the same memory. For now, only `type "conversation"` is supported; retention is stored for future policies.
+
+## Frames & persistence
+
+Declare a named frame that maps to real storage (memory/sqlite/postgres) and use it from flows:
+
+```ai
+frame "conversations":
+  backend "memory"
+  table "conversations"
+
+flow "store_and_load":
+  step "insert":
+    kind "frame_insert"
+    frame "conversations"
+    values:
+      user_id: state.user_id
+      message: state.message
+
+  step "load":
+    kind "frame_query"
+    frame "conversations"
+    where:
+      user_id: state.user_id
+
+  let messages be step "load" output
+  set state.messages be messages
+```
+
+`frame_insert` writes a row; `frame_query` returns a list of rows, optionally filtered by equality on the fields you specify in `where`. Backends supported in this phase include `memory` and `sqlite` (with `table` specifying the target table/collection).
+
+Updates and deletes use the same pattern:
+
+```ai
+step "rename":
+  kind "frame_update"
+  frame "conversations"
+  where:
+    user_id: state.user_id
+  set:
+    name: state.new_name
+
+step "remove":
+  kind "frame_delete"
+  frame "conversations"
+  where:
+    user_id: state.user_id
+```
+
+`frame_update` requires a non-empty `set` block. `frame_delete` requires a `where` block in this phase to prevent deleting all rows accidentally. Outputs from update/delete steps are the number of affected rows.
+
 ## Backward Compatibility
 
 The existing syntax (e.g., `memory "m":\n  type "conversation"`) remains fully supported. Formatter output continues to use the original concise style, and both styles can be mixed in the same file.

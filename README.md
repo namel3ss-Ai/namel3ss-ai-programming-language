@@ -189,6 +189,7 @@ Open it. Read it. Modify it. Ship it.
 🤖 Support Bot — [examples/support_bot](examples/support_bot)  
 🎨 UI & Pages — [examples/ui](examples/ui)  
 🧩 Templates — [templates/](templates/)
+🧪 Phase 1 Showcase — [examples/flows/phase1_showcase.ai](examples/flows/phase1_showcase.ai)
 
 They’re not demos. They’re starting points.
 
@@ -201,6 +202,7 @@ Language Spec → [docs/language_spec.md](docs/language_spec.md)
 CLI → [docs/api-surface.md](docs/api-surface.md)  
 Deployment → [docs/reference/deployment.md](docs/reference/deployment.md)  
 Studio → [docs/book/04-pages-and-ui.md](docs/book/04-pages-and-ui.md)
+Configuration → [docs/reference/configuration.md](docs/reference/configuration.md)
 
 📚 **Learn Namel3ss — The Official Book**  
 A calm, thoughtful, step-by-step guide to mastering the language.  

@@ -5,7 +5,7 @@ AST node definitions for the Namel3ss V3 language.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional, Union
+from typing import Any, Dict, List, Optional, Union
 
 
 @dataclass
@@ -76,6 +76,9 @@ class AICallDecl:
     model_name: Optional[str] = None
     input_source: Optional[str] = None
     description: Optional[str] = None
+    system_prompt: Optional[str] = None
+    memory_name: Optional[str] = None
+    tools: list[str] = field(default_factory=list)
     span: Optional[Span] = None
 
 
@@ -119,7 +122,9 @@ class AgentDecl:
     name: str
     goal: Optional[str] = None
     personality: Optional[str] = None
+    system_prompt: Optional[str] = None
     conditional_branches: Optional[List["ConditionalBranch"]] = None
+    memory_name: Optional[str] = None
     span: Optional[Span] = None
 
 
@@ -129,6 +134,7 @@ class MemoryDecl:
 
     name: str
     memory_type: Optional[str] = None
+    retention: Optional[str] = None
     span: Optional[Span] = None
 
 
@@ -137,12 +143,29 @@ class FrameDecl:
     """frame \"name\": data source and query."""
 
     name: str
+    backend: str | None = None
+    table: str | None = None
+    primary_key: str | None = None
     source_kind: str | None = None
     source_path: str | None = None
     delimiter: str | None = None
     has_headers: bool = False
     select_cols: List[str] = field(default_factory=list)
     where: Optional["Expr"] = None
+    span: Optional[Span] = None
+
+
+@dataclass
+class VectorStoreDecl:
+    """vector_store \"name\": semantic index definition."""
+
+    name: str
+    backend: str | None = None
+    frame: str | None = None
+    text_column: str | None = None
+    id_column: str | None = None
+    embedding_model: str | None = None
+    options: Dict[str, Any] = field(default_factory=dict)
     span: Optional[Span] = None
 
 
@@ -258,8 +281,10 @@ class FlowStepDecl:
     kind: str
     target: str
     message: Optional[str] = None
+    params: Dict[str, Expr] = field(default_factory=dict)
     statements: List["Statement | FlowAction"] = field(default_factory=list)
     conditional_branches: Optional[list["ConditionalBranch"]] = None
+    when_expr: Optional[Expr] = None
     span: Optional[Span] = None
 
 
@@ -511,6 +536,13 @@ class RetryStatement(Statement):
 
 
 @dataclass
+class TryCatchStatement(Statement):
+    try_block: List["Statement | FlowAction"] = field(default_factory=list)
+    error_identifier: str = ""
+    catch_block: List["Statement | FlowAction"] = field(default_factory=list)
+
+
+@dataclass
 class RuleGroupRefExpr(Expr):
     group_name: str = ""
     condition_name: Optional[str] = None
@@ -523,6 +555,17 @@ class FlowAction:
     message: Optional[str] = None
     args: Dict[str, Expr] = field(default_factory=dict)
     span: Optional[Span] = None
+
+
+@dataclass
+class NavigateAction:
+    kind: str = "navigate"
+    target_path: str | None = None
+    target_page_name: str | None = None
+    span: Optional[Span] = None
+
+
+ClickAction = Union[FlowAction, NavigateAction]
 
 
 @dataclass
@@ -593,10 +636,59 @@ class EmbedFormNode(LayoutElement):
 
 
 @dataclass
+class CardNode(LayoutElement):
+    title: str = ""
+    children: List["LayoutElement"] = field(default_factory=list)
+
+
+@dataclass
+class RowNode(LayoutElement):
+    children: List["LayoutElement"] = field(default_factory=list)
+
+
+@dataclass
+class ColumnNode(LayoutElement):
+    children: List["LayoutElement"] = field(default_factory=list)
+
+
+@dataclass
+class TextareaNode(LayoutElement):
+    label: str = ""
+    var_name: str | None = None
+    validation: UIValidationRules | None = None
+
+
+@dataclass
+class BadgeNode(LayoutElement):
+    text: str = ""
+
+
+@dataclass
+class MessageListNode(LayoutElement):
+    children: List["MessageNode"] = field(default_factory=list)
+
+
+@dataclass
+class MessageNode(LayoutElement):
+    name: str | None = None
+    role: Expr | None = None
+    text_expr: Expr | None = None
+
+
+@dataclass
 class UIStyle:
     kind: str
     value: object
     span: Optional[Span] = None
+
+
+@dataclass
+class UIValidationRules:
+    required: bool | None = None
+    min_length: int | None = None
+    max_length: int | None = None
+    pattern: str | None = None
+    message: str | None = None
 
 
 @dataclass
@@ -626,11 +718,12 @@ class UIInputNode(LayoutElement):
     label: str = ""
     var_name: str = ""
     field_type: str | None = None
+    validation: UIValidationRules | None = None
 
 
 @dataclass
 class UIClickHandler(LayoutElement):
-    actions: List[FlowAction] = field(default_factory=list)
+    actions: List[ClickAction] = field(default_factory=list)
 
 
 @dataclass
@@ -647,6 +740,17 @@ class UIConditional(LayoutElement):
     otherwise_children: List["LayoutElement"] = field(default_factory=list)
 
 
+@dataclass
+class ToolDeclaration:
+    name: str
+    kind: str | None = None
+    method: str | None = None
+    url_template: str | None = None
+    headers: Dict[str, Expr] = field(default_factory=dict)
+    body_template: Expr | None = None
+    span: Optional[Span] = None
+
+
 Declaration = Union[
     UseImport,
     AppDecl,
@@ -656,6 +760,7 @@ Declaration = Union[
     AgentDecl,
     MemoryDecl,
     FrameDecl,
+    VectorStoreDecl,
     MacroDecl,
     MacroUse,
     HelperDecl,
@@ -667,4 +772,5 @@ Declaration = Union[
     ConditionMacroDecl,
     RuleGroupDecl,
     UIComponentDecl,
+    ToolDeclaration,
 ]

@@ -68,6 +68,8 @@ _CONTRACTS: Dict[str, BlockContract] = {
         ),
         optional_fields=(
             _opt("description", "string", "AI call description"),
+            _opt("memory_name", "string", "Memory reference"),
+            _opt("system_prompt", "string", "System prompt"),
         ),
         allowed_children=(),
         unique_name_scope="ai",
@@ -79,6 +81,7 @@ _CONTRACTS: Dict[str, BlockContract] = {
         optional_fields=(
             _opt("goal", "string", "Agent goal"),
             _opt("personality", "string", "Personality hint"),
+            _opt("memory_name", "string", "Memory reference"),
         ),
         allowed_children=(),
         unique_name_scope="agent",
@@ -101,7 +104,9 @@ _CONTRACTS: Dict[str, BlockContract] = {
             _req("name", "string", "Memory name"),
             _req("memory_type", "string", "Memory type"),
         ),
-        optional_fields=(),
+        optional_fields=(
+            _opt("retention", "string", "Retention hint"),
+        ),
         allowed_children=(),
         unique_name_scope="memory",
     ),

@@ -47,6 +47,18 @@
 - Keep match branches ordered; add `otherwise` for clarity.
 - Lint rules will warn on legacy or discouraged forms (e.g., N3-L007 for legacy `=`).
 
+## Comments
+Use `#` for single-line comments. They can be standalone or inline and are ignored by the compiler/runtime.
+
+```ai
+# This is a full-line comment
+
+flow is "chat":  # main chat flow
+  step is "answer":
+    kind is "ai"  # call the chatbot
+    target is "support_bot"
+```
+
 ## Exercises
 1. Write a helper `add_tax` that returns `price * 1.2`.
 2. Create a list and slice it with negative indices to extract the last two items.

@@ -46,16 +46,18 @@ Each block kind has required and optional fields aligned with the current IR:
 
 - **ai**
   - required: `name`, `model_name`, `input_source`
+  - optional: `system "<string>"` (exactly one; prepended as a system-role message)
   - references: `model_name` must reference a declared `model`.
 
 - **agent**
   - required: `name`
-  - optional: `goal`, `personality`
+  - optional: `goal`, `personality`, `system "<string>"` (exactly one)
 
 - **flow**
   - required: `name`
   - optional: `description`
   - children: ordered `step`s with `kind` in `{ai, agent, tool}` and a `target`.
+  - statements: `let/set` inside script steps for local variables and state updates.
   - references: `ai`/`agent` targets must exist; tool targets must be registered/builtin.
 
 - **memory**
@@ -149,6 +151,24 @@ Each block kind has required and optional fields aligned with the current IR:
 - Settings/environments:
   - Top-level `settings:` with nested `env "name":` blocks containing `key be expr` entries. Duplicate envs raise `N3-6200`; duplicate keys inside an env raise `N3-6201`.
   - Optional `theme:` block: `<token> color be "<value>"` entries define UI theme tokens (e.g., `primary`, `accent`) for use in styling.
+- Frames (data sources):
+  - Legacy and English forms are equivalent:
+    - `frame "documents": backend "default_db" table "documents"`
+    - `frame is "documents": backend is "default_db" table is "documents"`
+  - Additional fields: `primary_key`, `select`, `where`, CSV options (`with delimiter ","`, `has headers`).
+- Vector stores (RAG foundations):
+  - Declare a semantic index over a frame:
+    - `vector_store "kb": backend "default_vector" frame "documents" text_column "content" id_column "id" embedding_model "default_embedding"`
+    - or English style: `vector_store is "kb": backend is "default_vector" frame is "documents" text_column is "content" id_column is "id" embedding_model is "default_embedding"`
+  - The embedding model resolves through the multi-provider registry (must be an embedding model).
+  - Backends may be in-memory or external (e.g., pgvector) depending on configuration.
+  - Ingestion/indexing: `vector_index_frame` flow steps embed `text_column` from the attached frame (optionally filtered with `where`) and upsert vectors keyed by `id_column` into the vector backend. Both classic and English forms are equivalent:
+    - `kind "vector_index_frame" vector_store "kb" [where: ...]`
+    - `kind is "vector_index_frame" vector_store is "kb" [where: ...]`
+  - Retrieval (RAG query): `vector_query` flow steps embed a query, run similarity search, and return matches plus a concatenated `context` string you can pass to an AI step:
+    - `kind "vector_query" vector_store "kb" query_text state.question top_k 5`
+    - or English form: `kind is "vector_query" vector_store is "kb" query_text is state.question top_k 5`
+  - Typical pattern: index documents with `vector_index_frame`, then in a flow run `vector_query` and feed `step "retrieve" output.context` into an `ai` step alongside the user question.
 - UI pages & layout:
   - `page "name" at "/route":` defines a UI page. Layout elements: `section`, `heading`, `text`, `image`, `use form`, `state`, `input`, `button`, `when ... show ... otherwise ...`.
   - Styling directives inside pages/sections/elements: `color is <token|string>`, `background color is ...`, `align is left|center|right`, `align vertically is top|middle|bottom`, `layout is row|column|two columns|three columns`, `padding|margin|gap is small|medium|large`.

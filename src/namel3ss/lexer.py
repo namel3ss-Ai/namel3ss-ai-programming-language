@@ -21,6 +21,8 @@ KEYWORDS = {
     "unique",
     "elements",
     "sum",
+    "try",
+    "catch",
     "ask",
     "user",
     "form",
@@ -29,8 +31,14 @@ KEYWORDS = {
     "info",
     "warning",
     "error",
+    "backend",
+    "table",
+    "primary_key",
     "note",
     "checkpoint",
+    "frame",
+    "values",
+    "where",
     "trim",
     "lowercase",
     "uppercase",
@@ -38,6 +46,7 @@ KEYWORDS = {
     "split",
     "join",
     "slugify",
+    "vector_store",
     "minimum",
     "maximum",
     "mean",
@@ -54,6 +63,7 @@ KEYWORDS = {
     "from",
     "of",
     "if",
+    "else",
     "otherwise",
     "unless",
     "matches",
@@ -107,6 +117,7 @@ KEYWORDS = {
     "file",
     "has",
     "type",
+    "retention",
     "must",
     "least",
     "most",
@@ -177,16 +188,30 @@ KEYWORDS = {
     "margin",
     "gap",
     "render",
+    "message_list",
     "message",
+    "role",
     "define",
     "condition",
     "rulegroup",
     "true",
     "false",
     "state",
+    "bind",
     "button",
     "on",
     "click",
+    "navigate",
+    "tool",
+    "method",
+    "url_template",
+    "headers",
+    "body_template",
+    "card",
+    "row",
+    "column",
+    "textarea",
+    "badge",
 }
 
 
@@ -215,7 +240,8 @@ class Lexer:
         indent_stack = [0]
         lines = self.source.splitlines()
         for line_no, raw_line in enumerate(lines, start=1):
-            if not raw_line.strip():
+            stripped = raw_line.lstrip()
+            if not stripped or stripped.startswith("#"):
                 continue
 
             indent = self._count_indent(raw_line, line_no)
@@ -262,7 +288,15 @@ class Lexer:
 
         while i < len(line):
             char = line[i]
+            if char == "#":
+                # Ignore the rest of the line as a comment
+                break
             if char == " ":
+                i += 1
+                column += 1
+                continue
+            if char == "-":
+                tokens.append(Token("DASH", "-", line_no, column))
                 i += 1
                 column += 1
                 continue

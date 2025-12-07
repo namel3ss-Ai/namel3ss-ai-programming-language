@@ -22,9 +22,9 @@ class EmbeddingRouter:
         if prefix in {"deterministic", "local"}:
             provider: EmbeddingProvider = DeterministicEmbeddingProvider()
         elif prefix == "openai":
-            api_key = self.secrets.get("N3_OPENAI_API_KEY") or ""
+            api_key = self.secrets.get("N3_OPENAI_API_KEY") or self.secrets.get("OPENAI_API_KEY") or ""
             if not api_key:
-                raise Namel3ssError("OpenAI embeddings require N3_OPENAI_API_KEY")
+                raise Namel3ssError("OpenAI embeddings require N3_OPENAI_API_KEY or OPENAI_API_KEY")
             provider = OpenAIEmbeddingProvider(
                 api_key=api_key,
                 base_url=self.secrets.get_embedding_base_url(),
@@ -50,11 +50,13 @@ class EmbeddingRouter:
         if not texts:
             return EmbeddingBatchResult(vectors=[], dim=0, model_name=model or "unknown", raw=None)
         if model is None or model == "auto":
+            chosen_provider = (self.secrets.get_embedding_provider_name() or "deterministic").split(":", 1)[0]
             provider = self._provider_from_prefix(
-                (self.secrets.get_embedding_provider_name() or "deterministic").split(":", 1)[0],
+                chosen_provider,
                 model,
             )
-            return provider.embed(texts, model=self.secrets.get_embedding_model())
+            chosen_model = self.secrets.get_embedding_model() or self.secrets.get("N3_DEFAULT_EMBEDDING_MODEL")
+            return provider.embed(texts, model=chosen_model)
         if ":" in model:
             prefix, model_name = model.split(":", 1)
         else:

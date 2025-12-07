@@ -11,6 +11,7 @@ const PagesPanel: React.FC<Props> = ({ code, client }) => {
   const [pages, setPages] = useState<PageSummary[]>([]);
   const [selected, setSelected] = useState<PageSummary | null>(null);
   const [ui, setUi] = useState<any | null>(null);
+   const [currentPage, setCurrentPage] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
 
@@ -40,11 +41,63 @@ const PagesPanel: React.FC<Props> = ({ code, client }) => {
       const res = await client.fetchPageUI(code, page.name);
       setSelected(page);
       setUi(res.ui);
+      setCurrentPage(page.name);
     } catch (err: any) {
       setError(err.message);
     } finally {
       setLoading(false);
     }
+  };
+
+  const resolvePageManifest = (uiManifest: any, name: string | null) => {
+    if (!uiManifest) return null;
+    if (Array.isArray(uiManifest.pages)) {
+      if (name) {
+        return uiManifest.pages.find((p: any) => p.name === name) || uiManifest.pages[0];
+      }
+      return uiManifest.pages[0];
+    }
+    // fallback single-page shape
+    if (uiManifest.name) {
+      return uiManifest;
+    }
+    return null;
+  };
+
+  const findButtons = (layout: any[]): any[] => {
+    const result: any[] = [];
+    for (const el of layout || []) {
+      if (el.type === "button") {
+        result.push(el);
+      }
+      if (el.layout) {
+        result.push(...findButtons(el.layout));
+      }
+      if (el.when) {
+        el.when.forEach((child: any) => result.push(...findButtons(child.layout || [])));
+      }
+      if (el.otherwise) {
+        el.otherwise.forEach((child: any) => result.push(...findButtons(child.layout || [])));
+      }
+    }
+    return result;
+  };
+
+  const handleNavigate = async (onClick: any) => {
+    if (!onClick || onClick.kind !== "navigate") return;
+    let targetName: string | null = onClick.targetPage || null;
+    if (!targetName && onClick.targetPath && pages.length > 0) {
+      const match = pages.find((p) => p.route === onClick.targetPath);
+      targetName = match?.name || null;
+    }
+    if (!targetName) {
+      return;
+    }
+    const targetSummary = pages.find((p) => p.name === targetName);
+    if (!targetSummary) {
+      return;
+    }
+    await loadUI(targetSummary);
   };
 
   return (
@@ -75,6 +128,30 @@ const PagesPanel: React.FC<Props> = ({ code, client }) => {
               </h4>
               <div>Title: {selected.title}</div>
               <pre>{JSON.stringify(ui, null, 2)}</pre>
+              {ui && (
+                <div style={{ marginTop: 12 }}>
+                  <div style={{ fontWeight: 600, marginBottom: 4 }}>Preview (navigation-enabled)</div>
+                  {(() => {
+                    const pageManifest = resolvePageManifest(ui, currentPage);
+                    if (!pageManifest) return <div>No UI manifest available.</div>;
+                    const buttons = findButtons(pageManifest.layout || []);
+                    return (
+                      <div>
+                        <div style={{ marginBottom: 8 }}>Current page: {pageManifest.name || "(unknown)"}</div>
+                        {buttons.map((btn, idx) => (
+                          <button
+                            key={`${btn.id || btn.label}-${idx}`}
+                            onClick={() => handleNavigate(btn.onClick)}
+                            style={{ marginRight: 8 }}
+                          >
+                            {btn.label}
+                          </button>
+                        ))}
+                      </div>
+                    );
+                  })()}
+                </div>
+              )}
             </div>
           )}
         </div>

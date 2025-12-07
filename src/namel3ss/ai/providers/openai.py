@@ -56,6 +56,8 @@ class OpenAIProvider(ModelProvider):
         }
         if json_mode:
             body["response_format"] = {"type": "json_object"}
+        if "tools" in kwargs and kwargs["tools"]:
+            body["tools"] = kwargs["tools"]
         # Optional parameters
         for key in ("temperature", "top_p", "max_tokens", "seed", "frequency_penalty", "presence_penalty"):
             if key in kwargs and kwargs[key] is not None:

@@ -21,6 +21,13 @@ from ..ir import (
     IRUIStyle,
     IRUIComponent,
     IRUIComponentCall,
+    IRCard,
+    IRRow,
+    IRColumn,
+    IRTextarea,
+    IRBadge,
+    IRMessageList,
+    IRMessage,
 )
 
 
@@ -46,6 +53,15 @@ def _actions(actions: List[IRUIEventAction], program: IRProgram | None = None) -
             target_page = program.pages.get(a.target)
             route = target_page.route if target_page and target_page.route else f"/{a.target}"
             data["route"] = route
+        if a.kind == "navigate":
+            if a.target_path:
+                data["targetPath"] = a.target_path
+            if a.target_page:
+                data["targetPage"] = a.target_page
+                if program:
+                    target_page = program.pages.get(a.target_page)
+                    route = target_page.route if target_page and target_page.route else f"/{a.target_page}"
+                    data["targetPath"] = data.get("targetPath") or route
         formatted.append(data)
     return formatted
 
@@ -114,8 +130,110 @@ def _layout(
             "form_name": el.form_name,
             "styles": _styles(getattr(el, "styles", [])),
         }
-    if isinstance(el, IRUIInput):
+    if isinstance(el, IRCard):
         return {
+            "type": "card",
+            "id": el_id,
+            "parent_id": parent_id,
+            "index": index,
+            "title": el.title,
+            "layout": [_layout(child, id_registry, program, source_path=source_path, parent_id=el_id, index=i) for i, child in enumerate(el.layout)],
+            "styles": _styles(getattr(el, "styles", [])),
+            "source_path": source_path,
+        }
+    if isinstance(el, IRRow):
+        return {
+            "type": "row",
+            "id": el_id,
+            "parent_id": parent_id,
+            "index": index,
+            "layout": [_layout(child, id_registry, program, source_path=source_path, parent_id=el_id, index=i) for i, child in enumerate(el.layout)],
+            "styles": _styles(getattr(el, "styles", [])),
+            "source_path": source_path,
+        }
+    if isinstance(el, IRColumn):
+        return {
+            "type": "column",
+            "id": el_id,
+            "parent_id": parent_id,
+            "index": index,
+            "layout": [_layout(child, id_registry, program, source_path=source_path, parent_id=el_id, index=i) for i, child in enumerate(el.layout)],
+            "styles": _styles(getattr(el, "styles", [])),
+            "source_path": source_path,
+        }
+    if isinstance(el, IRTextarea):
+        data = {
+            "type": "textarea",
+            "id": el_id,
+            "parent_id": parent_id,
+            "index": index,
+            "label": el.label,
+            "name": el.var_name or el.label,
+            "styles": _styles(getattr(el, "styles", [])),
+            "source_path": source_path,
+            "property_map": {"label": {"value": el.label}},
+        }
+        if el.var_name:
+            data["binding"] = {"kind": "state", "path": el.var_name}
+        if getattr(el, "validation", None):
+            data["validation"] = {
+                "required": el.validation.get("required"),
+                "minLength": el.validation.get("min_length"),
+                "maxLength": el.validation.get("max_length"),
+                "pattern": el.validation.get("pattern"),
+                "message": el.validation.get("message"),
+            }
+        return data
+    if isinstance(el, IRBadge):
+        return {
+            "type": "badge",
+            "id": el_id,
+            "parent_id": parent_id,
+            "index": index,
+            "text": el.text,
+            "styles": _styles(getattr(el, "styles", [])),
+            "source_path": source_path,
+            "property_map": {"text": {"value": el.text}},
+        }
+    if isinstance(el, IRMessageList):
+        return {
+            "type": "message_list",
+            "id": el_id,
+            "parent_id": parent_id,
+            "index": index,
+            "layout": [_layout(child, id_registry, program, source_path=source_path, parent_id=el_id, index=i) for i, child in enumerate(el.layout)],
+            "styles": _styles(getattr(el, "styles", [])),
+            "source_path": source_path,
+        }
+    if isinstance(el, IRMessage):
+        data = {
+            "type": "message",
+            "id": el_id,
+            "parent_id": parent_id,
+            "index": index,
+            "role": None,
+            "text": None,
+            "styles": _styles(getattr(el, "styles", [])),
+            "source_path": source_path,
+        }
+        if el.role is None:
+            data["role"] = None
+        else:
+            data["role"] = getattr(el.role, "value", None) if hasattr(el.role, "value") else None
+            if data["role"] is None:
+                data["role_expr"] = True
+        if el.text_expr is None:
+            data["text"] = None
+        else:
+            if hasattr(el.text_expr, "value"):
+                data["text"] = el.text_expr.value
+            else:
+                data["text_expr"] = True
+        if el.name:
+            data["name"] = el.name
+        return data
+    if isinstance(el, IRUIInput):
+        data = {
             "type": "input",
             "id": el_id,
             "parent_id": parent_id,
@@ -127,8 +245,19 @@ def _layout(
             "source_path": source_path,
             "property_map": {"label": {"value": el.label}},
         }
+        if el.var_name:
+            data["binding"] = {"kind": "state", "path": el.var_name}
+        if getattr(el, "validation", None):
+            data["validation"] = {
+                "required": el.validation.get("required"),
+                "minLength": el.validation.get("min_length"),
+                "maxLength": el.validation.get("max_length"),
+                "pattern": el.validation.get("pattern"),
+                "message": el.validation.get("message"),
+            }
+        return data
     if isinstance(el, IRUIButton):
-        return {
+        button_data = {
             "type": "button",
             "id": el_id,
             "parent_id": parent_id,
@@ -139,6 +268,20 @@ def _layout(
             "source_path": source_path,
             "property_map": {"label": {"value": el.label}},
         }
+        # Provide a premium onClick shape for navigation
+        navigate = next((a for a in el.actions if a.kind == "navigate"), None)
+        if navigate:
+            nav_entry: dict[str, Any] = {"kind": "navigate"}
+            if navigate.target_path:
+                nav_entry["targetPath"] = navigate.target_path
+            if navigate.target_page:
+                nav_entry["targetPage"] = navigate.target_page
+                if program:
+                    target_page = program.pages.get(navigate.target_page)
+                    route = target_page.route if target_page and target_page.route else f"/{navigate.target_page}"
+                    nav_entry.setdefault("targetPath", route)
+            button_data["onClick"] = nav_entry
+        return button_data
     if isinstance(el, IRUIConditional):
         return {
             "type": "conditional",

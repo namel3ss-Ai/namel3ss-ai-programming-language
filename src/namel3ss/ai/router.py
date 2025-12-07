@@ -65,15 +65,15 @@ class ModelRouter:
             return self._provider_cache[prefix]
 
         if prefix == "openai":
-            api_key = self.secrets.get("N3_OPENAI_API_KEY") or ""
+            api_key = self.secrets.get("N3_OPENAI_API_KEY") or self.secrets.get("OPENAI_API_KEY") or ""
             base_url = self.secrets.get("N3_OPENAI_BASE_URL")
             if not api_key and not base_url:
-                raise Namel3ssError("OpenAI provider requires N3_OPENAI_API_KEY")
+                raise Namel3ssError("OpenAI provider requires N3_OPENAI_API_KEY or OPENAI_API_KEY")
             provider = OpenAIProvider(name="openai", api_key=api_key, base_url=base_url, default_model=default_model)
         elif prefix == "anthropic":
-            api_key = self.secrets.get("N3_ANTHROPIC_API_KEY") or ""
+            api_key = self.secrets.get("N3_ANTHROPIC_API_KEY") or self.secrets.get("ANTHROPIC_API_KEY") or ""
             if not api_key:
-                raise Namel3ssError("Anthropic provider requires N3_ANTHROPIC_API_KEY")
+                raise Namel3ssError("Anthropic provider requires N3_ANTHROPIC_API_KEY or ANTHROPIC_API_KEY")
             provider = AnthropicProvider(
                 name="anthropic",
                 api_key=api_key,
@@ -81,9 +81,9 @@ class ModelRouter:
                 default_model=default_model,
             )
         elif prefix == "gemini":
-            api_key = self.secrets.get("N3_GEMINI_API_KEY") or ""
+            api_key = self.secrets.get("N3_GEMINI_API_KEY") or self.secrets.get("GEMINI_API_KEY") or ""
             if not api_key:
-                raise Namel3ssError("Gemini provider requires N3_GEMINI_API_KEY")
+                raise Namel3ssError("Gemini provider requires N3_GEMINI_API_KEY or GEMINI_API_KEY")
             provider = GeminiProvider(
                 name="gemini",
                 api_key=api_key,
@@ -124,8 +124,9 @@ class ModelRouter:
         return self.registry.model_configs[model_spec]
 
     def _resolve(self, model: Optional[str]) -> Tuple[ModelProvider, str, SelectedModel]:
-        if model:
-            cfg = self._ensure_registered_from_spec(model)
+        target_model = model or self.config.default_chat_model
+        if target_model:
+            cfg = self._ensure_registered_from_spec(target_model)
             provider = self.registry.get_provider_for_model(cfg.name)
             selection = SelectedModel(model_name=cfg.name, provider_name=cfg.provider, actual_model=cfg.model)
             return provider, cfg.model or cfg.name, selection

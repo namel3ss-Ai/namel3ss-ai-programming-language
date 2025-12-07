@@ -1149,6 +1149,44 @@ class _StudioHandler(http.server.BaseHTTPRequestHandler):
           applyStyles(el, node.styles, theme);
           return el;
         }
+        if (type === "card") {
+          const wrap = document.createElement('div');
+          wrap.className = "ui-card";
+          wrap.style.border = "1px solid #e5e7eb";
+          wrap.style.borderRadius = "12px";
+          wrap.style.padding = "16px";
+          wrap.style.background = "#fff";
+          wrap.style.boxShadow = "0 4px 14px rgba(0,0,0,0.04)";
+          if (node.title) {
+            const title = document.createElement('div');
+            title.style.fontWeight = "600";
+            title.style.marginBottom = "8px";
+            title.textContent = node.title;
+            wrap.appendChild(title);
+          }
+          applyStyles(wrap, node.styles, theme);
+          (node.layout || []).forEach(child => wrap.appendChild(renderLayout(child, theme, pageName)));
+          return wrapInspectable(node, wrap, pageName);
+        }
+        if (type === "row") {
+          const wrap = document.createElement('div');
+          wrap.className = "ui-row";
+          wrap.style.display = "flex";
+          wrap.style.gap = "12px";
+          applyStyles(wrap, node.styles, theme);
+          (node.layout || []).forEach(child => wrap.appendChild(renderLayout(child, theme, pageName)));
+          return wrapInspectable(node, wrap, pageName);
+        }
+        if (type === "column") {
+          const wrap = document.createElement('div');
+          wrap.className = "ui-column";
+          wrap.style.display = "flex";
+          wrap.style.flexDirection = "column";
+          wrap.style.gap = "12px";
+          applyStyles(wrap, node.styles, theme);
+          (node.layout || []).forEach(child => wrap.appendChild(renderLayout(child, theme, pageName)));
+          return wrapInspectable(node, wrap, pageName);
+        }
         if (type === "input") {
           const wrap = document.createElement('div');
           wrap.className = "ui-input";
@@ -1166,6 +1204,38 @@ class _StudioHandler(http.server.BaseHTTPRequestHandler):
           wrap.appendChild(label);
           wrap.appendChild(input);
           return wrap;
+        }
+        if (type === "textarea") {
+          const wrap = document.createElement('div');
+          wrap.className = "ui-textarea";
+          const label = document.createElement('label');
+          label.textContent = node.label || node.name || "Textarea";
+          const textarea = document.createElement('textarea');
+          textarea.rows = 4;
+          const key = node.name || node.label || Math.random().toString(36).slice(2);
+          if (!(key in previewState)) previewState[key] = "";
+          textarea.value = previewState[key];
+          textarea.addEventListener('input', (e) => {
+            previewState[key] = e.target.value;
+          });
+          applyStyles(wrap, node.styles, theme);
+          wrap.appendChild(label);
+          wrap.appendChild(textarea);
+          return wrap;
+        }
+        if (type === "badge") {
+          const el = document.createElement('span');
+          el.className = "ui-badge";
+          el.textContent = node.text || "";
+          el.style.display = "inline-flex";
+          el.style.alignItems = "center";
+          el.style.padding = "4px 8px";
+          el.style.borderRadius = "999px";
+          el.style.background = "#f1f5f9";
+          el.style.fontSize = "12px";
+          el.style.fontWeight = "600";
+          applyStyles(el, node.styles, theme);
+          return wrapInspectable(node, el, pageName);
         }
         if (type === "button") {
           const el = document.createElement('button');

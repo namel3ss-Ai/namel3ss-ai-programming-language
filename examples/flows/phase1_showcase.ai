@@ -1,0 +1,31 @@
+ai "support_bot":
+  model "gpt-4.1-mini"
+  system "You are a helpful support assistant."
+
+flow "phase1_showcase":
+  # Initialize state
+  set state.handled_count = 0
+  set state.has_pass be false
+
+  # Imagine state.tickets is provided externally; we loop over it.
+  for each ticket in state.tickets:
+    try:
+      step "answer":
+        kind "script"
+
+      let response be step "answer" output
+
+      if response.urgent:
+        set state.last_urgent be ticket
+      else:
+        set state.last_regular be ticket
+
+      set state.handled_count be state.handled_count + 1
+    catch err:
+      set state.last_error be err.message
+
+  # Simple conditional after the loop
+  if state.handled_count > 0:
+    set state.has_pass be true
+  else:
+    set state.has_pass be false

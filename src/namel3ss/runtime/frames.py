@@ -25,6 +25,7 @@ class FrameRegistry:
     def __init__(self, frames: Dict[str, Any] | None = None) -> None:
         self.frames = frames or {}
         self._cache: Dict[str, List[Any]] = {}
+        self._store: Dict[str, List[dict]] = {}
 
     def register(self, name: str, spec: Any) -> None:
         self.frames[name] = spec
@@ -81,6 +82,61 @@ class FrameRegistry:
             raise Namel3ssError("N3F-1100: frame source file not found") from exc
         except Exception as exc:  # pragma: no cover - safety
             raise Namel3ssError("N3F-1100: frame could not be loaded") from exc
+
+    def insert(self, name: str, row: dict) -> None:
+        frame = self.frames.get(name)
+        if not frame:
+            raise Namel3ssError(f"N3L-830: Frame '{name}' is not declared.")
+        backend = getattr(frame, "backend", None)
+        if not backend:
+            # fallback to in-memory if no backend but still allow basic persistence
+            backend = "memory"
+        self._store.setdefault(name, []).append(dict(row))
+
+    def query(self, name: str, filters: dict | None = None) -> list[dict]:
+        frame = self.frames.get(name)
+        if not frame:
+            raise Namel3ssError(f"N3L-830: Frame '{name}' is not declared.")
+        backend = getattr(frame, "backend", None) or ("file" if getattr(frame, "path", None) else "memory")
+        filters = filters or {}
+        if backend == "file":
+            rows = self.get_rows(name)
+            if isinstance(rows, list) and rows and isinstance(rows[0], dict):
+                return [
+                    r for r in rows if all(r.get(k) == v for k, v in filters.items())
+                ]
+            return rows
+        data = self._store.get(name, [])
+        return [r for r in data if all(r.get(k) == v for k, v in filters.items())]
+
+    def update(self, name: str, filters: dict | None, updates: dict) -> int:
+        frame = self.frames.get(name)
+        if not frame:
+            raise Namel3ssError(f"N3L-830: Frame '{name}' is not declared.")
+        data = self._store.setdefault(name, [])
+        filters = filters or {}
+        count = 0
+        for row in data:
+            if all(row.get(k) == v for k, v in filters.items()):
+                row.update(updates)
+                count += 1
+        return count
+
+    def delete(self, name: str, filters: dict | None) -> int:
+        frame = self.frames.get(name)
+        if not frame:
+            raise Namel3ssError(f"N3L-830: Frame '{name}' is not declared.")
+        data = self._store.setdefault(name, [])
+        filters = filters or {}
+        remain: list[dict] = []
+        deleted = 0
+        for row in data:
+            if all(row.get(k) == v for k, v in filters.items()):
+                deleted += 1
+                continue
+            remain.append(row)
+        self._store[name] = remain
+        return deleted
 
     def _eval_where(self, expr: ast_nodes.Expr, row: dict) -> bool:
         env = VariableEnvironment(dict(row))
