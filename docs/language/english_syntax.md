@@ -502,6 +502,87 @@ page "welcome" at "/":
 - Frontend consumes the manifest to render pages, bind state to inputs, dispatch click events, and navigate via `go to page`.
 - Conditionals (`when ... show ... otherwise ...`) are evaluated reactively against UI state; styling maps to theme tokens and layout (row/column/two/three columns, spacing, alignment).
 
+## Studio CLI (Phase 1)
+
+Start the minimal Studio shell locally:
+
+```bash
+n3 studio
+# optional overrides:
+n3 studio --backend-port 9000 --ui-port 4174 --no-open-browser
+```
+
+The CLI starts the backend and a placeholder Studio UI. URLs printed:
+- Primary URL: `http://namel3ss.local/studio`
+- Fallback URL: `http://127.0.0.1:<ui_port>/studio`
+
+If `namel3ss.local` does not resolve, use the fallback or add `127.0.0.1 namel3ss.local` to your hosts file.
+
+## Studio Phase 2 — Shell Layout
+
+`/studio` now renders the Studio shell: top bar (navigation + actions), left project sidebar, tabbed main area (Code, UI, Flow Graph), right Inspector, and bottom status bar. Content is placeholder for now:
+- Code tab: “Code editor will appear here in Studio Phase 3.”
+- UI tab: “Live UI preview will appear here in Studio Phase 3.”
+- Flow Graph tab: “Flow graph will appear here in Studio Phase 5.”
+
+Navigation tabs and project tree selections update labels; styling defaults to a dark theme. Later phases will wire real editors, previews, and graphs.
+
+## Studio Phase 3 — Real Code Editor
+
+In the Code tab, Studio now renders a real editor for `.ai` files. Select a file in the Project sidebar to load its contents, edit, and press Ctrl+S / Cmd+S to save (or rely on auto-save). Files are written to your project folder via the `/api/studio/file` endpoint. Status updates show saving/loading states; errors surface inline.
+
+## Studio Phase 4 — Filesystem Project Explorer
+
+The Project sidebar now reflects the actual project files on disk:
+- The tree is populated from `/api/studio/files`, scanning your project root.
+- Only relevant files (e.g., `.ai`) are shown; common junk dirs (`.git`, `node_modules`, etc.) are ignored.
+- Clicking a file loads it into the editor; the selected path drives the Code tab header.
+- Use the Refresh button in the Project header to re-scan the filesystem; current selection is preserved when possible.
+
+## Studio Phase 5 — Live UI Preview
+
+The UI tab now renders a live preview of your pages:
+- Studio fetches the UI manifest from `GET /api/ui/manifest`.
+- Selecting a `pages/*.ai` file focuses that page in the preview (fallback to the first page).
+- Device modes (Desktop/Tablet/Phone) adjust the preview width; use the Refresh control to re-fetch the manifest.
+- Saving changes in the Code tab triggers a manifest refresh so the preview stays in sync.
+
+## Studio Phase 6 — Interactive Preview
+
+- Inputs in the UI tab are editable and keep local preview state.
+- Buttons execute real flows via `/api/ui/flow/execute`, passing bound arguments.
+- Results (or errors) are shown in a small console panel so you can verify end-to-end flow wiring quickly.
+
+## Studio Phase 7 — Inspector Panel
+
+- Switch to *Inspector Mode* in the UI tab to click on any element and view metadata in the right panel.
+- The Inspector shows element type, styles, bindings, events (e.g., on-click flow calls), and source file.
+- Selected elements highlight in the preview; use the button to open the source in the Code tab.
+
+## Studio Phase 8 — Navigation & Routing
+
+- Pages expose routes from the manifest; preview now maintains a local router with back/forward controls and route display.
+- Buttons with `go to page "name"` navigate between pages in Preview Mode; Inspector Mode prevents navigation.
+- Route selection respects page routes, and history stacks allow quick multi-page simulation without touching the browser URL.
+
+## Studio Phase 9 — Editable Inspector Properties
+
+- In Inspector Mode, editable fields appear for text/heading, button labels, input labels, colors, layout, alignment, and spacing.
+- Changes are applied via `/api/studio/code/transform`, updating the underlying `.ai` source safely, refreshing the editor and preview automatically.
+- Invalid edits return clear errors; edits preserve indentation and surrounding syntax where possible.
+
+## Studio Phase 10 — Layout & Component Editing
+
+- Add new UI elements (heading, text, button, input, section) from the palette in Inspector Mode.
+- Delete or reorder elements (move up/down) and see the changes applied to `.ai` files via `/api/studio/code/transform`.
+- Preview, manifest, and code editor stay synchronized after each structural edit; navigation and flow wiring continue to work as before.
+
+## Studio Phase 11 — AI UI Generator
+
+- In Inspector Mode, click **AI Generate UI** to open a prompt dialog.
+- Describe the layout you want; Studio calls `/api/studio/ui/generate` to insert AI-generated UI code into the current page (relative to the selected element if applicable).
+- After generation, the code editor, manifest, and preview refresh automatically so you can continue editing or inspecting the new elements.
+
 ## Style & Linting (Phase 7)
 
 - Preferred English style is captured in `docs/language/style_guide.md`.

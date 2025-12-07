@@ -4,16 +4,17 @@ FastAPI surface for Namel3ss V3.
 
 from __future__ import annotations
 
+import os
 from dataclasses import asdict
-from typing import Any, Dict, Optional, List
 from pathlib import Path
+from typing import Any, Dict, List, Optional
 import time
 import uuid
 
-from fastapi import Depends, FastAPI, HTTPException, UploadFile, File, Form
+from fastapi import Depends, FastAPI, HTTPException, UploadFile, File, Form, Query
 from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from . import ir, lexer, parser
 from .errors import ParseError
@@ -59,6 +60,27 @@ class ParseRequest(BaseModel):
     source: str
 
 
+class StudioFileResponse(BaseModel):
+    path: str
+    content: str
+
+
+class StudioFileRequest(BaseModel):
+    path: str = Field(..., description="Project-root-relative path to file")
+    content: str
+
+
+class StudioTreeNode(BaseModel):
+    name: str
+    path: str
+    type: str  # "directory" or "file"
+    kind: str | None = None
+    children: list["StudioTreeNode"] | None = None
+
+
+StudioTreeNode.model_rebuild()
+
+
 class RunAppRequest(BaseModel):
     source: str
     app_name: str
@@ -89,9 +111,26 @@ class UIManifestRequest(BaseModel):
 
 
 class UIFlowExecuteRequest(BaseModel):
-    source: str
+    source: str | None = None
     flow: str
     args: dict[str, Any] = {}
+
+class CodeTransformRequest(BaseModel):
+    path: str
+    op: str = "update_property"
+    element_id: str | None = None
+    parent_id: str | None = None
+    position: str | None = None
+    index: int | None = None
+    new_element: dict[str, Any] | None = None
+    property: str | None = None
+    new_value: str | None = None
+
+
+class UIGenerateRequest(BaseModel):
+    prompt: str
+    page_path: str
+    selected_element_id: str | None = None
 
 
 class BundleRequest(BaseModel):
@@ -173,6 +212,7 @@ def _parse_source_to_ir(source: str) -> ir.IRProgram:
 def create_app() -> FastAPI:
     """Create the FastAPI app."""
 
+    project_root = Path.cwd().resolve()
     app = FastAPI(title="Namel3ss V3", version="0.1.0")
     if STUDIO_STATIC_DIR.exists():
         app.mount(
@@ -190,6 +230,129 @@ def create_app() -> FastAPI:
     )
     optimizer_storage = OptimizerStorage(Path(SecretsManager().get("N3_OPTIMIZER_DB") or "optimizer.db"))
     overlay_store = OverlayStore(Path(SecretsManager().get("N3_OPTIMIZER_OVERLAYS") or "optimizer_overlays.json"))
+
+    def _project_root() -> Path:
+        return project_root
+
+    def _safe_path(rel_path: str) -> Path:
+        base = _project_root()
+        target = (base / rel_path).resolve()
+        if base not in target.parents and base != target:
+            raise HTTPException(status_code=400, detail="Invalid path")
+        return target
+
+    def _file_kind(path: Path) -> str:
+        parts = path.parts
+        if "pages" in parts:
+            return "page"
+        if "flows" in parts:
+            return "flow"
+        if "agents" in parts:
+            return "agent"
+        if "forms" in parts:
+            return "form"
+        if "components" in parts:
+            return "component"
+        if "macros" in parts:
+            return "macro"
+        if path.name == "settings.ai":
+            return "settings"
+        return "file"
+
+    _IGNORED_DIRS = {".git", "__pycache__", "node_modules", ".venv", "venv", "dist", "build"}
+
+    def _build_tree(directory: Path, base: Path) -> Optional[StudioTreeNode]:
+        children: list[StudioTreeNode] = []
+        for entry in sorted(directory.iterdir(), key=lambda p: p.name.lower()):
+            if entry.name in _IGNORED_DIRS:
+                continue
+            if entry.is_dir():
+                child = _build_tree(entry, base)
+                if child and child.children:
+                    children.append(child)
+                elif child and directory == base:
+                    # allow empty top-level directories with no matches? skip
+                    continue
+            else:
+                if entry.suffix != ".ai":
+                    continue
+                rel = entry.relative_to(base)
+                children.append(
+                    StudioTreeNode(
+                        name=entry.name,
+                        path=str(rel).replace("\\", "/"),
+                        type="file",
+                        kind=_file_kind(rel),
+                        children=None,
+                    )
+                )
+        rel_dir = directory.relative_to(base) if directory != base else Path(".")
+        return StudioTreeNode(
+            name=directory.name if directory != base else base.name,
+            path=str(rel_dir).replace("\\", "/"),
+            type="directory",
+            kind=None,
+            children=children,
+        )
+
+    def _iter_ai_files(base: Path) -> list[Path]:
+        files: list[Path] = []
+        for root, dirs, file_names in os.walk(base):
+            dirs[:] = [d for d in dirs if d not in _IGNORED_DIRS]
+            for fname in sorted(file_names):
+                if not fname.endswith(".ai"):
+                    continue
+                files.append(Path(root) / fname)
+        return files
+
+    def _project_ui_manifest() -> Dict[str, Any]:
+        pages: list[dict[str, Any]] = []
+        components: list[dict[str, Any]] = []
+        theme: dict[str, Any] = {}
+        base = _project_root()
+        for path in _iter_ai_files(base):
+            try:
+                program = Engine._load_program(path.read_text(encoding="utf-8"), filename=str(path))
+                mf = build_ui_manifest(program)
+            except Exception:
+                continue
+            if not theme and mf.get("theme"):
+                theme = mf["theme"]
+            existing_components = {c["name"] for c in components}
+            for comp in mf.get("components", []):
+                if comp["name"] not in existing_components:
+                    components.append(comp)
+            for page in mf.get("pages", []):
+                pcopy = dict(page)
+                pcopy["source_path"] = str(path.relative_to(base)).replace("\\", "/")
+                def _set_source(el):
+                    if isinstance(el, dict):
+                        el.setdefault("source_path", pcopy["source_path"])
+                        for child in el.get("layout", []):
+                            _set_source(child)
+                        for block in el.get("when", []):
+                            _set_source(block)
+                        for block in el.get("otherwise", []):
+                            _set_source(block)
+                    return el
+                _set_source(pcopy)
+                pages.append(pcopy)
+        return {
+            "ui_manifest_version": "1",
+            "pages": pages,
+            "components": components,
+            "theme": theme,
+        }
+
+    def _project_program() -> ir.IRProgram:
+        base = _project_root()
+        sources: list[str] = []
+        for path in _iter_ai_files(base):
+            sources.append(path.read_text(encoding="utf-8"))
+        if not sources:
+            raise HTTPException(status_code=400, detail="No .ai files found")
+        combined = "\n\n".join(sources)
+        return Engine._load_program(combined, filename=str(base / "project.ai"))
 
     @app.get("/health")
     def health() -> Dict[str, str]:
@@ -211,6 +374,37 @@ def create_app() -> FastAPI:
         except ParseError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         return FmtPreviewResponse(formatted=formatted, changes_made=formatted != payload.source)
+
+    @app.get("/api/studio/files")
+    def api_studio_files(principal: Principal = Depends(get_principal)) -> Dict[str, Any]:
+        if principal.role not in {Role.ADMIN, Role.DEVELOPER}:
+            raise HTTPException(status_code=403, detail="Forbidden")
+        root = _project_root()
+        tree = _build_tree(root, root)
+        if not tree:
+            raise HTTPException(status_code=500, detail="Unable to scan project")
+        return {"root": tree}
+
+    @app.get("/api/studio/file", response_model=StudioFileResponse)
+    def api_studio_get_file(
+        path: str = Query(..., description="Project-root-relative path"), principal: Principal = Depends(get_principal)
+    ) -> StudioFileResponse:
+        if principal.role not in {Role.ADMIN, Role.DEVELOPER}:
+            raise HTTPException(status_code=403, detail="Forbidden")
+        target = _safe_path(path)
+        if not target.exists():
+            raise HTTPException(status_code=404, detail="File not found")
+        return StudioFileResponse(path=path, content=target.read_text(encoding="utf-8"))
+
+    @app.post("/api/studio/file", response_model=StudioFileResponse)
+    def api_studio_save_file(payload: StudioFileRequest, principal: Principal = Depends(get_principal)) -> StudioFileResponse:
+        if principal.role not in {Role.ADMIN, Role.DEVELOPER}:
+            raise HTTPException(status_code=403, detail="Forbidden")
+        target = _safe_path(payload.path)
+        if not target.exists():
+            raise HTTPException(status_code=404, detail="File not found")
+        target.write_text(payload.content, encoding="utf-8")
+        return StudioFileResponse(path=payload.path, content=payload.content)
 
     def _store_trace(flow_name: Optional[str], trace_payload: Dict[str, Any], status: str, started_at: float, duration: float) -> Dict[str, Any]:
         record = {
@@ -444,6 +638,31 @@ def create_app() -> FastAPI:
         except Exception as exc:  # pragma: no cover
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 
+    @app.get("/api/ui/manifest")
+    def api_ui_manifest_current(principal: Principal = Depends(get_principal)) -> Dict[str, Any]:
+        if not can_view_pages(principal.role):
+            raise HTTPException(status_code=403, detail="Forbidden")
+        try:
+            return _project_ui_manifest()
+        except Exception as exc:  # pragma: no cover
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    @app.get("/api/ui/flow/info")
+    def api_ui_flow_info(name: str, principal: Principal = Depends(get_principal)) -> Dict[str, Any]:
+        if not can_view_pages(principal.role):
+            raise HTTPException(status_code=403, detail="Forbidden")
+        try:
+            program = _project_program()
+            if name not in program.flows:
+                raise HTTPException(status_code=404, detail="Flow not found")
+            return {"name": name, "args": {}, "returns": "any"}
+        except HTTPException as exc:
+            if exc.status_code == 400:
+                raise HTTPException(status_code=404, detail=exc.detail)
+            raise
+        except Exception as exc:  # pragma: no cover
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
     @app.post("/api/ui/manifest")
     def api_ui_manifest(payload: UIManifestRequest, principal: Principal = Depends(get_principal)) -> Dict[str, Any]:
         if not can_view_pages(principal.role):
@@ -460,16 +679,236 @@ def create_app() -> FastAPI:
         if not can_run_flow(principal.role):
             raise HTTPException(status_code=403, detail="Forbidden")
         try:
-            engine = Engine.from_source(
-                payload.source,
-                metrics_tracker=metrics_tracker,
-                trigger_manager=trigger_manager,
-                plugin_registry=plugin_registry,
-            )
+            if payload.source:
+                engine = Engine.from_source(
+                    payload.source,
+                    metrics_tracker=metrics_tracker,
+                    trigger_manager=trigger_manager,
+                    plugin_registry=plugin_registry,
+                )
+            else:
+                program = _project_program()
+                engine = Engine(
+                    program,
+                    metrics_tracker=metrics_tracker,
+                    trigger_manager=trigger_manager,
+                    plugin_registry=plugin_registry,
+                )
             result = engine.execute_flow(payload.flow, principal_role=principal.role.value, payload={"state": payload.args})
             return {"success": True, "result": result}
         except Exception as exc:  # pragma: no cover
             return {"success": False, "error": str(exc)}
+
+    def _find_element_by_id(pages: list[dict[str, Any]], element_id: str) -> dict[str, Any] | None:
+        for page in pages:
+            stack = list(page.get("layout", []))
+            while stack:
+                el = stack.pop()
+                if isinstance(el, dict) and el.get("id") == element_id:
+                    el["page"] = page.get("name")
+                    el["page_route"] = page.get("route")
+                    el["source_path"] = el.get("source_path") or page.get("source_path")
+                    return el
+                if isinstance(el, dict):
+                    stack.extend(el.get("layout", []))
+                    stack.extend(el.get("when", []))
+                    stack.extend(el.get("otherwise", []))
+        return None
+
+    def _replace_string_value(text: str, old: str, new: str) -> str:
+        target = f'"{old}"'
+        replacement = f'"{new}"'
+        if target not in text:
+            return text
+        return text.replace(target, replacement, 1)
+
+    def _element_pattern(el: dict[str, Any]) -> str | None:
+        t = el.get("type")
+        if t == "heading":
+            return f'heading "{el.get("text", "")}"'
+        if t == "text":
+            return f'text "{el.get("text", "")}"'
+        if t == "button":
+            return f'button "{el.get("label", "")}"'
+        if t == "input":
+            return f'input "{el.get("label", "")}'
+        if t == "section":
+            return f'section "{el.get("name", "")}"'
+        return None
+
+    def _find_line_index(lines: list[str], target_el: dict[str, Any]) -> int:
+        pattern = _element_pattern(target_el)
+        if not pattern:
+            return -1
+        for idx, line in enumerate(lines):
+            if pattern in line.strip():
+                return idx
+        return -1
+
+    def _render_new_element(data: dict[str, Any], indent: str) -> str:
+        t = data.get("type")
+        if t == "heading":
+            return f'{indent}heading "{data.get("properties", {}).get("label", "New heading")}"'
+        if t == "text":
+            return f'{indent}text "{data.get("properties", {}).get("text", "New text")}"'
+        if t == "button":
+            return f'{indent}button "{data.get("properties", {}).get("label", "New button")}"'
+        if t == "input":
+            label = data.get("properties", {}).get("label", "New field")
+            return f'{indent}input "{label}" as field'
+        if t == "section":
+            name = data.get("properties", {}).get("label", "Section")
+            return f'{indent}section "{name}":'
+        return f"{indent}text \"New\""
+
+    @app.post("/api/studio/code/transform")
+    def api_code_transform(payload: CodeTransformRequest, principal: Principal = Depends(get_principal)) -> Dict[str, Any]:
+        if not can_view_pages(principal.role):
+            raise HTTPException(status_code=403, detail="Forbidden")
+        base = _project_root()
+        target = (base / payload.path).resolve()
+        if base not in target.parents and base != target:
+            raise HTTPException(status_code=400, detail="Invalid path")
+        if not target.exists():
+            raise HTTPException(status_code=404, detail="File not found")
+        manifest = _project_ui_manifest()
+        el = None
+        if payload.element_id:
+            el = _find_element_by_id(manifest.get("pages", []), payload.element_id)
+        try:
+            content = target.read_text(encoding="utf-8")
+            op = payload.op or "update_property"
+            new_element_id = None
+            if op == "update_property":
+                if not el:
+                    raise HTTPException(status_code=404, detail="Element not found")
+                prop = payload.property
+                if prop in ("label", "text"):
+                    old_val = el.get("label") or el.get("text") or ""
+                    content = _replace_string_value(content, old_val, payload.new_value or "")
+                elif prop == "color":
+                    old_val = None
+                    for s in el.get("styles", []):
+                        if s.get("kind") == "color":
+                            old_val = s.get("value")
+                    if old_val is None:
+                        raise HTTPException(status_code=400, detail="Property not found")
+                    content = content.replace(str(old_val), payload.new_value or "", 1)
+                elif prop == "layout":
+                    old_layout = None
+                    for s in el.get("styles", []):
+                        if s.get("kind") == "layout":
+                            old_layout = s.get("value")
+                    if old_layout:
+                        content = content.replace(f"layout is {old_layout}", f"layout is {payload.new_value}", 1)
+                    else:
+                        raise HTTPException(status_code=400, detail="Property not found")
+                else:
+                    raise HTTPException(status_code=400, detail="Unsupported property")
+            elif op in {"insert_element", "delete_element", "move_element"}:
+                lines = content.splitlines()
+                indent_unit = "  "
+
+                def find_line_for_element(target_el: dict[str, Any]) -> int:
+                    pattern = _element_pattern(target_el)
+                    if not pattern:
+                        return -1
+                    for idx, line in enumerate(lines):
+                        if pattern in line.strip():
+                            return idx
+                    return -1
+
+                if op == "insert_element":
+                    parent_id = payload.parent_id or (el and el.get("parent_id"))
+                    position = payload.position or "after"
+                    template = _render_new_element(payload.new_element or {}, indent_unit)
+                    insert_at = len(lines)
+                    if el and position in {"before", "after"}:
+                        idx = find_line_for_element(el)
+                        if idx >= 0:
+                            insert_at = idx + (1 if position == "after" else 0)
+                    if insert_at > len(lines):
+                        lines.append(template)
+                    else:
+                        lines.insert(insert_at, template)
+                    new_element_id = "pending"
+                elif op == "delete_element":
+                    if not el:
+                        raise HTTPException(status_code=404, detail="Element not found")
+                    idx = find_line_for_element(el)
+                    if idx >= 0:
+                        del lines[idx]
+                    else:
+                        raise HTTPException(status_code=400, detail="Cannot locate element")
+                elif op == "move_element":
+                    direction = payload.position or "after"
+                    if not el:
+                        raise HTTPException(status_code=404, detail="Element not found")
+                    idx = find_line_for_element(el)
+                    if idx < 0:
+                        raise HTTPException(status_code=400, detail="Cannot locate element")
+                    if direction == "up" and idx > 0:
+                        lines[idx - 1], lines[idx] = lines[idx], lines[idx - 1]
+                    elif direction == "down" and idx < len(lines) - 1:
+                        lines[idx + 1], lines[idx] = lines[idx], lines[idx + 1]
+                content = "\n".join(lines) + ("\n" if content.endswith("\n") else "")
+            else:
+                raise HTTPException(status_code=400, detail="Unsupported operation")
+            target.write_text(content, encoding="utf-8")
+            manifest = _project_ui_manifest()
+            return {"success": True, "manifest": manifest, "new_element_id": new_element_id}
+        except HTTPException:
+            raise
+        except Exception as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    @app.post("/api/studio/ui/generate")
+    def api_ui_generate(payload: UIGenerateRequest, principal: Principal = Depends(get_principal)) -> Dict[str, Any]:
+        if not can_view_pages(principal.role):
+            raise HTTPException(status_code=403, detail="Forbidden")
+        base = _project_root()
+        target = (base / payload.page_path).resolve()
+        if base not in target.parents and base != target:
+            raise HTTPException(status_code=400, detail="Invalid path")
+        if not target.exists():
+            raise HTTPException(status_code=404, detail="File not found")
+        manifest = _project_ui_manifest()
+        selected_el = None
+        if payload.selected_element_id:
+            selected_el = _find_element_by_id(manifest.get("pages", []), payload.selected_element_id)
+            if selected_el is None:
+                raise HTTPException(status_code=404, detail="Element not found")
+        try:
+            content = target.read_text(encoding="utf-8")
+            lines = content.splitlines()
+            indent_unit = "  "
+            insert_idx = len(lines)
+            insert_indent = indent_unit
+            if selected_el:
+                idx = _find_line_index(lines, selected_el)
+                if idx >= 0:
+                    line = lines[idx]
+                    leading = len(line) - len(line.lstrip(" "))
+                    insert_indent = line[:leading]
+                    insert_idx = idx + 1
+                    if selected_el.get("type") == "section":
+                        insert_indent = insert_indent + indent_unit
+            prompt_text = payload.prompt.strip()
+            if not prompt_text:
+                prompt_text = "Generated UI"
+            snippet = [
+                f'{insert_indent}heading "AI Generated"',
+                f'{insert_indent}text "{prompt_text[:60]}"',
+            ]
+            lines[insert_idx:insert_idx] = snippet
+            content_out = "\n".join(lines) + ("\n" if content.endswith("\n") else "")
+            target.write_text(content_out, encoding="utf-8")
+            manifest = _project_ui_manifest()
+            return {"success": True, "manifest": manifest}
+        except HTTPException:
+            raise
+        except Exception as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     @app.post("/api/flows")
     def api_flows(
