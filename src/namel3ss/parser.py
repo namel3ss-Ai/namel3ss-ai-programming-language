@@ -1775,7 +1775,9 @@ class Parser:
         steps: List[ast_nodes.FlowStepDecl] = []
         if self.check("INDENT"):
             self.consume("INDENT")
-        allowed_fields: Set[str] = {"description", "step"}
+        allowed_fields: Set[str] = {"description", "step", "on"}
+        error_steps: List[ast_nodes.FlowStepDecl] = []
+        on_error_seen = False
         while not self.check("DEDENT"):
             if self.match("NEWLINE"):
                 continue
@@ -1815,6 +1817,26 @@ class Parser:
                 self.optional_newline()
             elif field_token.value == "step":
                 steps.append(self.parse_flow_step())
+            elif field_token.value == "on":
+                if on_error_seen:
+                    raise self.error("N3L-980: multiple 'on error' blocks are not allowed", field_token)
+                if not self.match_value("KEYWORD", "error"):
+                    raise self.error("Expected 'error' after 'on' in flow block", self.peek())
+                self.consume("COLON")
+                self.consume("NEWLINE")
+                if self.check("INDENT"):
+                    self.consume("INDENT")
+                while not self.check("DEDENT"):
+                    if self.match("NEWLINE"):
+                        continue
+                    if not self.match_value("KEYWORD", "step"):
+                        raise self.error("Unexpected content inside 'on error' block; expected step", self.peek())
+                    error_steps.append(self.parse_flow_step())
+                self.consume("DEDENT")
+                self.optional_newline()
+                on_error_seen = True
+                # after on error block, no more fields are allowed
+                allowed_fields = set()
             else:
                 raise self.error(
                     f"Unexpected field '{field_token.value}' in flow block",
@@ -1826,6 +1848,7 @@ class Parser:
             name=name.value or "",
             description=description,
             steps=steps,
+            error_steps=error_steps,
             span=self._span(start),
         )
 

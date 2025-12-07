@@ -32,6 +32,22 @@ flow "process_ticket":
       value is "rejected"
   ```
   If `when` evaluates to false, the step is skipped. Combine opposing conditions to model simple if/else without extra syntax.
+- Error handling with `on error`:
+  ```ai
+  flow is "answer_user":
+    step is "call_ai":
+      kind is "ai"
+      target is "support_bot"
+      input:
+        question: state.question
+
+    on error:
+      step is "fallback":
+        kind is "set"
+        target is state.answer
+        value is "Sorry, something went wrong. Please try again later."
+  ```
+  When a step fails, normal execution stops and the `on error` steps run. Use `error.message` inside the handler to inspect what went wrong.
 
 ## Triggers
 - Schedule, HTTP, agent-signal, and file triggers are supported.

@@ -192,12 +192,13 @@ class FlowEngine:
                 tracer.end_flow()
             if runtime_ctx.event_logger:
                 try:
+                    has_unhandled = bool(result and result.errors)
                     runtime_ctx.event_logger.log(
                         {
                             "kind": "flow",
                             "event_type": "end",
                             "flow_name": current_flow.name,
-                            "status": "error" if result and result.errors else "success",
+                            "status": "error" if has_unhandled else "success",
                             "message": result.errors[0].error if result and result.errors else None,
                         }
                     )
@@ -282,7 +283,42 @@ class FlowEngine:
                         boundary_id=boundary_for_children,
                     )
                 if handled:
-                    return await run_node(boundary_for_children, current_state, None, stop_at)
+                    # expose error object to handler
+                    err_info = {"message": str(exc), "step": node.id}
+                    if current_state.variables:
+                        if current_state.variables.has("error"):
+                            current_state.variables.assign("error", err_info)
+                        else:
+                            try:
+                                current_state.variables.declare("error", err_info)
+                            except Exception:
+                                current_state.variables.values["error"] = err_info
+                    if runtime_ctx.event_logger:
+                        try:
+                            runtime_ctx.event_logger.log(
+                                {
+                                    "kind": "flow",
+                                    "event_type": "error_handler_start",
+                                    "flow": runtime_ctx.execution_context.flow_name if runtime_ctx.execution_context else None,
+                                    "failed_step": node.config.get("step_name", node.id),
+                                }
+                            )
+                        except Exception:
+                            pass
+                    handler_state = await run_node(boundary_for_children, current_state, None, stop_at)
+                    if runtime_ctx.event_logger:
+                        try:
+                            runtime_ctx.event_logger.log(
+                                {
+                                    "kind": "flow",
+                                    "event_type": "error_handler_end",
+                                    "flow": runtime_ctx.execution_context.flow_name if runtime_ctx.execution_context else None,
+                                    "status": "success",
+                                }
+                            )
+                        except Exception:
+                            pass
+                    return handler_state
                 raise
 
             # Stop execution if a redirect has been requested.
@@ -335,11 +371,13 @@ class FlowEngine:
         total_cost = sum(r.cost for r in step_results)
         default_tracer.finish_span(root_span)
         redirect_to = final_state.context.get("__redirect_flow__")
+        unhandled_errors = [err for err in final_state.errors if not err.handled]
+        final_state.errors = unhandled_errors
         return FlowRunResult(
             flow_name=flow_name or graph.entry_id,
             steps=step_results,
             state=final_state,
-            errors=final_state.errors,
+            errors=unhandled_errors,
             step_metrics=step_metrics,
             total_cost=total_cost,
             total_duration_seconds=total_duration,

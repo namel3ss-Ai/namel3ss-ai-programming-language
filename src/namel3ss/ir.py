@@ -129,6 +129,7 @@ class IRFlow:
     name: str
     description: str | None
     steps: List[IRFlowStep] = field(default_factory=list)
+    error_steps: List[IRFlowStep] = field(default_factory=list)
 
 
 @dataclass
@@ -1066,8 +1067,66 @@ def ast_to_ir(module: ast_nodes.Module) -> IRProgram:
                         )
                     )
             program.flows[decl.name] = IRFlow(
-                name=decl.name, description=decl.description, steps=flow_steps
+                name=decl.name,
+                description=decl.description,
+                steps=flow_steps,
+                error_steps=[],  # placeholder, filled below
             )
+            # Lower error handler steps if present
+            error_steps_ir: List[IRFlowStep] = []
+            for step in getattr(decl, "error_steps", []) or []:
+                if step.statements:
+                    ir_statements = [lower_statement(stmt) for stmt in step.statements]
+                    error_steps_ir.append(
+                        IRFlowStep(
+                            name=step.name,
+                            kind="script",
+                            target=step.target or step.name,
+                            message=getattr(step, "message", None),
+                            params=getattr(step, "params", {}) or {},
+                            statements=ir_statements,
+                            when_expr=getattr(step, "when_expr", None),
+                        )
+                    )
+                elif step.conditional_branches:
+                    branches: list[IRConditionalBranch] = [lower_branch(br) for br in step.conditional_branches]
+                    error_steps_ir.append(
+                        IRFlowStep(
+                            name=step.name,
+                            kind="condition",
+                            target=step.name,
+                            conditional_branches=branches,
+                            params=getattr(step, "params", {}) or {},
+                            when_expr=getattr(step, "when_expr", None),
+                        )
+                    )
+                else:
+                    if step.kind not in (
+                        "ai",
+                        "agent",
+                        "tool",
+                        "goto_flow",
+                        "frame_insert",
+                        "frame_query",
+                        "frame_update",
+                        "frame_delete",
+                        "vector_index_frame",
+                        "vector_query",
+                    ):
+                        raise IRError(
+                            f"Unsupported step kind '{step.kind}'", step.span and step.span.line
+                        )
+                    error_steps_ir.append(
+                        IRFlowStep(
+                            name=step.name,
+                            kind=step.kind,
+                            target=step.target,
+                            message=getattr(step, "message", None),
+                            params=getattr(step, "params", {}) or {},
+                            when_expr=getattr(step, "when_expr", None),
+                        )
+                    )
+            program.flows[decl.name].error_steps = error_steps_ir
         elif isinstance(decl, ast_nodes.PluginDecl):
             if decl.name in program.plugins:
                 raise IRError(

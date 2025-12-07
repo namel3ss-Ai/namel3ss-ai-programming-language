@@ -112,6 +112,33 @@ def flow_ir_to_graph(flow: IRFlow) -> FlowGraph:
     prev_id: str | None = None
     entry_id: str | None = None
 
+    error_entry_id: str | None = None
+    if getattr(flow, "error_steps", None):
+        prev_error: str | None = None
+        for step in flow.error_steps:
+            node_id = f"error::{step.name}"
+            node = FlowNode(
+                id=node_id,
+                kind=step.kind,
+                config={
+                    "target": step.target,
+                    "step_name": step.name,
+                    "branches": getattr(step, "conditional_branches", None),
+                    "message": getattr(step, "message", None),
+                    "params": getattr(step, "params", {}) or {},
+                    "statements": getattr(step, "statements", None),
+                    "when": getattr(step, "when_expr", None),
+                    "reason": "error_handler",
+                },
+                next_ids=[],
+            )
+            nodes[node_id] = node
+            if prev_error:
+                nodes[prev_error].next_ids.append(node_id)
+            prev_error = node_id
+            if error_entry_id is None:
+                error_entry_id = node_id
+
     for step in flow.steps:
         node_id = step.name
         node = FlowNode(
@@ -129,6 +156,7 @@ def flow_ir_to_graph(flow: IRFlow) -> FlowGraph:
             },
             next_ids=[],
         )
+        node.error_boundary_id = error_entry_id
         nodes[node_id] = node
         if prev_id:
             nodes[prev_id].next_ids.append(node_id)

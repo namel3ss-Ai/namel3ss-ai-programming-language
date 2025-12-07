@@ -295,6 +295,7 @@ class FlowDecl:
     name: str
     description: Optional[str] = None
     steps: List[FlowStepDecl] = field(default_factory=list)
+    error_steps: List[FlowStepDecl] = field(default_factory=list)
     span: Optional[Span] = None
 
 
