@@ -2127,6 +2127,7 @@ class Parser:
             "top_k",
             "args",
             "when",
+            "streaming",
         } if allow_fields else set()
         script_mode = False
         while not self.check("DEDENT"):
@@ -2220,6 +2221,18 @@ class Parser:
                 else:
                     target_token = self.consume_string_value(field_token, "target")
                 target = target_token.value
+            elif field_token.value == "streaming":
+                if self.match_value("KEYWORD", "is"):
+                    bool_token = self.consume_any({"KEYWORD", "IDENT"})
+                else:
+                    bool_token = self.consume_any({"KEYWORD", "IDENT"})
+                streaming_val = bool_token.value
+                if streaming_val not in {"true", "false"}:
+                    raise self.error(
+                        "N3L-990: Field 'streaming' must be a boolean literal (true/false).",
+                        bool_token,
+                    )
+                extra_params["streaming"] = streaming_val == "true"
             elif field_token.value == "message":
                 if self.match_value("KEYWORD", "is"):
                     msg_token = self.consume_any({"STRING", "IDENT", "KEYWORD"})

@@ -1056,16 +1056,27 @@ def ast_to_ir(module: ast_nodes.Module) -> IRProgram:
                             )
                         if step.kind == "vector_query" and "query_text" not in (step.params or {}):
                             raise IRError("N3L-941: vector_query step must define 'query_text'.", step.span and step.span.line)
-                    flow_steps.append(
-                        IRFlowStep(
-                            name=step.name,
-                            kind=step.kind,
-                            target=step.target,
-                            message=getattr(step, "message", None),
-                            params=getattr(step, "params", {}) or {},
-                            when_expr=getattr(step, "when_expr", None),
+                        flow_steps.append(
+                            IRFlowStep(
+                                name=step.name,
+                                kind=step.kind,
+                                target=step.target,
+                                message=getattr(step, "message", None),
+                                params=getattr(step, "params", {}) or {},
+                                when_expr=getattr(step, "when_expr", None),
+                            )
                         )
-                    )
+                    else:
+                        flow_steps.append(
+                            IRFlowStep(
+                                name=step.name,
+                                kind=step.kind,
+                                target=step.target,
+                                message=getattr(step, "message", None),
+                                params=getattr(step, "params", {}) or {},
+                                when_expr=getattr(step, "when_expr", None),
+                            )
+                        )
             program.flows[decl.name] = IRFlow(
                 name=decl.name,
                 description=decl.description,

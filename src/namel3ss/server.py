@@ -5,6 +5,8 @@ FastAPI surface for Namel3ss V3.
 from __future__ import annotations
 
 import os
+import asyncio
+import json
 from dataclasses import asdict
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -12,7 +14,7 @@ import time
 import uuid
 
 from fastapi import Depends, FastAPI, HTTPException, UploadFile, File, Form, Query
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
@@ -21,6 +23,7 @@ from .errors import ParseError
 from .lang.formatter import format_source
 from .flows.triggers import FlowTrigger, TriggerManager
 from .runtime.engine import Engine
+from .runtime.context import ExecutionContext
 from .ui.renderer import UIRenderer
 from .ui.runtime import UIEventRouter
 from .ui.components import UIEvent, UIContext
@@ -717,6 +720,85 @@ def create_app() -> FastAPI:
             return {"success": True, "result": result}
         except Exception as exc:  # pragma: no cover
             return {"success": False, "error": str(exc)}
+
+    @app.post("/api/ui/flow/stream")
+    async def api_ui_flow_stream(payload: UIFlowExecuteRequest, principal: Principal = Depends(get_principal)):
+        if not can_run_flow(principal.role):
+            raise HTTPException(status_code=403, detail="Forbidden")
+        try:
+            if payload.source:
+                engine = Engine.from_source(
+                    payload.source,
+                    metrics_tracker=metrics_tracker,
+                    trigger_manager=trigger_manager,
+                    plugin_registry=plugin_registry,
+                )
+            else:
+                program = _project_program()
+                engine = Engine(
+                    program,
+                    metrics_tracker=metrics_tracker,
+                    trigger_manager=trigger_manager,
+                    plugin_registry=plugin_registry,
+                )
+            if payload.flow not in engine.program.flows:
+                raise HTTPException(status_code=404, detail="Flow not found")
+            flow = engine.program.flows[payload.flow]
+            context = ExecutionContext(
+                app_name="__flow__",
+                request_id=str(uuid.uuid4()),
+                memory_engine=engine.memory_engine,
+                rag_engine=engine.rag_engine,
+                tracer=Tracer(),
+                tool_registry=engine.tool_registry,
+                metrics=metrics_tracker,
+                secrets=engine.secrets_manager,
+                trigger_manager=engine.trigger_manager,
+            )
+            initial_state = payload.args or {}
+
+            queue: asyncio.Queue = asyncio.Queue()
+
+            async def emit(event: dict[str, Any]):
+                await queue.put(event)
+
+            async def runner():
+                try:
+                    result = await engine.flow_engine.run_flow_async(flow, context, initial_state=initial_state, stream_callback=emit)
+                    if result.errors:
+                        await emit(
+                            {
+                                "event": "flow_error",
+                                "error": result.errors[0].error if result.errors else "Flow error",
+                            }
+                        )
+                    else:
+                        await emit(
+                            {
+                                "event": "flow_done",
+                                "success": True,
+                                "result": result.to_dict() if hasattr(result, "to_dict") else asdict(result),
+                            }
+                        )
+                except Exception as exc:  # pragma: no cover
+                    await emit({"event": "flow_error", "error": str(exc)})
+                finally:
+                    await queue.put(None)
+
+            asyncio.create_task(runner())
+
+            async def event_stream():
+                while True:
+                    item = await queue.get()
+                    if item is None:
+                        break
+                    yield json.dumps(item) + "\n"
+
+            return StreamingResponse(event_stream(), media_type="application/json")
+        except HTTPException:
+            raise
+        except Exception as exc:  # pragma: no cover
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     def _find_element_by_id(pages: list[dict[str, Any]], element_id: str) -> dict[str, Any] | None:
         for page in pages:

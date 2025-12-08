@@ -50,3 +50,16 @@ def test_http_json_provider_missing_content_raises():
     )
     with pytest.raises(Namel3ssError):
         provider.invoke(messages=[{"role": "user", "content": "hi"}])
+
+
+def test_http_json_provider_streams_single_chunk():
+    provider = HTTPJsonProvider(
+        name="http_json",
+        base_url="http://localhost/api",
+        path="/chat",
+        default_model="local-model",
+        http_client=lambda u, b, h: {"content": "streamed"},
+    )
+    chunks = list(provider.invoke_stream(messages=[{"role": "user", "content": "hello"}]))
+    assert len(chunks) == 1
+    assert chunks[0].delta == "streamed"

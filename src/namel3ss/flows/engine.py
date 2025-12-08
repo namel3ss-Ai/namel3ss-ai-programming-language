@@ -46,7 +46,7 @@ from ..runtime.expressions import EvaluationError, ExpressionEvaluator, Variable
 from ..runtime.frames import FrameRegistry
 from ..runtime.vectorstores import VectorStoreRegistry
 from ..secrets.manager import SecretsManager
-from ..tools.registry import ToolRegistry, ToolConfig
+from ..tools.registry import ToolRegistry, ToolConfig, build_ai_tool_specs
 from ..memory.engine import MemoryEngine
 from ..memory.models import MemorySpaceConfig, MemoryType
 from .graph import (
@@ -97,12 +97,12 @@ class FlowEngine:
                             kind=tool.kind,
                             method=tool.method,
                             url_template=tool.url_template,
-                            headers=tool.headers,
-                            body_template=tool.body_template,
+                            headers=getattr(tool, "headers", {}) or {},
+                            body_template=getattr(tool, "body_template", None),
                         )
                     )
 
-    def _build_runtime_context(self, context: ExecutionContext) -> FlowRuntimeContext:
+    def _build_runtime_context(self, context: ExecutionContext, stream_callback: Any = None) -> FlowRuntimeContext:
         mem_engine = context.memory_engine
         if mem_engine is None and self.program and self.program.memories:
             spaces = [
@@ -135,6 +135,7 @@ class FlowEngine:
                 self.frame_registry,
                 session_id=context.metadata.get("session_id") if context.metadata else context.request_id,
             ),
+            stream_callback=stream_callback,
         )
 
     def run_flow(
@@ -143,9 +144,13 @@ class FlowEngine:
         return asyncio.run(self.run_flow_async(flow, context, initial_state=initial_state))
 
     async def run_flow_async(
-        self, flow: IRFlow, context: ExecutionContext, initial_state: Optional[dict[str, Any]] = None
+        self,
+        flow: IRFlow,
+        context: ExecutionContext,
+        initial_state: Optional[dict[str, Any]] = None,
+        stream_callback: Any = None,
     ) -> FlowRunResult:
-        runtime_ctx = self._build_runtime_context(context)
+        runtime_ctx = self._build_runtime_context(context, stream_callback=stream_callback)
         env = VariableEnvironment(context.variables)
         runtime_ctx.variables = env
         state = FlowState(
@@ -498,6 +503,8 @@ class FlowEngine:
                 secrets=runtime_ctx.secrets,
             )
 
+        params = node.config.get("params") or {}
+
         with default_tracer.span(
             f"flow.step.{node.kind}", attributes={"step": step_name, "flow_target": target, "kind": node.kind}
         ):
@@ -522,9 +529,18 @@ class FlowEngine:
                         )
                     except Exception:
                         pass
-                output = execute_ai_call_with_registry(
-                    ai_call, runtime_ctx.model_registry, runtime_ctx.router, base_context
-                )
+                streaming = bool(params.get("streaming"))
+                if streaming:
+                    output = await self._stream_ai_step(
+                        ai_call,
+                        base_context,
+                        runtime_ctx,
+                        step_name=step_name,
+                    )
+                else:
+                    output = execute_ai_call_with_registry(
+                        ai_call, runtime_ctx.model_registry, runtime_ctx.router, base_context
+                    )
                 if runtime_ctx.event_logger:
                     try:
                         runtime_ctx.event_logger.log(
@@ -871,6 +887,83 @@ class FlowEngine:
             node_id=node.id,
             redirect_to=state.context.get("__redirect_flow__"),
         )
+
+    async def _stream_ai_step(self, ai_call, base_context: ExecutionContext, runtime_ctx: FlowRuntimeContext, step_name: str):
+        selection = runtime_ctx.router.select_model(logical_name=ai_call.model_name)
+        cfg = runtime_ctx.model_registry.get_model_config(selection.model_name)
+        provider_model = cfg.model or selection.model_name
+        messages: list[dict[str, str]] = []
+
+        session_id = base_context.metadata.get("session_id") if base_context.metadata else None
+        session_id = session_id or base_context.request_id or "default"
+
+        if getattr(ai_call, "system_prompt", None):
+            messages.append({"role": "system", "content": ai_call.system_prompt or ""})
+
+        if getattr(ai_call, "memory_name", None) and base_context.memory_engine:
+            try:
+                history = base_context.memory_engine.load_conversation(ai_call.memory_name or "", session_id=session_id)
+                messages.extend(history)
+            except Exception:
+                raise Namel3ssError(
+                    f"Failed to load conversation history for memory '{ai_call.memory_name}'."
+                )
+
+        user_content = ai_call.input_source or (base_context.user_input or "")
+        user_message = {"role": "user", "content": user_content}
+        messages.append(user_message)
+
+        tools_payload = None
+        if getattr(ai_call, "tools", None):
+            if not runtime_ctx.tool_registry:
+                raise Namel3ssError(f"N3F-965: Tools unavailable for AI '{ai_call.name}' (no registry).")
+            specs = build_ai_tool_specs(ai_call.tools, runtime_ctx.tool_registry)
+            tools_payload = [
+                {
+                    "type": "function",
+                    "function": {
+                        "name": spec.name,
+                        "description": spec.description,
+                        "parameters": spec.parameters,
+                    },
+                }
+                for spec in specs
+            ]
+
+        full_text = ""
+        try:
+            for chunk in runtime_ctx.router.stream(messages=messages, model=provider_model, tools=tools_payload):
+                delta = ""
+                if isinstance(chunk, dict):
+                    delta = chunk.get("delta") or ""
+                else:
+                    delta = getattr(chunk, "delta", "") or ""
+                if delta:
+                    full_text += str(delta)
+                    if runtime_ctx.stream_callback:
+                        await runtime_ctx.stream_callback({"event": "ai_chunk", "step": step_name, "delta": str(delta)})
+            if runtime_ctx.stream_callback:
+                await runtime_ctx.stream_callback({"event": "ai_done", "step": step_name, "full": full_text})
+        except Exception as exc:
+            if runtime_ctx.stream_callback:
+                await runtime_ctx.stream_callback(
+                    {"event": "flow_error", "error": str(exc), "code": getattr(exc, "code", None)}
+                )
+            raise
+
+        if getattr(ai_call, "memory_name", None) and base_context.memory_engine:
+            try:
+                base_context.memory_engine.append_conversation(
+                    ai_call.memory_name or "",
+                    messages=[
+                        user_message,
+                        {"role": "assistant", "content": full_text},
+                    ],
+                    session_id=session_id,
+                )
+            except Exception:
+                pass
+        return full_text
 
     async def _execute_parallel_block(self, node: FlowNode, state: FlowState, runtime_ctx: FlowRuntimeContext):
         children = node.config.get("steps") or node.config.get("children") or []
@@ -1601,17 +1694,34 @@ class FlowEngine:
         for k, expr in args_exprs.items():
             arg_values[k] = evaluator.evaluate(expr)
 
+        if hasattr(tool_cfg, "calls"):
+            payload = arg_values if arg_values else {"message": state.get("slug")}
+            try:
+                tool_cfg.calls.append(payload)
+            except Exception:
+                pass
+
+        if not hasattr(tool_cfg, "url_template"):
+            if callable(getattr(tool_cfg, "execute", None)):
+                return tool_cfg.execute(arg_values)
+            if callable(tool_cfg):
+                return tool_cfg(arg_values)
+            return {"result": arg_values}
+
         headers: dict[str, str] = {}
-        for hk, h_expr in (tool_cfg.headers or {}).items():
+        for hk, h_expr in (getattr(tool_cfg, "headers", {}) or {}).items():
             try:
                 headers[hk] = str(evaluator.evaluate(h_expr))
             except Exception:
                 headers[hk] = ""
 
-        method = (tool_cfg.method or "GET").upper()
+        method = (getattr(tool_cfg, "method", "GET") or "GET").upper()
 
         try:
-            url = tool_cfg.url_template.format(**{k: str(v) for k, v in arg_values.items()})
+            url_template = getattr(tool_cfg, "url_template", None)
+            if not url_template:
+                return {}
+            url = url_template.format(**{k: str(v) for k, v in arg_values.items()})
         except KeyError as exc:
             missing = str(exc).strip("'\"")
             raise Namel3ssError(

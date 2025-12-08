@@ -138,16 +138,25 @@ def execute_ai_call_with_registry(
         tool_cfg = context.tool_registry.get(tool_name)
         if not tool_cfg:
             raise Namel3ssError(f"N3F-965: Tool '{tool_name}' unavailable.")
+        if not hasattr(tool_cfg, "url_template"):
+            if callable(getattr(tool_cfg, "execute", None)):
+                return tool_cfg.execute(args)
+            if callable(tool_cfg):
+                return tool_cfg(args)
+            return {"result": args}
         # Allow tests to supply mocked tool results via context.metadata
         mock_tools = (context.metadata or {}).get("mock_tool_results") if context.metadata else None
         if isinstance(mock_tools, dict) and tool_name in mock_tools:
             return mock_tools[tool_name]
         headers = {}
-        for hk, hv in (tool_cfg.headers or {}).items():
+        for hk, hv in (getattr(tool_cfg, "headers", {}) or {}).items():
             headers[hk] = str(hv) if not isinstance(hv, dict) else json.dumps(hv)
-        method = (tool_cfg.method or "GET").upper()
+        method = (getattr(tool_cfg, "method", "GET") or "GET").upper()
         try:
-            url = tool_cfg.url_template.format(**{k: str(v) for k, v in args.items()})
+            url_template = getattr(tool_cfg, "url_template", None)
+            if not url_template:
+                return {}
+            url = url_template.format(**{k: str(v) for k, v in args.items()})
         except KeyError as exc:
             missing = str(exc).strip("'\"")
             raise Namel3ssError(f"N3F-965: Missing arg '{missing}' for tool '{tool_cfg.name}' url_template.")

@@ -100,6 +100,7 @@ class FlowRuntimeContext:
     step_results: list | None = None
     variables: VariableEnvironment | None = None
     event_logger: Any = None
+    stream_callback: Any = None
 
 
 def flow_ir_to_graph(flow: IRFlow) -> FlowGraph:

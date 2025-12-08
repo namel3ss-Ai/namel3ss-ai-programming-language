@@ -46,6 +46,51 @@ export const postDiagnostics = (source: string) =>
     body: JSON.stringify({ code: source }),
   });
 
+export type StreamEvent =
+  | { event: "ai_chunk"; step: string; delta: string }
+  | { event: "ai_done"; step: string; full: string }
+  | { event: "flow_done"; success: boolean; result: any }
+  | { event: "flow_error"; error: string; code?: string };
+
+export async function runFlowStreaming(flow: string, args: any, onEvent: (event: StreamEvent) => void): Promise<void> {
+  const url = `${defaultBase}/api/ui/flow/stream`;
+  const res = await fetch(url, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "X-API-Key": apiKey,
+    },
+    body: JSON.stringify({ flow, args }),
+  });
+  if (!res.ok) {
+    const detail = await res.text();
+    throw new Error(`API ${res.status}: ${detail}`);
+  }
+  if (!res.body) return;
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+    let idx = buffer.indexOf("\n");
+    while (idx !== -1) {
+      const line = buffer.slice(0, idx).trim();
+      buffer = buffer.slice(idx + 1);
+      if (line) {
+        try {
+          const evt = JSON.parse(line) as StreamEvent;
+          onEvent(evt);
+        } catch {
+          // ignore malformed lines
+        }
+      }
+      idx = buffer.indexOf("\n");
+    }
+  }
+}
+
 export const postFmtPreview = (source: string) =>
   request<FmtPreviewResponse>("/api/fmt/preview", {
     method: "POST",
@@ -132,4 +177,5 @@ export const ApiClient = {
     }),
   postFmtPreview,
   postRunApp,
+  runFlowStreaming,
 };
