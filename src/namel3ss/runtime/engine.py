@@ -16,6 +16,7 @@ from ..agent.teams import AgentTeamRunner
 from ..ai.config import default_global_ai_config
 from ..ai.registry import ModelRegistry
 from ..ai.router import ModelRouter
+from ..config import load_config
 from ..distributed.queue import JobQueue, global_job_queue
 from ..distributed.scheduler import JobScheduler
 from ..errors import Namel3ssError
@@ -57,6 +58,7 @@ class Engine:
     ) -> None:
         self.program = program
         self.secrets_manager = SecretsManager()
+        self.config = load_config()
         from ..memory.registry import build_memory_store_registry
         self.memory_stores = build_memory_store_registry(self.secrets_manager)
         self.metrics_tracker = metrics_tracker or MetricsTracker()
@@ -298,7 +300,7 @@ class Engine:
         return graph
 
     def _build_registry(self, program: IRProgram) -> ModelRegistry:
-        registry = ModelRegistry(secrets=self.secrets_manager)
+        registry = ModelRegistry(secrets=self.secrets_manager, providers_config=self.config.providers_config)
         for model in program.models.values():
             registry.register_model(model.name, model.provider)
         # Ensure agents or other components may register providers later.

@@ -115,6 +115,25 @@ def test_ir_validation_missing_required_field_in_create():
     assert "N3L-1502" in str(exc.value)
 
 
+def test_ir_validation_missing_record_reference():
+    frame = ast_nodes.FrameDecl(name="documents", backend="memory", table="documents")
+    flow = ast_nodes.FlowDecl(
+        name="create_doc",
+        steps=[
+            ast_nodes.FlowStepDecl(
+                name="create",
+                kind="db_create",
+                target="Missing",
+                params={"values": {"id": ast_nodes.Literal(value="1")}},
+            )
+        ],
+    )
+    module = ast_nodes.Module(declarations=[frame, flow])
+    with pytest.raises(IRError) as exc:
+        ast_to_ir(module)
+    assert "N3L-1500" in str(exc.value)
+
+
 def test_runtime_record_crud_flow():
     record = IRRecord(
         name="Document",

@@ -3,7 +3,7 @@ Custom error types for the Namel3ss V3 toolchain.
 """
 
 from dataclasses import dataclass
-from typing import Optional
+from typing import Any, Optional
 
 
 @dataclass
@@ -34,3 +34,27 @@ class ParseError(Namel3ssError):
 
 class IRError(Namel3ssError):
     """Intermediate representation transformation error."""
+
+
+@dataclass
+class ProviderConfigError(Namel3ssError):
+    """Raised when provider configuration is missing or invalid."""
+
+    code: str = "N3P-1801"
+    diagnostics: list[dict[str, Any]] | None = None
+
+    def __post_init__(self) -> None:  # pragma: no cover - trivial
+        if self.diagnostics is None:
+            self.diagnostics = [{"code": self.code, "message": self.message, "severity": "error"}]
+
+
+@dataclass
+class ProviderAuthError(Namel3ssError):
+    """Raised when provider rejects credentials (401/403)."""
+
+    code: str = "N3P-1802"
+    diagnostics: list[dict[str, Any]] | None = None
+
+    def __post_init__(self) -> None:  # pragma: no cover - trivial
+        if self.diagnostics is None:
+            self.diagnostics = [{"code": self.code, "message": self.message, "severity": "error"}]

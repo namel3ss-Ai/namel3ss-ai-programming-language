@@ -4,8 +4,9 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import Dict, Iterable, List, Optional, Tuple
+import urllib.error
 
-from ..errors import Namel3ssError
+from ..errors import Namel3ssError, ProviderAuthError
 from ..secrets.manager import SecretsManager
 from .config import GlobalAIConfig, default_global_ai_config
 from .models import ModelResponse, ModelStreamChunk
@@ -64,51 +65,13 @@ class ModelRouter:
         if prefix in self._provider_cache:
             return self._provider_cache[prefix]
 
-        if prefix == "openai":
-            api_key = self.secrets.get("N3_OPENAI_API_KEY") or self.secrets.get("OPENAI_API_KEY") or ""
-            base_url = self.secrets.get("N3_OPENAI_BASE_URL")
-            if not api_key and not base_url:
-                raise Namel3ssError("OpenAI provider requires N3_OPENAI_API_KEY or OPENAI_API_KEY")
-            provider = OpenAIProvider(name="openai", api_key=api_key, base_url=base_url, default_model=default_model)
-        elif prefix == "anthropic":
-            api_key = self.secrets.get("N3_ANTHROPIC_API_KEY") or self.secrets.get("ANTHROPIC_API_KEY") or ""
-            if not api_key:
-                raise Namel3ssError("Anthropic provider requires N3_ANTHROPIC_API_KEY or ANTHROPIC_API_KEY")
-            provider = AnthropicProvider(
-                name="anthropic",
-                api_key=api_key,
-                base_url=self.secrets.get("N3_ANTHROPIC_BASE_URL"),
-                default_model=default_model,
-            )
-        elif prefix == "gemini":
-            api_key = self.secrets.get("N3_GEMINI_API_KEY") or self.secrets.get("GEMINI_API_KEY") or ""
-            if not api_key:
-                raise Namel3ssError("Gemini provider requires N3_GEMINI_API_KEY or GEMINI_API_KEY")
-            provider = GeminiProvider(
-                name="gemini",
-                api_key=api_key,
-                base_url=self.secrets.get("N3_GEMINI_BASE_URL"),
-                default_model=default_model,
-            )
-        elif prefix == "ollama":
-            base_url = self.secrets.get("N3_OLLAMA_URL") or "http://localhost:11434"
-            provider = OllamaProvider(name="ollama", base_url=base_url, default_model=default_model)
-        elif prefix == "lmstudio":
-            base_url = self.secrets.get("N3_LMSTUDIO_URL")
-            if not base_url:
-                raise Namel3ssError("LMStudio provider requires N3_LMSTUDIO_URL")
-            provider = LMStudioProvider(base_url=base_url, default_model=default_model)
-        elif prefix in {"http", "generic"}:
-            base_url = self.secrets.get("N3_GENERIC_AI_URL")
-            if not base_url:
-                raise Namel3ssError("Generic HTTP provider requires N3_GENERIC_AI_URL")
-            provider = GenericHTTPProvider(
-                base_url=base_url,
-                api_key=self.secrets.get("N3_GENERIC_AI_API_KEY"),
-                default_model=default_model,
-            )
-        else:
-            provider = DummyProvider(name="dummy", default_model=default_model)
+        # Route through the registry's provider factory for consistent config handling.
+        temp_cfg = ModelConfig(
+            name=f"temp:{prefix}",
+            provider=prefix,
+            model=default_model,
+        )
+        provider = self.registry._create_provider(temp_cfg)
 
         self._provider_cache[prefix] = provider
         return provider
@@ -125,6 +88,12 @@ class ModelRouter:
 
     def _resolve(self, model: Optional[str]) -> Tuple[ModelProvider, str, SelectedModel]:
         target_model = model or self.config.default_chat_model
+        if not target_model and self.registry.providers_config.default:
+            default_name = self.registry.providers_config.default
+            default_cfg = self.registry.providers_config.providers.get(default_name)
+            if default_cfg and default_cfg.model_default:
+                target_model = default_cfg.model_default
+                model = target_model
         if target_model:
             cfg = self._ensure_registered_from_spec(target_model)
             provider = self.registry.get_provider_for_model(cfg.name)
@@ -145,6 +114,13 @@ class ModelRouter:
         provider, actual_model, selection = self._resolve(model)
         try:
             return provider.generate(messages=messages, model=actual_model, json_mode=json_mode, **kwargs)
+        except urllib.error.HTTPError as exc:
+            if exc.code in {401, 403}:
+                raise ProviderAuthError(
+                    f"Provider '{selection.provider_name}' rejected the API key (unauthorized). Check your key and account permissions.",
+                    code="N3P-1802",
+                ) from exc
+            raise
         except Exception as exc:
             # Fallbacks
             for fallback_prefix in self.config.fallback_providers:
@@ -166,6 +142,13 @@ class ModelRouter:
         provider, actual_model, selection = self._resolve(model)
         try:
             return provider.stream(messages=messages, model=actual_model, json_mode=json_mode, **kwargs)
+        except urllib.error.HTTPError as exc:
+            if exc.code in {401, 403}:
+                raise ProviderAuthError(
+                    f"Provider '{selection.provider_name}' rejected the API key (unauthorized). Check your key and account permissions.",
+                    code="N3P-1802",
+                ) from exc
+            raise
         except Exception as exc:
             for fallback_prefix in self.config.fallback_providers:
                 try:

@@ -61,6 +61,8 @@ class Parser:
             return self.parse_memory()
         if token.value == "record":
             return self.parse_record()
+        if token.value == "auth":
+            return self.parse_auth()
         if token.value == "frame":
             return self.parse_frame()
         if token.value == "vector_store":
@@ -464,6 +466,7 @@ class Parser:
         self.consume("INDENT")
 
         model_name = None
+        provider_name = None
         input_source = None
         description = None
         system_prompt = None
@@ -481,6 +484,14 @@ class Parser:
                 else:
                     model_tok = self.consume("STRING")
                 model_name = model_tok.value
+                self.optional_newline()
+            elif field_token.value == "provider":
+                self.advance()
+                if self.match_value("KEYWORD", "is"):
+                    provider_tok = self.consume_any({"STRING", "IDENT", "KEYWORD"})
+                else:
+                    provider_tok = self.consume("STRING")
+                provider_name = provider_tok.value
                 self.optional_newline()
             elif field_token.value == "system":
                 if system_prompt is not None:
@@ -558,6 +569,7 @@ class Parser:
         return ast_nodes.AICallDecl(
             name=name.value or "",
             model_name=model_name,
+            provider=provider_name,
             input_source=input_source,
             description=description,
             system_prompt=system_prompt,
@@ -1281,6 +1293,56 @@ class Parser:
             name=name_tok.value or "",
             frame=frame_name or "",
             fields=field_decls,
+            span=self._span(start),
+        )
+
+    def parse_auth(self) -> ast_nodes.AuthDecl:
+        start = self.consume("KEYWORD", "auth")
+        if self.match_value("KEYWORD", "is"):
+            pass
+        self.consume("COLON")
+        self.consume("NEWLINE")
+        self.consume("INDENT")
+
+        backend = None
+        user_record = None
+        id_field = None
+        identifier_field = None
+        password_hash_field = None
+        allowed_fields = {"backend", "user_record", "id_field", "identifier_field", "password_hash_field"}
+        while not self.check("DEDENT"):
+            if self.match("NEWLINE"):
+                continue
+            field_token = self.consume("KEYWORD")
+            if field_token.value not in allowed_fields:
+                raise self.error(
+                    f"Unexpected field '{field_token.value}' in auth block",
+                    field_token,
+                )
+            if self.match_value("KEYWORD", "is"):
+                value_tok = self.consume_any({"STRING", "IDENT", "KEYWORD"})
+            else:
+                value_tok = self.consume_any({"STRING", "IDENT", "KEYWORD"})
+            value = value_tok.value or ""
+            if field_token.value == "backend":
+                backend = value
+            elif field_token.value == "user_record":
+                user_record = value
+            elif field_token.value == "id_field":
+                id_field = value
+            elif field_token.value == "identifier_field":
+                identifier_field = value
+            elif field_token.value == "password_hash_field":
+                password_hash_field = value
+            self.optional_newline()
+        self.consume("DEDENT")
+        self.optional_newline()
+        return ast_nodes.AuthDecl(
+            backend=backend,
+            user_record=user_record,
+            id_field=id_field,
+            identifier_field=identifier_field,
+            password_hash_field=password_hash_field,
             span=self._span(start),
         )
 
@@ -3424,6 +3486,9 @@ class Parser:
             "db_get",
             "db_update",
             "db_delete",
+            "auth_register",
+            "auth_login",
+            "auth_logout",
         } and not statements:
             action = ast_nodes.FlowAction(
                 kind=kind,
@@ -3431,7 +3496,7 @@ class Parser:
                 args={
                     k: v
                     for k, v in extra_params.items()
-                    if k in {"values", "where", "set", "vector_store", "query_text", "top_k", "by_id", "limit"}
+                    if k in {"values", "where", "set", "vector_store", "query_text", "top_k", "by_id", "limit", "input"}
                 },
                 span=None,
             )
@@ -4370,11 +4435,9 @@ class Parser:
                 value = tok.value or ""
                 if "." in value:
                     parts = value.split(".")
-                    expr = ast_nodes.Identifier(name=parts[0], span=self._span(tok))
-                    for part in parts[1:]:
-                        expr = ast_nodes.RecordFieldAccess(target=expr, field=part)
+                    expr = ast_nodes.VarRef(name=value, root=parts[0], path=parts[1:], kind=ast_nodes.VarRefKind.UNKNOWN, span=self._span(tok))
                 else:
-                    expr = ast_nodes.Identifier(name=value, span=self._span(tok))
+                    expr = ast_nodes.VarRef(name=value, root=value, path=[], kind=ast_nodes.VarRefKind.UNKNOWN, span=self._span(tok))
             return self.parse_postfix(expr)
         if token.type == "LPAREN":
             self.consume("LPAREN")

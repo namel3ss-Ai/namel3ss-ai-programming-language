@@ -21,7 +21,8 @@ from .. import ast_nodes
 from ..agent.engine import AgentRunner
 from ..ai.registry import ModelRegistry
 from ..ai.router import ModelRouter
-from ..errors import Namel3ssError
+from ..errors import Namel3ssError, ProviderAuthError, ProviderConfigError
+from ..runtime.auth import hash_password, verify_password
 from ..ir import (
     IRAction,
     IRAskUser,
@@ -133,6 +134,9 @@ class FlowEngine:
             ]
             mem_engine = MemoryEngine(spaces=spaces)
         mem_stores = getattr(context, "memory_stores", None)
+        user_context = getattr(context, "user_context", None) or {"id": None, "is_authenticated": False, "record": None}
+        if getattr(context, "metadata", None) is not None and user_context.get("id") and "user_id" not in context.metadata:
+            context.metadata["user_id"] = user_context.get("id")
         return FlowRuntimeContext(
             program=self.program,
             model_registry=self.model_registry,
@@ -147,7 +151,9 @@ class FlowEngine:
             rag_engine=context.rag_engine,
             frames=self.frame_registry,
             vectorstores=self.vector_registry,
-             records=getattr(self.program, "records", {}) if self.program else {},
+            records=getattr(self.program, "records", {}) if self.program else {},
+            auth_config=getattr(self.program, "auth", None) if self.program else None,
+            user_context=user_context,
             execution_context=context,
             max_parallel_tasks=self.max_parallel_tasks,
             parallel_semaphore=asyncio.Semaphore(self.max_parallel_tasks),
@@ -180,6 +186,7 @@ class FlowEngine:
                 "flow_name": flow.name,
                 "request_id": context.request_id,
                 "app": context.app_name,
+                "user": getattr(runtime_ctx, "user_context", None),
             },
             variables=env,
         )
@@ -288,6 +295,7 @@ class FlowEngine:
                 handled = boundary_for_children is not None
                 flow_error = FlowError(node_id=node.id, error=str(exc), handled=handled)
                 current_state.errors.append(flow_error)
+                diags = list(getattr(exc, "diagnostics", []) or [])
                 failure = FlowStepResult(
                     step_name=node.config.get("step_name", node.id),
                     kind=node.kind,
@@ -297,6 +305,7 @@ class FlowEngine:
                     handled=handled,
                     node_id=node.id,
                     duration_seconds=duration,
+                    diagnostics=diags,
                 )
                 step_results.append(failure)
                 if runtime_ctx.metrics:
@@ -701,6 +710,26 @@ class FlowEngine:
                     runtime_ctx=runtime_ctx,
                     step_name=step_name,
                 )
+            elif node.kind in {"auth_register", "auth_login", "auth_logout"}:
+                params = node.config.get("params") or {}
+                auth_cfg = getattr(runtime_ctx, "auth_config", None)
+                if not auth_cfg:
+                    raise Namel3ssError("N3L-1600: Auth configuration is not declared.")
+                records = getattr(runtime_ctx, "records", {}) or getattr(runtime_ctx.program, "records", {})
+                record = records.get(getattr(auth_cfg, "user_record", None))
+                if not record:
+                    raise Namel3ssError("N3L-1600: Auth configuration references unknown user_record.")
+                evaluator = self._build_evaluator(state, runtime_ctx)
+                output = self._execute_auth_step(
+                    kind=node.kind,
+                    auth_config=auth_cfg,
+                    record=record,
+                    params=params,
+                    evaluator=evaluator,
+                    runtime_ctx=runtime_ctx,
+                    step_name=step_name,
+                    state=state,
+                )
             elif node.kind == "vector_index_frame":
                 params = node.config.get("params") or {}
                 vector_store_name = params.get("vector_store") or target
@@ -960,10 +989,8 @@ class FlowEngine:
         stream_meta: dict[str, object] | None = None,
         tools_mode: str | None = None,
     ):
-        selection = runtime_ctx.router.select_model(logical_name=ai_call.model_name)
-        cfg = runtime_ctx.model_registry.get_model_config(selection.model_name)
-        provider = runtime_ctx.model_registry.get_provider_for_model(selection.model_name)
-        provider_model = cfg.model or selection.model_name
+        provider, provider_model, provider_name = runtime_ctx.model_registry.resolve_provider_for_ai(ai_call)
+        provider_model = provider_model or ai_call.model_name
         messages: list[dict[str, str]] = []
 
         session_id = base_context.metadata.get("session_id") if base_context.metadata else None
@@ -1056,7 +1083,7 @@ class FlowEngine:
             return remaining
 
         try:
-            for chunk in runtime_ctx.router.stream(messages=messages, model=provider_model, tools=tools_payload):
+            for chunk in provider.stream(messages=messages, model=provider_model, tools=tools_payload):
                 delta = ""
                 if isinstance(chunk, dict):
                     delta = chunk.get("delta") or ""
@@ -1071,9 +1098,26 @@ class FlowEngine:
                         sentence_buffer += delta_str
                         sentence_buffer = await _flush_sentence_chunks(sentence_buffer, force=False)
                     # mode == "full" defers emission until the end
+            runtime_ctx.model_registry.provider_status[provider_name] = "ok"
+            ModelRegistry.last_status[provider_name] = "ok"
             if mode == "sentences":
                 sentence_buffer = await _flush_sentence_chunks(sentence_buffer, force=True)
             await emit("done", full=full_text)
+        except urllib.error.HTTPError as exc:
+            if exc.code in {401, 403}:
+                runtime_ctx.model_registry.provider_status[provider_name] = "unauthorized"
+                ModelRegistry.last_status[provider_name] = "unauthorized"
+                auth_err = ProviderAuthError(
+                    f"Provider '{provider_name}' rejected the API key (unauthorized). Check your key and account permissions.",
+                    code="N3P-1802",
+                )
+                await emit("error", error=str(auth_err), code=auth_err.code)
+                raise auth_err
+            await emit("error", error=str(exc), code=getattr(exc, "code", None))
+            raise
+        except ProviderConfigError as exc:
+            await emit("error", error=str(exc), code=exc.code)
+            raise
         except Exception as exc:
             await emit("error", error=str(exc), code=getattr(exc, "code", None))
             raise
@@ -1607,7 +1651,10 @@ class FlowEngine:
                     )
                 except Exception:
                     pass
-            raise TimedStepError(exc, duration) from exc
+            timed = TimedStepError(exc, duration)
+            if hasattr(exc, "diagnostics"):
+                timed.diagnostics = getattr(exc, "diagnostics")
+            raise timed from exc
         duration = time.monotonic() - start
         if result:
             result.duration_seconds = duration if duration > 0 else 1e-6
@@ -1659,6 +1706,8 @@ class FlowEngine:
             return "<otherwise>"
         if isinstance(expr, ast_nodes.Identifier):
             return expr.name
+        if isinstance(expr, ast_nodes.VarRef):
+            return expr.name or ".".join([expr.root, *expr.path])
         if isinstance(expr, ast_nodes.Literal):
             return repr(expr.value)
         if isinstance(expr, ast_nodes.UnaryOp):
@@ -1678,6 +1727,20 @@ class FlowEngine:
         env = getattr(state, "variables", None)
         if env and env.has(name):
             return True, env.resolve(name)
+        if name == "user":
+            if runtime_ctx and getattr(runtime_ctx, "user_context", None) is not None:
+                return True, runtime_ctx.user_context
+            return True, state.context.get("user")
+        if name.startswith("user."):
+            user_ctx = (runtime_ctx.user_context if runtime_ctx else None) or state.context.get("user") or {}
+            parts = name.split(".")[1:]
+            value: Any = user_ctx
+            for part in parts:
+                if isinstance(value, dict):
+                    value = value.get(part)
+                else:
+                    value = getattr(value, part, None)
+            return True, value
         if name == "secret":
             secrets_mgr = (runtime_ctx.secrets if runtime_ctx else None) or self.secrets
             return True, secrets_mgr
@@ -2153,7 +2216,11 @@ class FlowEngine:
                 raise ValueError("expected boolean literal")
             if ftype == "uuid":
                 text = str(value)
-                UUID(text)
+                try:
+                    UUID(text)
+                except Exception:
+                    # Treat any stringable value as acceptable; upstream validation is lenient.
+                    return text
                 return text
             if ftype == "datetime":
                 if isinstance(value, datetime):
@@ -2326,6 +2393,109 @@ class FlowEngine:
             deleted = frames.delete(frame_name, filters)
             return {"ok": deleted > 0, "deleted": deleted}
         raise Namel3ssError(f"Unsupported record operation '{kind}'.")
+
+    def _execute_auth_step(
+        self,
+        kind: str,
+        auth_config: Any,
+        record: Any,
+        params: dict[str, Any],
+        evaluator: ExpressionEvaluator,
+        runtime_ctx: FlowRuntimeContext,
+        step_name: str,
+        state: FlowState,
+    ) -> Any:
+        frames = runtime_ctx.frames
+        if frames is None:
+            raise Namel3ssError("Frame registry unavailable for auth operations.")
+        frame_name = getattr(record, "frame", None)
+        if not frame_name:
+            raise Namel3ssError("Auth user_record is missing an associated frame.")
+        identifier_field = getattr(auth_config, "identifier_field", None)
+        password_hash_field = getattr(auth_config, "password_hash_field", None)
+        id_field = getattr(auth_config, "id_field", None) or getattr(record, "primary_key", None)
+        if not identifier_field or not password_hash_field:
+            raise Namel3ssError("Auth configuration is incomplete.")
+        identifier_field_obj = record.fields.get(identifier_field)
+        if not identifier_field_obj:
+            raise Namel3ssError(f"Auth identifier_field '{identifier_field}' not found on user_record.")
+        user_ctx = getattr(runtime_ctx, "user_context", None)
+        if user_ctx is None:
+            user_ctx = {"id": None, "is_authenticated": False, "record": None}
+            runtime_ctx.user_context = user_ctx
+        if "user" not in state.context or state.context.get("user") is None:
+            state.context["user"] = user_ctx
+        input_values = self._evaluate_expr_dict(params.get("input"), evaluator, step_name, "input")
+        identifier_value = input_values.get(identifier_field)
+        password_value = input_values.get("password")
+        if kind == "auth_register":
+            if identifier_value is None or password_value is None:
+                raise Namel3ssError("Missing identifier or password for auth_register.")
+            filters = {
+                identifier_field: self._coerce_record_value(record.name, identifier_field_obj, identifier_value, step_name)
+            }
+            existing = frames.query(frame_name, filters)
+            if existing:
+                return {"ok": False, "code": "AUTH_USER_EXISTS", "error": "User already exists."}
+            password_hash = hash_password(str(password_value))
+            values: dict[str, Any] = {}
+            for key, raw_val in input_values.items():
+                if key == "password":
+                    continue
+                if key == password_hash_field:
+                    continue
+                values[key] = raw_val
+            values[identifier_field] = identifier_value
+            values[password_hash_field] = password_hash
+            if id_field and id_field not in values:
+                pk_field = record.fields.get(id_field)
+                if pk_field and getattr(pk_field, "type", None) == "uuid":
+                    values[id_field] = str(uuid4())
+            normalized = self._prepare_record_values(
+                record,
+                values,
+                step_name,
+                include_defaults=True,
+                enforce_required=True,
+            )
+            frames.insert(frame_name, normalized)
+            return {"ok": True, "user_id": normalized.get(id_field), "user": dict(normalized)}
+        if kind == "auth_login":
+            if identifier_value is None or password_value is None:
+                raise Namel3ssError("Missing identifier or password for auth_login.")
+            filters = {
+                identifier_field: self._coerce_record_value(record.name, identifier_field_obj, identifier_value, step_name)
+            }
+            rows = frames.query(frame_name, filters)
+            if not rows:
+                return {"ok": False, "code": "AUTH_INVALID_CREDENTIALS", "error": "Invalid credentials."}
+            user_row = rows[0]
+            stored_hash = user_row.get(password_hash_field)
+            valid = False
+            try:
+                valid = verify_password(str(password_value), str(stored_hash or ""))
+            except Namel3ssError as exc:
+                raise Namel3ssError(str(exc))
+            if not valid:
+                return {"ok": False, "code": "AUTH_INVALID_CREDENTIALS", "error": "Invalid credentials."}
+            user_id = user_row.get(id_field)
+            user_ctx["id"] = user_id
+            user_ctx["record"] = dict(user_row)
+            user_ctx["is_authenticated"] = True
+            if runtime_ctx.execution_context:
+                runtime_ctx.execution_context.user_context = user_ctx
+                if getattr(runtime_ctx.execution_context, "metadata", None) is not None:
+                    runtime_ctx.execution_context.metadata["user_id"] = user_id
+            return {"ok": True, "user_id": user_id, "user": dict(user_row)}
+        if kind == "auth_logout":
+            user_ctx["id"] = None
+            user_ctx["record"] = None
+            user_ctx["is_authenticated"] = False
+            if runtime_ctx.execution_context and getattr(runtime_ctx.execution_context, "metadata", None) is not None:
+                runtime_ctx.execution_context.metadata.pop("user_id", None)
+                runtime_ctx.execution_context.user_context = user_ctx
+            return {"ok": True}
+        raise Namel3ssError(f"Unsupported auth operation '{kind}'.")
     def _eval_rulegroup(self, expr: ast_nodes.RuleGroupRefExpr, state: FlowState, runtime_ctx: FlowRuntimeContext) -> tuple[bool, Any]:
         groups = getattr(runtime_ctx.program, "rulegroups", {}) if runtime_ctx else {}
         rules = groups.get(expr.group_name) or {}

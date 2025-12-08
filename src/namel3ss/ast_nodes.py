@@ -5,6 +5,7 @@ AST node definitions for the Namel3ss V3 language.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from enum import Enum
 from typing import Any, Dict, List, Optional, Union
 
 
@@ -83,6 +84,7 @@ class AICallDecl:
 
     name: str
     model_name: Optional[str] = None
+    provider: Optional[str] = None
     input_source: Optional[str] = None
     description: Optional[str] = None
     system_prompt: Optional[str] = None
@@ -240,6 +242,16 @@ class RecordDecl:
     name: str
     frame: str
     fields: List[RecordFieldDecl] = field(default_factory=list)
+    span: Optional[Span] = None
+
+
+@dataclass
+class AuthDecl:
+    backend: str | None = None
+    user_record: str | None = None
+    id_field: str | None = None
+    identifier_field: str | None = None
+    password_hash_field: str | None = None
     span: Optional[Span] = None
 
 
@@ -451,6 +463,27 @@ class PatternPair:
 class PatternExpr(Expr):
     subject: Identifier = field(default_factory=Identifier)
     pairs: List[PatternPair] = field(default_factory=list)
+
+
+class VarRefKind(str, Enum):
+    UNKNOWN = "unknown"
+    STATE = "state"
+    USER = "user"
+    STEP_OUTPUT = "step_output"
+    LOCAL = "local"
+    LOOP_VAR = "loop_var"
+    INPUT = "input"
+    SECRET = "secret"
+    ENV = "env"
+    CONFIG = "config"
+
+
+@dataclass
+class VarRef(Expr):
+    name: str = ""
+    root: str = ""
+    path: List[str] = field(default_factory=list)
+    kind: VarRefKind = VarRefKind.UNKNOWN
 
 
 @dataclass
@@ -877,6 +910,8 @@ Declaration = Union[
     AgentDecl,
     MemoryDecl,
     FrameDecl,
+    RecordDecl,
+    AuthDecl,
     VectorStoreDecl,
     MacroDecl,
     MacroUse,

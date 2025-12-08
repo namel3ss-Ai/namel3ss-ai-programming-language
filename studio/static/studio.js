@@ -45,6 +45,34 @@
     el.textContent = formatted;
   }
 
+  async function loadProviderStatus() {
+    const pill = document.getElementById("provider-status");
+    if (!pill) return;
+    pill.textContent = "Provider: checking…";
+    pill.classList.remove("warn", "error");
+    try {
+      const status = await jsonRequest("/api/providers/status");
+      const defaultName = status.default || "none";
+      const primary = (status.providers || []).find((p) => p.name === defaultName) || (status.providers || [])[0];
+      if (!primary) {
+        pill.textContent = "Provider: not configured";
+        pill.classList.add("warn");
+        return;
+      }
+      const icon = primary.last_check_status === "ok" ? "✅" : primary.last_check_status === "unauthorized" ? "❌" : "⚠️";
+      if (primary.last_check_status === "missing_key") {
+        pill.classList.add("warn");
+      } else if (primary.last_check_status === "unauthorized") {
+        pill.classList.add("error");
+      }
+      const label = primary.last_check_status === "ok" ? "OK" : primary.last_check_status.replace("_", " ");
+      pill.textContent = `${icon} Provider: ${primary.name} (${primary.type}) — ${label}`;
+    } catch (err) {
+      pill.textContent = `Provider: error ${err.message}`;
+      pill.classList.add("error");
+    }
+  }
+
   function activatePanel(panel) {
     document.querySelectorAll(".studio-tab").forEach((tab) => {
       tab.classList.toggle("active", tab.dataset.panel === panel);
@@ -270,6 +298,7 @@
     initTabs();
     initButtons();
     activatePanel("overview");
+    loadProviderStatus();
     setStatus("Ready.");
   });
 })();

@@ -9,13 +9,14 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone, timedelta
 from typing import Any, Dict, List, Optional, TypedDict
 import re
+from types import SimpleNamespace
 
 from ..ai.registry import ModelRegistry
 from ..ai.router import ModelRouter
 from ..ir import IRAgent, IRAiCall, IRAiShortTermMemoryConfig, IRApp, IRMemory, IRPage, IRProgram
 from ..memory.engine import MemoryEngine
 from ..metrics.tracker import MetricsTracker
-from ..errors import Namel3ssError
+from ..errors import Namel3ssError, ProviderAuthError, ProviderConfigError
 from ..obs.tracer import Tracer
 from ..rag.engine import RAGEngine
 from ..secrets.manager import SecretsManager
@@ -175,6 +176,7 @@ class ExecutionContext:
     user_input: Optional[str] = None
     metadata: Dict[str, Any] = field(default_factory=dict)
     variables: Dict[str, Any] = field(default_factory=dict)
+    user_context: Dict[str, Any] = field(default_factory=lambda: {"id": None, "is_authenticated": False, "record": None})
     memory_engine: Optional[MemoryEngine] = None
     memory_stores: Optional[Dict[str, Any]] = None
     rag_engine: Optional[RAGEngine] = None
@@ -774,9 +776,9 @@ def execute_ai_call_with_registry(
 ) -> Dict[str, Any]:
     """Execute an AI call through the model registry."""
 
-    selection = router.select_model(logical_name=ai_call.model_name)
-    cfg = registry.get_model_config(selection.model_name)
-    provider = registry.get_provider_for_model(selection.model_name)
+    provider, provider_model, provider_name = registry.resolve_provider_for_ai(ai_call)
+    provider_model = provider_model or getattr(provider, "default_model", None) or getattr(ai_call, "model_name", None)
+    selection = SimpleNamespace(provider_name=provider_name, model_name=provider_model or provider_name)
     messages: list[Dict[str, str]] = []
 
     session_id = context.metadata.get("session_id") if context.metadata else None
@@ -813,8 +815,6 @@ def execute_ai_call_with_registry(
             list(getattr(memory_cfg, "recall", []) or []),
             messages,
         )
-
-    provider_model = cfg.model or selection.model_name
 
     def _http_json_request(method: str, url: str, headers: dict[str, str], body: bytes | None) -> dict:
         req = urllib.request.Request(url, data=body, headers=headers, method=method)
@@ -963,13 +963,26 @@ def execute_ai_call_with_registry(
             "json": None,
         }
 
+    invocation = None
     if tools_enabled and tool_schemas:
-        chat_response = provider.chat_with_tools(
-            messages=messages,
-            tools=tool_schemas,
-            tool_choice="auto",
-            model=provider_model,
-        )
+        try:
+            chat_response = provider.chat_with_tools(
+                messages=messages,
+                tools=tool_schemas,
+                tool_choice="auto",
+                model=provider_model,
+            )
+            registry.provider_status[provider_name] = "ok"
+            ModelRegistry.last_status[provider_name] = "ok"
+        except urllib.error.HTTPError as exc:  # pragma: no cover - live calls
+            if exc.code in {401, 403}:
+                registry.provider_status[provider_name] = "unauthorized"
+                ModelRegistry.last_status[provider_name] = "unauthorized"
+                raise ProviderAuthError(
+                    f"Provider '{provider_name}' rejected the API key (unauthorized). Check your key and account permissions.",
+                    code="N3P-1802",
+                ) from exc
+            raise
         tool_calls = list(chat_response.tool_calls or [])
         assistant_content = chat_response.final_text or ""
         provider_payload = _build_provider_payload(chat_response.raw, chat_response.finish_reason)
@@ -1004,16 +1017,40 @@ def execute_ai_call_with_registry(
                         "content": json.dumps(tool_result),
                     }
                 )
-            follow_up = provider.chat_with_tools(
-                messages=messages,
-                tools=tool_schemas,
-                tool_choice="none",
-                model=provider_model,
-            )
+            try:
+                follow_up = provider.chat_with_tools(
+                    messages=messages,
+                    tools=tool_schemas,
+                    tool_choice="none",
+                    model=provider_model,
+                )
+                registry.provider_status[provider_name] = "ok"
+                ModelRegistry.last_status[provider_name] = "ok"
+            except urllib.error.HTTPError as exc:  # pragma: no cover - live calls
+                if exc.code in {401, 403}:
+                    registry.provider_status[provider_name] = "unauthorized"
+                    ModelRegistry.last_status[provider_name] = "unauthorized"
+                    raise ProviderAuthError(
+                        f"Provider '{provider_name}' rejected the API key (unauthorized). Check your key and account permissions.",
+                        code="N3P-1802",
+                    ) from exc
+                raise
             assistant_content = follow_up.final_text or ""
             provider_payload = _build_provider_payload(follow_up.raw, follow_up.finish_reason)
     else:
-        invocation = provider.generate(messages=messages, model=provider_model)
+        try:
+            invocation = provider.generate(messages=messages, model=provider_model)
+            registry.provider_status[provider_name] = "ok"
+            ModelRegistry.last_status[provider_name] = "ok"
+        except urllib.error.HTTPError as exc:  # pragma: no cover - live calls
+            if exc.code in {401, 403}:
+                registry.provider_status[provider_name] = "unauthorized"
+                ModelRegistry.last_status[provider_name] = "unauthorized"
+                raise ProviderAuthError(
+                    f"Provider '{provider_name}' rejected the API key (unauthorized). Check your key and account permissions.",
+                    code="N3P-1802",
+                ) from exc
+            raise
         assistant_content = invocation.text if hasattr(invocation, "text") else str(invocation)
         provider_payload = invocation.to_dict() if hasattr(invocation, "to_dict") else {
             "provider": selection.provider_name,
@@ -1074,7 +1111,7 @@ def execute_ai_call_with_registry(
         context.tracer.record_ai(
             model_name=ai_call.model_name or "unknown",
             prompt=user_content,
-            response_preview=str(invocation.get("result", "") if hasattr(invocation, "get") else ""),
+            response_preview=str(assistant_content)[:200],
             provider_name=selection.provider_name,
             logical_model_name=ai_call.model_name,
         )

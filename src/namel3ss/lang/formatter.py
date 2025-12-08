@@ -84,6 +84,8 @@ def _format_decl(decl: ast_nodes.Declaration, level: int) -> List[str]:
         body: List[str] = []
         if decl.model_name:
             body.append(_indent(level + 1, f"model {_q(decl.model_name)}"))
+        if getattr(decl, "provider", None):
+            body.append(_indent(level + 1, f"provider {_q(decl.provider or '')}"))
         if getattr(decl, "system_prompt", None):
             body.append(_indent(level + 1, f"system {_q(decl.system_prompt or '')}"))
         if decl.input_source:

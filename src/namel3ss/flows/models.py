@@ -42,6 +42,7 @@ class FlowStepResult:
     duration_seconds: float = 0.0
     cost: float = 0.0
     redirect_to: Optional[str] = None
+    diagnostics: list[dict] = field(default_factory=list)
 
 
 @dataclass

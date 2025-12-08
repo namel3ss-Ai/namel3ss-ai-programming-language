@@ -19,6 +19,8 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from . import ir, lexer, parser
+from .ai.registry import ModelRegistry
+from .config import N3Config, ProvidersConfig, load_config
 from .errors import ParseError
 from .lang.formatter import format_source
 from .flows.triggers import FlowTrigger, TriggerManager
@@ -1469,6 +1471,32 @@ def create_app() -> FastAPI:
             return {"bundle": make_server_bundle(bundle)}
         except Exception as exc:  # pragma: no cover
             raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    @app.get("/api/providers/status")
+    def api_providers_status(principal: Principal = Depends(get_principal)) -> Dict[str, Any]:
+        cfg = load_config()
+        providers_cfg = cfg.providers_config or ProvidersConfig()
+        providers: list[dict[str, Any]] = []
+        for name, pcfg in (providers_cfg.providers or {}).items():
+            env_key = pcfg.api_key_env
+            resolved = pcfg.api_key or (env_key and os.environ.get(env_key))
+            if not resolved and pcfg.type == "openai":
+                resolved = os.environ.get("N3_OPENAI_API_KEY") or os.environ.get("OPENAI_API_KEY")
+            if not resolved and pcfg.type == "gemini":
+                resolved = os.environ.get("N3_GEMINI_API_KEY") or os.environ.get("GEMINI_API_KEY")
+            if not resolved and pcfg.type == "anthropic":
+                resolved = os.environ.get("N3_ANTHROPIC_API_KEY") or os.environ.get("ANTHROPIC_API_KEY")
+            has_key = bool(resolved)
+            status = ModelRegistry.last_status.get(name, "ok" if has_key else "missing_key")
+            providers.append(
+                {
+                    "name": name,
+                    "type": pcfg.type,
+                    "has_key": has_key,
+                    "last_check_status": status,
+                }
+            )
+        return {"default": providers_cfg.default, "providers": providers}
 
     @app.get("/api/meta")
     def api_meta(principal: Principal = Depends(get_principal)) -> Dict[str, Any]:

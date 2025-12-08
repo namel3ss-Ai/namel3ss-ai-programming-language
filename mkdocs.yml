@@ -22,12 +22,16 @@ nav:
       - VS Code: docs/reference/vscode-extension.md
       - English Conditions: docs/language/conditions.md
       - English Syntax: docs/language/english_syntax.md
+      - Variables & Scope: docs/language/variables-scope.md
       - Examples: docs/reference/examples.md
   - Concepts:
       - AI: docs/concepts/ai.md
       - Language: docs/concepts/language.md
       - Agents: docs/concepts/agents.md
       - Flows: docs/concepts/flows.md
+      - Authentication & User Model: docs/concepts/authentication.md
+      - Records & CRUD: docs/concepts/records-crud.md
+      - Providers & API Keys: docs/concepts/providers-api-keys.md
       - RAG: docs/concepts/rag.md
       - UI Components: docs/concepts/ui-components.md
       - Optimizer: docs/concepts/optimizer.md

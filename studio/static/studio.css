@@ -20,6 +20,25 @@ header.studio-header {
   gap: 16px;
 }
 
+.provider-pill {
+  padding: 10px 14px;
+  border-radius: 999px;
+  background: #0f172a;
+  color: #fff;
+  font-size: 13px;
+  min-width: 220px;
+  text-align: center;
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.15);
+}
+
+.provider-pill.warn {
+  background: #d97706;
+}
+
+.provider-pill.error {
+  background: #b91c1c;
+}
+
 h1 {
   margin: 0;
   font-size: 28px;

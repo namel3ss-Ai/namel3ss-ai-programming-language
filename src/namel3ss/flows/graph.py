@@ -97,6 +97,8 @@ class FlowRuntimeContext:
     vectorstores: Any = None
     records: Any = None
     execution_context: Any = None
+    auth_config: Any = None
+    user_context: dict | None = None
     max_parallel_tasks: int = 4
     parallel_semaphore: asyncio.Semaphore | None = None
     step_results: list | None = None

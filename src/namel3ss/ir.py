@@ -52,6 +52,7 @@ class IRModel:
 class IRAiCall:
     name: str
     model_name: str | None = None
+    provider: str | None = None
     input_source: str | None = None
     description: str | None = None
     system_prompt: str | None = None
@@ -198,6 +199,9 @@ class IRFlowStep:
         "db_get",
         "db_update",
         "db_delete",
+        "auth_register",
+        "auth_login",
+        "auth_logout",
     ]
     target: str
     message: str | None = None
@@ -595,6 +599,15 @@ class IRRecord:
 
 
 @dataclass
+class IRAuth:
+    backend: str | None = None
+    user_record: str | None = None
+    id_field: str | None = None
+    identifier_field: str | None = None
+    password_hash_field: str | None = None
+
+
+@dataclass
 class IRProgram:
     apps: Dict[str, IRApp] = field(default_factory=dict)
     pages: Dict[str, IRPage] = field(default_factory=dict)
@@ -604,6 +617,7 @@ class IRProgram:
     memories: Dict[str, IRMemory] = field(default_factory=dict)
     frames: Dict[str, IRFrame] = field(default_factory=dict)
     records: Dict[str, IRRecord] = field(default_factory=dict)
+    auth: IRAuth | None = None
     vector_stores: Dict[str, IRVectorStore] = field(default_factory=dict)
     flows: Dict[str, IRFlow] = field(default_factory=dict)
     plugins: Dict[str, "IRPlugin"] = field(default_factory=dict)
@@ -935,6 +949,9 @@ def ast_to_ir(module: ast_nodes.Module) -> IRProgram:
             "db_get",
             "db_update",
             "db_delete",
+            "auth_register",
+            "auth_login",
+            "auth_logout",
             "for_each",
         ):
             raise IRError(f"Unsupported step kind '{step.kind}'", step.span and step.span.line)
@@ -994,6 +1011,8 @@ def ast_to_ir(module: ast_nodes.Module) -> IRProgram:
     def transform_expr(expr: ast_nodes.Expr | None) -> tuple[ast_nodes.Expr | None, str | None]:
         if expr is None:
             return None, None
+        if isinstance(expr, ast_nodes.VarRef):
+            return expr, None
         if isinstance(expr, ast_nodes.Identifier):
             name = expr.name
             if name in macro_defs:
@@ -1458,6 +1477,7 @@ def ast_to_ir(module: ast_nodes.Module) -> IRProgram:
             program.ai_calls[decl.name] = IRAiCall(
                 name=decl.name,
                 model_name=decl.model_name,
+                provider=getattr(decl, "provider", None),
                 input_source=decl.input_source,
                 description=getattr(decl, "description", None),
                 system_prompt=getattr(decl, "system_prompt", None),
@@ -1594,6 +1614,46 @@ def ast_to_ir(module: ast_nodes.Module) -> IRProgram:
                 frame=decl.frame,
                 fields=field_map,
                 primary_key=primary_key_name,
+            )
+        elif isinstance(decl, ast_nodes.AuthDecl):
+            if program.auth is not None:
+                raise IRError("N3L-1600: Auth configuration already defined.", decl.span and decl.span.line)
+            if not decl.user_record:
+                raise IRError("N3L-1600: Auth configuration must specify user_record.", decl.span and decl.span.line)
+            if decl.user_record not in program.records:
+                raise IRError(
+                    f"N3L-1600: Auth configuration references unknown user_record '{decl.user_record}'.",
+                    decl.span and decl.span.line,
+                )
+            record = program.records[decl.user_record]
+            id_field = decl.id_field or record.primary_key
+            if not id_field or id_field not in record.fields:
+                raise IRError(
+                    "N3L-1600: Auth configuration id_field must reference an existing primary key field.",
+                    decl.span and decl.span.line,
+                )
+            if record.primary_key and id_field != record.primary_key:
+                raise IRError(
+                    f"N3L-1600: Auth id_field '{id_field}' must match record primary key '{record.primary_key}'.",
+                    decl.span and decl.span.line,
+                )
+            identifier_field = decl.identifier_field or ""
+            password_hash_field = decl.password_hash_field or ""
+            for fname, label in [
+                (identifier_field, "identifier_field"),
+                (password_hash_field, "password_hash_field"),
+            ]:
+                if not fname or fname not in record.fields:
+                    raise IRError(
+                        f"N3L-1600: Auth {label} '{fname or '?'}' does not exist on user_record '{record.name}'.",
+                        decl.span and decl.span.line,
+                    )
+            program.auth = IRAuth(
+                backend=decl.backend or "default_auth",
+                user_record=decl.user_record,
+                id_field=id_field,
+                identifier_field=identifier_field,
+                password_hash_field=password_hash_field,
             )
         elif isinstance(decl, ast_nodes.VectorStoreDecl):
             if decl.name in program.vector_stores:
@@ -1818,12 +1878,29 @@ def ast_to_ir(module: ast_nodes.Module) -> IRProgram:
                 raise IRError(
                     f"N3L-1201: Memory store '{resolved_store}' referenced on AI '{ai_name}' is not configured for this project.",
                     None,
-                )
+                    )
 
     program.rulegroups = rulegroups
+    providers_cfg = getattr(load_config(), "providers_config", None)
+    provider_names = set((providers_cfg.providers if providers_cfg else {}).keys())
+    default_provider = providers_cfg.default if providers_cfg else None
+    for ai_name, ai_call in program.ai_calls.items():
+        if getattr(ai_call, "provider", None):
+            if ai_call.provider not in provider_names:
+                raise IRError(
+                    f"N3L-1800: AI '{ai_name}' references unknown provider '{ai_call.provider}'. Check your namel3ss config.",
+                    getattr(ai_call, "span", None) and getattr(ai_call, "span", None).line,
+                )
+        elif not provider_names and default_provider is None:
+            raise IRError(
+                "N3L-1800: No default provider configured. Add a provider in namel3ss.config or set ai 'provider is \"...\"'.",
+                getattr(ai_call, "span", None) and getattr(ai_call, "span", None).line,
+            )
 
     for flow in program.flows.values():
         for step in flow.steps:
+            if isinstance(step, IRFlowLoop):
+                continue
             if step.kind == "ai":
                 if step.target not in program.ai_calls:
                     raise IRError(
@@ -1901,8 +1978,261 @@ def ast_to_ir(module: ast_nodes.Module) -> IRProgram:
                             f"Step '{step.name}' must reference primary key '{record.primary_key}' inside 'by id' when querying record '{record.name}'.",
                             None,
                         )
+            elif step.kind in {"auth_register", "auth_login", "auth_logout"}:
+                if not program.auth:
+                    raise IRError("N3L-1600: Auth configuration is not declared.", None)
+                auth_record_name = program.auth.user_record
+                if not auth_record_name or auth_record_name not in program.records:
+                    raise IRError("N3L-1600: Auth configuration references unknown user_record.", None)
+                if step.kind in {"auth_register", "auth_login"}:
+                    input_block = (step.params or {}).get("input") or {}
+                    if not isinstance(input_block, dict) or not input_block:
+                        raise IRError(f"Step '{step.name}' must define an 'input' block.", None)
+                    identifier_field = program.auth.identifier_field or ""
+                    if identifier_field not in input_block:
+                        raise IRError(
+                            f"Step '{step.name}' must provide '{identifier_field}' inside 'input' for authentication.",
+                            None,
+                        )
+                    if "password" not in input_block:
+                        raise IRError(
+                            f"Step '{step.name}' must provide 'password' inside 'input' for authentication.",
+                            None,
+                        )
             elif step.kind == "goto_flow":
-                # Flow redirection target validated at runtime; keep IR flexible.
                 continue
 
+    _validate_flow_scopes(program)
+
     return program
+
+
+class _FlowScope:
+    def __init__(self, locals: set[str] | None = None, active_loops: set[str] | None = None, all_loop_vars: set[str] | None = None):
+        self.locals = set(locals or [])
+        self.active_loops = set(active_loops or [])
+        self.all_loop_vars = set(all_loop_vars or [])
+
+    def copy(self) -> "_FlowScope":
+        return _FlowScope(set(self.locals), set(self.active_loops), set(self.all_loop_vars))
+
+
+def _validate_flow_scopes(program: IRProgram) -> None:
+    if not program.flows:
+        return
+
+    def _collect_step_names(items: list[IRFlowStep | IRFlowLoop], names: set[str], loop_vars: set[str]) -> None:
+        for item in items:
+            if isinstance(item, IRFlowLoop):
+                loop_vars.add(item.var_name)
+                _collect_step_names(item.body, names, loop_vars)
+            else:
+                names.add(item.name)
+                if item.statements:
+                    _collect_statement_step_names(item.statements, names, loop_vars)
+
+    def _collect_statement_step_names(stmts: list[IRStatement], names: set[str], loop_vars: set[str]) -> None:
+        for stmt in stmts:
+            if isinstance(stmt, IRForEach):
+                loop_vars.add(stmt.var_name)
+                _collect_statement_step_names(stmt.body, names, loop_vars)
+
+    def _iter_exprs(obj: Any) -> list[ast_nodes.Expr]:
+        exprs: list[ast_nodes.Expr] = []
+        if isinstance(obj, ast_nodes.Expr):
+            exprs.append(obj)
+        elif isinstance(obj, dict):
+            for val in obj.values():
+                exprs.extend(_iter_exprs(val))
+        elif isinstance(obj, list):
+            for val in obj:
+                exprs.extend(_iter_exprs(val))
+        return exprs
+
+    def _merge_record_access(expr: ast_nodes.RecordFieldAccess) -> ast_nodes.VarRef | None:
+        if isinstance(expr.target, ast_nodes.VarRef):
+            return ast_nodes.VarRef(
+                name=f"{expr.target.root}.{'.'.join(expr.target.path + [expr.field])}",
+                root=expr.target.root,
+                path=list(expr.target.path) + [expr.field],
+                kind=expr.target.kind,
+                span=getattr(expr, "span", None),
+            )
+        return None
+
+    def _validate_varref(
+        varref: ast_nodes.VarRef,
+        scope: _FlowScope,
+        flow_name: str,
+        all_steps: set[str],
+        steps_seen: set[str],
+    ) -> None:
+        root = varref.root
+        if root == "step":
+            step_name = varref.path[0] if varref.path else ""
+            if not step_name:
+                raise IRError(
+                    f"N3L-1702: Step reference is missing a name in flow '{flow_name}'.",
+                    varref.span and varref.span.line,
+                )
+            if step_name not in all_steps:
+                raise IRError(
+                    f"N3L-1702: Step '{step_name}' is referenced but no step with that name exists in flow '{flow_name}'.",
+                    varref.span and varref.span.line,
+                )
+            if step_name not in steps_seen:
+                raise IRError(
+                    f"N3L-1701: Step '{step_name}' is referenced before it is defined in flow '{flow_name}'.",
+                    varref.span and varref.span.line,
+                )
+            varref.kind = ast_nodes.VarRefKind.STEP_OUTPUT
+            return
+        if root == "state":
+            varref.kind = ast_nodes.VarRefKind.STATE
+            return
+        if root == "user":
+            varref.kind = ast_nodes.VarRefKind.USER
+            return
+        if root == "secret":
+            varref.kind = ast_nodes.VarRefKind.SECRET
+            return
+        if root == "input":
+            varref.kind = ast_nodes.VarRefKind.INPUT
+            return
+        if root == "env":
+            varref.kind = ast_nodes.VarRefKind.ENV
+            return
+        if root == "config":
+            varref.kind = ast_nodes.VarRefKind.CONFIG
+            return
+        if root in scope.active_loops:
+            varref.kind = ast_nodes.VarRefKind.LOOP_VAR
+            return
+        if root in scope.all_loop_vars:
+            raise IRError(
+                f"N3L-1703: Loop variable '{root}' is used outside of its loop in flow '{flow_name}'.",
+                varref.span and varref.span.line,
+            )
+        if root in scope.locals:
+            varref.kind = ast_nodes.VarRefKind.LOCAL
+            return
+        raise IRError(
+            f"N3L-1700: Unknown variable '{root}' in flow '{flow_name}'. Did you mean 'state.{root}' or declare it with 'let {root} is ...'?",
+            varref.span and varref.span.line,
+        )
+
+    def _walk_expr(expr: ast_nodes.Expr, scope: _FlowScope, flow_name: str, all_steps: set[str], steps_seen: set[str]) -> None:
+        if isinstance(expr, ast_nodes.VarRef):
+            _validate_varref(expr, scope, flow_name, all_steps, steps_seen)
+            return
+        if isinstance(expr, ast_nodes.Identifier):
+            temp_varref = ast_nodes.VarRef(name=expr.name, root=expr.name, path=[], kind=ast_nodes.VarRefKind.UNKNOWN, span=expr.span)
+            _validate_varref(temp_varref, scope, flow_name, all_steps, steps_seen)
+            return
+        if isinstance(expr, ast_nodes.RecordFieldAccess):
+            merged = _merge_record_access(expr)
+            if merged:
+                _validate_varref(merged, scope, flow_name, all_steps, steps_seen)
+                return
+            if expr.target:
+                _walk_expr(expr.target, scope, flow_name, all_steps, steps_seen)
+            return
+        if isinstance(expr, ast_nodes.BinaryOp):
+            if expr.left:
+                _walk_expr(expr.left, scope, flow_name, all_steps, steps_seen)
+            if expr.right:
+                _walk_expr(expr.right, scope, flow_name, all_steps, steps_seen)
+            return
+        if isinstance(expr, ast_nodes.UnaryOp):
+            if expr.operand:
+                _walk_expr(expr.operand, scope, flow_name, all_steps, steps_seen)
+            return
+        if isinstance(expr, ast_nodes.FunctionCall):
+            for arg in expr.args:
+                _walk_expr(arg, scope, flow_name, all_steps, steps_seen)
+            return
+        if isinstance(expr, ast_nodes.ListLiteral):
+            for item in expr.items:
+                _walk_expr(item, scope, flow_name, all_steps, steps_seen)
+            return
+        if isinstance(expr, ast_nodes.PatternExpr):
+            _walk_expr(expr.subject, scope, flow_name, all_steps, steps_seen)
+            for pair in expr.pairs:
+                _walk_expr(pair.value, scope, flow_name, all_steps, steps_seen)
+            return
+        if isinstance(expr, ast_nodes.ListBuiltinCall):
+            if expr.expr:
+                _walk_expr(expr.expr, scope, flow_name, all_steps, steps_seen)
+            return
+        if isinstance(expr, ast_nodes.BuiltinCall):
+            for arg in expr.args:
+                _walk_expr(arg, scope, flow_name, all_steps, steps_seen)
+            return
+
+    def _walk_statements(stmts: list[IRStatement], scope: _FlowScope, flow_name: str, all_steps: set[str], steps_seen: set[str]) -> None:
+        for stmt in stmts:
+            if isinstance(stmt, IRLet):
+                if stmt.expr:
+                    _walk_expr(stmt.expr, scope, flow_name, all_steps, steps_seen)
+                scope.locals.add(stmt.name)
+            elif isinstance(stmt, IRSet):
+                if stmt.expr:
+                    _walk_expr(stmt.expr, scope, flow_name, all_steps, steps_seen)
+            elif isinstance(stmt, IRAction):
+                for expr in _iter_exprs(stmt.args):
+                    _walk_expr(expr, scope, flow_name, all_steps, steps_seen)
+            elif isinstance(stmt, IRIf):
+                for br in stmt.branches:
+                    if br.condition:
+                        _walk_expr(br.condition, scope, flow_name, all_steps, steps_seen)
+                    branch_scope = scope.copy()
+                    _walk_statements(br.actions, branch_scope, flow_name, all_steps, steps_seen)
+            elif isinstance(stmt, IRForEach):
+                if stmt.iterable:
+                    _walk_expr(stmt.iterable, scope, flow_name, all_steps, steps_seen)
+                loop_scope = scope.copy()
+                loop_scope.active_loops.add(stmt.var_name)
+                loop_scope.all_loop_vars.add(stmt.var_name)
+                _walk_statements(stmt.body, loop_scope, flow_name, all_steps, steps_seen)
+            elif isinstance(stmt, IRRepeatUpTo):
+                if stmt.count:
+                    _walk_expr(stmt.count, scope, flow_name, all_steps, steps_seen)
+                _walk_statements(stmt.body, scope.copy(), flow_name, all_steps, steps_seen)
+            elif isinstance(stmt, IRMatch):
+                if stmt.expr:
+                    _walk_expr(stmt.expr, scope, flow_name, all_steps, steps_seen)
+                for br in stmt.branches:
+                    if br.expr:
+                        _walk_expr(br.expr, scope, flow_name, all_steps, steps_seen)
+                    _walk_statements(br.actions, scope.copy(), flow_name, all_steps, steps_seen)
+            elif isinstance(stmt, IRRetry):
+                _walk_statements(stmt.body, scope.copy(), flow_name, all_steps, steps_seen)
+            elif isinstance(stmt, IRReturn):
+                if stmt.expr:
+                    _walk_expr(stmt.expr, scope, flow_name, all_steps, steps_seen)
+
+    def _walk_flow_items(items: list[IRFlowStep | IRFlowLoop], scope: _FlowScope, flow_name: str, all_steps: set[str], steps_seen: set[str]) -> None:
+        for item in items:
+            if isinstance(item, IRFlowLoop):
+                if item.iterable:
+                    _walk_expr(item.iterable, scope, flow_name, all_steps, steps_seen)
+                loop_scope = scope.copy()
+                loop_scope.active_loops.add(item.var_name)
+                loop_scope.all_loop_vars.add(item.var_name)
+                _walk_flow_items(item.body, loop_scope, flow_name, all_steps, steps_seen)
+            else:
+                for expr in _iter_exprs(item.params):
+                    _walk_expr(expr, scope, flow_name, all_steps, steps_seen)
+                if item.when_expr:
+                    _walk_expr(item.when_expr, scope, flow_name, all_steps, steps_seen)
+                if item.statements:
+                    _walk_statements(item.statements, scope.copy(), flow_name, all_steps, steps_seen)
+                steps_seen.add(item.name)
+
+    for flow in program.flows.values():
+        all_steps: set[str] = set()
+        loop_vars: set[str] = set()
+        _collect_step_names(flow.steps, all_steps, loop_vars)
+        scope = _FlowScope(locals=set(), active_loops=set(), all_loop_vars=loop_vars)
+        steps_seen: set[str] = set()
+        _walk_flow_items(flow.steps, scope, flow.name, all_steps, steps_seen)

@@ -68,6 +68,21 @@ class ExpressionEvaluator:
     def evaluate(self, expr: ast_nodes.Expr) -> Any:
         if isinstance(expr, ast_nodes.Literal):
             return expr.value
+        if isinstance(expr, ast_nodes.VarRef):
+            dotted = expr.root if not expr.path else ".".join([expr.root] + expr.path)
+            # Allow env values (e.g., loop/local) to be resolved directly
+            if self.env.has(dotted):
+                return self.env.resolve(dotted)
+            try:
+                # Prefer exact env hit on root if present (locals/loop vars stored bare)
+                if self.env.has(expr.root) and not expr.path:
+                    return self.env.resolve(expr.root)
+            except Exception:
+                pass
+            found, value = self.resolver(dotted)
+            if found:
+                return value
+            raise EvaluationError(f"Variable '{dotted}' is not defined")
         if isinstance(expr, ast_nodes.Identifier):
             if self.env.has(expr.name):
                 return self.env.resolve(expr.name)
