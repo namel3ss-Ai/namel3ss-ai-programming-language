@@ -1,16 +1,35 @@
 # 5. Models, AI, and Agents
 
-## Configuring models
+## Configuring models and providers
+- Set `OPENAI_API_KEY` (or the relevant env var) to enable the built-in default provider.
+- Or declare providers in `namel3ss.config.json`:
+  ```json
+  {
+    "providers": {
+      "openai_default": {
+        "type": "openai",
+        "api_key_env": "OPENAI_API_KEY",
+        "model_default": "gpt-4.1-mini"
+      }
+    },
+    "default": "openai_default"
+  }
+  ```
+- Missing keys surface as `N3P-1801`; unauthorized keys (401/403) surface as `N3P-1802`.
+
+Model binding stays simple:
 ```ai
 model "default":
-  provider "openai:gpt-4.1-mini"
+  provider "openai_default"
 ```
-You can also use Gemini and other supported providers. Streaming and JSON mode are available where implemented (e.g., OpenAI, Gemini).
+You can also use Gemini and other supported providers. Streaming and JSON mode are available where implemented.
 
 ## AI calls
 ```ai
 ai "summarize":
   model "default"
+  # optionally override the provider per call
+  provider "openai_default"
   input from "user_input"
 ```
 AI steps can run inside flows or agents.

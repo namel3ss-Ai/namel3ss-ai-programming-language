@@ -1,6 +1,6 @@
 # Namel3ss
 
-![Version](https://img.shields.io/badge/version-0.6.9-blue)
+![Version](https://img.shields.io/badge/version-0.7.0-blue)
 ![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)
 ![Python 3.11+](https://img.shields.io/badge/Python-3.11%2B-blue)
 ![Build](https://github.com/namel3ss-Ai/namel3ss-programming-language/actions/workflows/tests.yml/badge.svg)
@@ -133,6 +133,33 @@ n3 build serverless-cloudflare app.ai --output-dir build/cloudflare
 
 ---
 
+## Configure providers & API keys
+Namel3ss now uses a single provider config. The fastest path:
+
+```bash
+export OPENAI_API_KEY=sk-...
+```
+
+Or create `namel3ss.config.json`:
+```json
+{
+  "providers": {
+    "openai_default": {
+      "type": "openai",
+      "api_key_env": "OPENAI_API_KEY",
+      "model_default": "gpt-4.1-mini"
+    }
+  },
+  "default": "openai_default"
+}
+```
+
+- If an AI block omits `provider`, the default provider is used.
+- Missing keys surface as friendly diagnostics (`N3P-1801`) instead of vague errors; unauthorized keys map to `N3P-1802`.
+- See the Providers & API Keys guide in Docs for more details.
+
+---
+
 ## 10-Minute Tutorial
 1) **Create `app.ai`**  
    ```ai
@@ -203,6 +230,7 @@ CLI → [docs/api-surface.md](docs/api-surface.md)
 Deployment → [docs/reference/deployment.md](docs/reference/deployment.md)  
 Studio → [docs/book/04-pages-and-ui.md](docs/book/04-pages-and-ui.md)
 Configuration → [docs/reference/configuration.md](docs/reference/configuration.md)
+Providers & API Keys → [docs/concepts/providers-api-keys.md](docs/concepts/providers-api-keys.md)
 
 📚 **Learn Namel3ss — The Official Book**  
 A calm, thoughtful, step-by-step guide to mastering the language.  

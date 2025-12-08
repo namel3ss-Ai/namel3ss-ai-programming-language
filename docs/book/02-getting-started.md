@@ -25,6 +25,26 @@ n3 parse hello.ai
 n3 run hello --file hello.ai
 ```
 
+## Configure a provider quickly
+Set an API key in your shell:
+```bash
+export OPENAI_API_KEY=sk-...
+```
+Or add a project config file:
+```json
+{
+  "providers": {
+    "openai_default": {
+      "type": "openai",
+      "api_key_env": "OPENAI_API_KEY",
+      "model_default": "gpt-4.1-mini"
+    }
+  },
+  "default": "openai_default"
+}
+```
+If you forget a key, runtime diagnostics surface `N3P-1801` (missing key) instead of cryptic failures.
+
 ## Diagnostics and lint
 - **Diagnostics**: `n3 diagnostics hello.ai` shows parse/semantic issues.
 - **Lint**: `n3 lint hello.ai` warns about style (unused vars, legacy syntax, etc.).
