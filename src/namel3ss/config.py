@@ -16,11 +16,13 @@ class N3Config:
     default_embedding_model: Optional[str] = None
     database_url: Optional[str] = None
     providers: Dict[str, Dict[str, str]] = field(default_factory=dict)
+    memory_stores: Dict[str, Dict[str, str]] = field(default_factory=dict)
 
 
 def load_config(env: Optional[dict] = None) -> N3Config:
     environ = env or os.environ
     providers: Dict[str, Dict[str, str]] = {}
+    memory_stores: Dict[str, Dict[str, str]] = {}
     # Support a JSON blob of providers if offered (optional).
     raw_providers = environ.get("N3_PROVIDERS_JSON")
     if raw_providers:
@@ -42,9 +44,17 @@ def load_config(env: Optional[dict] = None) -> N3Config:
     _provider_entry("anthropic", ["N3_ANTHROPIC_API_KEY", "ANTHROPIC_API_KEY", "N3_ANTHROPIC_BASE_URL"])
     _provider_entry("gemini", ["N3_GEMINI_API_KEY", "GEMINI_API_KEY", "N3_GEMINI_BASE_URL"])
 
+    raw_stores = environ.get("N3_MEMORY_STORES_JSON")
+    if raw_stores:
+        try:
+            memory_stores.update(json.loads(raw_stores))
+        except Exception:
+            memory_stores = {}
+
     return N3Config(
         default_chat_model=environ.get("N3_DEFAULT_CHAT_MODEL") or environ.get("DEFAULT_CHAT_MODEL"),
         default_embedding_model=environ.get("N3_DEFAULT_EMBEDDING_MODEL") or environ.get("DEFAULT_EMBEDDING_MODEL"),
         database_url=environ.get("DATABASE_URL") or environ.get("N3_DATABASE_URL"),
         providers=providers,
+        memory_stores=memory_stores,
     )

@@ -27,7 +27,7 @@ def test_parse_flow_with_error_handler():
               on error:
                 step is "fallback":
                   kind is "tool"
-                  target is "noop"
+                  tool is "noop"
             """
         )
     )
@@ -51,12 +51,12 @@ def test_parse_multiple_on_error_raises():
                   on error:
                     step is "fallback":
                       kind is "tool"
-                      target is "noop"
+                      tool is "noop"
 
                   on error:
                     step is "fallback2":
                       kind is "tool"
-                      target is "noop"
+                      tool is "noop"
                 """
             )
         )

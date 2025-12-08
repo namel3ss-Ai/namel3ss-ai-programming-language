@@ -6,10 +6,16 @@ error boundaries.
 from __future__ import annotations
 
 import asyncio
+import inspect
+import json
 import time
+import urllib.error
+import urllib.parse
+import urllib.request
 from dataclasses import asdict, is_dataclass
+from datetime import datetime
 from typing import Any, Callable, Optional
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 from .. import ast_nodes
 from ..agent.engine import AgentRunner
@@ -40,13 +46,19 @@ from ..ir import (
 from ..metrics.tracker import MetricsTracker
 from ..observability.metrics import default_metrics
 from ..observability.tracing import default_tracer
-from ..runtime.context import ExecutionContext, execute_ai_call_with_registry
+from ..runtime.context import (
+    ExecutionContext,
+    build_memory_messages,
+    execute_ai_call_with_registry,
+    persist_memory_state,
+    run_memory_pipelines,
+)
 from ..runtime.eventlog import EventLogger
 from ..runtime.expressions import EvaluationError, ExpressionEvaluator, VariableEnvironment
 from ..runtime.frames import FrameRegistry
 from ..runtime.vectorstores import VectorStoreRegistry
 from ..secrets.manager import SecretsManager
-from ..tools.registry import ToolRegistry, ToolConfig, build_ai_tool_specs
+from ..tools.registry import ToolRegistry, ToolConfig
 from ..memory.engine import MemoryEngine
 from ..memory.models import MemorySpaceConfig, MemoryType
 from .graph import (
@@ -57,7 +69,7 @@ from .graph import (
     FlowState,
     flow_ir_to_graph,
 )
-from .models import FlowRunResult, FlowStepMetrics, FlowStepResult
+from .models import FlowRunResult, FlowStepMetrics, FlowStepResult, StreamEvent
 
 
 class ReturnSignal(Exception):
@@ -76,6 +88,7 @@ class FlowEngine:
         metrics: Optional[MetricsTracker] = None,
         secrets: Optional[SecretsManager] = None,
         max_parallel_tasks: int = 4,
+        global_stream_callback: Any = None,
     ) -> None:
         self.program = program
         self.model_registry = model_registry
@@ -85,6 +98,7 @@ class FlowEngine:
         self.metrics = metrics
         self.secrets = secrets
         self.max_parallel_tasks = max_parallel_tasks
+        self.global_stream_callback = global_stream_callback
         self.frame_registry = FrameRegistry(program.frames if program else {})
         self.vector_registry = VectorStoreRegistry(program, secrets=secrets) if program else None
         # Register program-defined tools into the shared registry
@@ -96,9 +110,13 @@ class FlowEngine:
                             name=tool.name,
                             kind=tool.kind,
                             method=tool.method,
-                            url_template=tool.url_template,
+                            url_expr=getattr(tool, "url_expr", None),
+                            url_template=getattr(tool, "url_template", None),
                             headers=getattr(tool, "headers", {}) or {},
+                            query_params=getattr(tool, "query_params", {}) or {},
+                            body_fields=getattr(tool, "body_fields", {}) or {},
                             body_template=getattr(tool, "body_template", None),
+                            input_fields=list(getattr(tool, "input_fields", []) or []),
                         )
                     )
 
@@ -114,6 +132,7 @@ class FlowEngine:
                 for mem in self.program.memories.values()
             ]
             mem_engine = MemoryEngine(spaces=spaces)
+        mem_stores = getattr(context, "memory_stores", None)
         return FlowRuntimeContext(
             program=self.program,
             model_registry=self.model_registry,
@@ -124,9 +143,11 @@ class FlowEngine:
             metrics=context.metrics or self.metrics,
             secrets=context.secrets or self.secrets,
             memory_engine=mem_engine,
+            memory_stores=mem_stores,
             rag_engine=context.rag_engine,
             frames=self.frame_registry,
             vectorstores=self.vector_registry,
+             records=getattr(self.program, "records", {}) if self.program else {},
             execution_context=context,
             max_parallel_tasks=self.max_parallel_tasks,
             parallel_semaphore=asyncio.Semaphore(self.max_parallel_tasks),
@@ -135,7 +156,7 @@ class FlowEngine:
                 self.frame_registry,
                 session_id=context.metadata.get("session_id") if context.metadata else context.request_id,
             ),
-            stream_callback=stream_callback,
+            stream_callback=stream_callback or self.global_stream_callback,
         )
 
     def run_flow(
@@ -496,6 +517,7 @@ class FlowEngine:
                 app_name="__flow__",
                 request_id=str(uuid4()),
                 memory_engine=runtime_ctx.memory_engine,
+                memory_stores=runtime_ctx.memory_stores,
                 rag_engine=runtime_ctx.rag_engine,
                 tracer=runtime_ctx.tracer,
                 tool_registry=runtime_ctx.tool_registry,
@@ -529,17 +551,35 @@ class FlowEngine:
                         )
                     except Exception:
                         pass
-                streaming = bool(params.get("streaming"))
+                stream_cfg = node.config.get("stream") or {}
+                streaming = bool(stream_cfg.get("streaming")) or bool(params.get("streaming"))
+                mode_val = stream_cfg.get("stream_mode") or params.get("stream_mode") or "tokens"
+                if isinstance(mode_val, str):
+                    mode_val = mode_val or "tokens"
+                else:
+                    mode_val = str(mode_val)
+                if mode_val not in {"tokens", "sentences", "full"}:
+                    mode_val = "tokens"
+                stream_meta = {
+                    "channel": stream_cfg.get("stream_channel") or params.get("stream_channel"),
+                    "role": stream_cfg.get("stream_role") or params.get("stream_role"),
+                    "label": stream_cfg.get("stream_label") or params.get("stream_label"),
+                    "mode": mode_val,
+                }
+                tools_mode = node.config.get("tools_mode")
                 if streaming:
                     output = await self._stream_ai_step(
                         ai_call,
                         base_context,
                         runtime_ctx,
                         step_name=step_name,
+                        flow_name=state.context.get("flow_name") or "",
+                        stream_meta=stream_meta,
+                        tools_mode=tools_mode,
                     )
                 else:
                     output = execute_ai_call_with_registry(
-                        ai_call, runtime_ctx.model_registry, runtime_ctx.router, base_context
+                        ai_call, runtime_ctx.model_registry, runtime_ctx.router, base_context, tools_mode=tools_mode
                     )
                 if runtime_ctx.event_logger:
                     try:
@@ -639,6 +679,28 @@ class FlowEngine:
                         runtime_ctx.event_logger.log(payload)
                     except Exception:
                         pass
+            elif node.kind in {"db_create", "db_get", "db_update", "db_delete"}:
+                params = node.config.get("params") or {}
+                record_name = target
+                if not record_name:
+                    raise Namel3ssError(
+                        f"N3L-1500: Step '{step_name}' must specify a record target."
+                    )
+                records = getattr(runtime_ctx, "records", {}) or getattr(runtime_ctx.program, "records", {})
+                record = records.get(record_name)
+                if not record:
+                    raise Namel3ssError(
+                        f"N3L-1500: Record '{record_name}' is not declared."
+                    )
+                evaluator = self._build_evaluator(state, runtime_ctx)
+                output = self._execute_record_step(
+                    kind=node.kind,
+                    record=record,
+                    params=params,
+                    evaluator=evaluator,
+                    runtime_ctx=runtime_ctx,
+                    step_name=step_name,
+                )
             elif node.kind == "vector_index_frame":
                 params = node.config.get("params") or {}
                 vector_store_name = params.get("vector_store") or target
@@ -888,19 +950,36 @@ class FlowEngine:
             redirect_to=state.context.get("__redirect_flow__"),
         )
 
-    async def _stream_ai_step(self, ai_call, base_context: ExecutionContext, runtime_ctx: FlowRuntimeContext, step_name: str):
+    async def _stream_ai_step(
+        self,
+        ai_call,
+        base_context: ExecutionContext,
+        runtime_ctx: FlowRuntimeContext,
+        step_name: str,
+        flow_name: str,
+        stream_meta: dict[str, object] | None = None,
+        tools_mode: str | None = None,
+    ):
         selection = runtime_ctx.router.select_model(logical_name=ai_call.model_name)
         cfg = runtime_ctx.model_registry.get_model_config(selection.model_name)
+        provider = runtime_ctx.model_registry.get_provider_for_model(selection.model_name)
         provider_model = cfg.model or selection.model_name
         messages: list[dict[str, str]] = []
 
         session_id = base_context.metadata.get("session_id") if base_context.metadata else None
         session_id = session_id or base_context.request_id or "default"
+        metadata_user_id = base_context.metadata.get("user_id") if base_context.metadata else None
+        user_id = str(metadata_user_id) if metadata_user_id is not None else None
 
         if getattr(ai_call, "system_prompt", None):
             messages.append({"role": "system", "content": ai_call.system_prompt or ""})
 
-        if getattr(ai_call, "memory_name", None) and base_context.memory_engine:
+        memory_cfg = getattr(ai_call, "memory", None)
+        memory_state: dict[str, Any] | None = None
+        if memory_cfg and getattr(base_context, "memory_stores", None):
+            memory_state, memory_messages = build_memory_messages(ai_call, base_context, session_id, user_id)
+            messages.extend(memory_messages)
+        elif getattr(ai_call, "memory_name", None) and base_context.memory_engine:
             try:
                 history = base_context.memory_engine.load_conversation(ai_call.memory_name or "", session_id=session_id)
                 messages.extend(history)
@@ -913,24 +992,69 @@ class FlowEngine:
         user_message = {"role": "user", "content": user_content}
         messages.append(user_message)
 
-        tools_payload = None
         if getattr(ai_call, "tools", None):
-            if not runtime_ctx.tool_registry:
-                raise Namel3ssError(f"N3F-965: Tools unavailable for AI '{ai_call.name}' (no registry).")
-            specs = build_ai_tool_specs(ai_call.tools, runtime_ctx.tool_registry)
-            tools_payload = [
-                {
-                    "type": "function",
-                    "function": {
-                        "name": spec.name,
-                        "description": spec.description,
-                        "parameters": spec.parameters,
-                    },
-                }
-                for spec in specs
-            ]
+            requested_mode = (tools_mode or "auto").lower()
+            if requested_mode != "none":
+                raise Namel3ssError(
+                    f"N3F-975: Streaming AI steps do not support tool calling (AI '{ai_call.name}'). "
+                    "Disable streaming or set 'tools is \"none\"' on the step."
+                )
+        tools_payload = None
 
         full_text = ""
+        mode = "tokens"
+        channel = None
+        role = None
+        label = None
+        if stream_meta:
+            channel = stream_meta.get("channel")
+            role = stream_meta.get("role")
+            label = stream_meta.get("label")
+            mode_candidate = stream_meta.get("mode") or mode
+            if isinstance(mode_candidate, str):
+                mode_candidate = mode_candidate or mode
+            else:
+                mode_candidate = str(mode_candidate)
+            if mode_candidate in {"tokens", "sentences", "full"}:
+                mode = mode_candidate
+        sentence_buffer = ""
+
+        async def emit(kind: str, **payload):
+            event: StreamEvent = {
+                "kind": kind,
+                "flow": flow_name,
+                "step": step_name,
+                "channel": channel,
+                "role": role,
+                "label": label,
+                "mode": mode,
+            }
+            event.update(payload)
+            if runtime_ctx.stream_callback:
+                await runtime_ctx.stream_callback(event)
+
+        async def _flush_sentence_chunks(buffer: str, force: bool = False) -> str:
+            remaining = buffer
+            while True:
+                boundary_idx = None
+                for idx, ch in enumerate(remaining):
+                    if ch in ".!?":
+                        next_char = remaining[idx + 1] if idx + 1 < len(remaining) else ""
+                        if not next_char or next_char.isspace():
+                            boundary_idx = idx
+                            break
+                if boundary_idx is None:
+                    break
+                segment = remaining[: boundary_idx + 1]
+                remaining = remaining[boundary_idx + 1 :]
+                if segment.strip():
+                    await emit("chunk", delta=segment)
+                remaining = remaining.lstrip()
+            if force and remaining.strip():
+                await emit("chunk", delta=remaining)
+                remaining = ""
+            return remaining
+
         try:
             for chunk in runtime_ctx.router.stream(messages=messages, model=provider_model, tools=tools_payload):
                 delta = ""
@@ -939,19 +1063,34 @@ class FlowEngine:
                 else:
                     delta = getattr(chunk, "delta", "") or ""
                 if delta:
-                    full_text += str(delta)
-                    if runtime_ctx.stream_callback:
-                        await runtime_ctx.stream_callback({"event": "ai_chunk", "step": step_name, "delta": str(delta)})
-            if runtime_ctx.stream_callback:
-                await runtime_ctx.stream_callback({"event": "ai_done", "step": step_name, "full": full_text})
+                    delta_str = str(delta)
+                    full_text += delta_str
+                    if mode == "tokens":
+                        await emit("chunk", delta=delta_str)
+                    elif mode == "sentences":
+                        sentence_buffer += delta_str
+                        sentence_buffer = await _flush_sentence_chunks(sentence_buffer, force=False)
+                    # mode == "full" defers emission until the end
+            if mode == "sentences":
+                sentence_buffer = await _flush_sentence_chunks(sentence_buffer, force=True)
+            await emit("done", full=full_text)
         except Exception as exc:
-            if runtime_ctx.stream_callback:
-                await runtime_ctx.stream_callback(
-                    {"event": "flow_error", "error": str(exc), "code": getattr(exc, "code", None)}
-                )
+            await emit("error", error=str(exc), code=getattr(exc, "code", None))
             raise
 
-        if getattr(ai_call, "memory_name", None) and base_context.memory_engine:
+        if memory_state:
+            persist_memory_state(memory_state, ai_call, session_id, user_content, full_text, user_id)
+            run_memory_pipelines(
+                ai_call,
+                memory_state,
+                session_id,
+                user_content,
+                full_text,
+                user_id,
+                provider,
+                provider_model,
+            )
+        elif getattr(ai_call, "memory_name", None) and base_context.memory_engine:
             try:
                 base_context.memory_engine.append_conversation(
                     ai_call.memory_name or "",
@@ -995,28 +1134,69 @@ class FlowEngine:
         return {"parallel": branch_ids}
 
     async def _execute_for_each(self, node: FlowNode, state: FlowState, runtime_ctx: FlowRuntimeContext):
-        items = node.config.get("items") or []
-        items_path = node.config.get("items_path")
-        if items_path:
-            items = state.get(items_path, []) or items
-        body = node.config.get("body") or []
-        max_concurrency = node.config.get("max_concurrency")
-        sem = asyncio.Semaphore(max_concurrency) if max_concurrency else None
-        results_states: list[FlowState] = []
+        config = node.config if isinstance(node.config, dict) else {}
+        iterable_expr = config.get("iterable_expr")
+        items_path = config.get("items_path")
+        var_name = config.get("var_name")
+        body = config.get("body") or []
 
-        async def run_body(item, index: int):
-            if sem:
-                async with sem:
-                    return await self._run_inline_sequence(f"{node.id}.{index}", body, state.copy(), runtime_ctx, loop_item=item)
-            return await self._run_inline_sequence(f"{node.id}.{index}", body, state.copy(), runtime_ctx, loop_item=item)
+        evaluator = self._build_evaluator(state, runtime_ctx)
+        items_val = config.get("items")
+        items: list[Any] = []
+        if iterable_expr is not None:
+            iterable_value = evaluator.evaluate(iterable_expr)
+            if iterable_value is None:
+                items = []
+            elif isinstance(iterable_value, (list, tuple)):
+                items = list(iterable_value)
+            else:
+                raise Namel3ssError("Loop iterable must be a list/array-like")
+        elif items_path:
+            iterable_value = state.get(items_path, []) or []
+            if iterable_value is None:
+                items = []
+            elif isinstance(iterable_value, (list, tuple)):
+                items = list(iterable_value)
+            else:
+                raise Namel3ssError("Loop iterable must be a list/array-like")
+        elif items_val is not None:
+            if isinstance(items_val, (list, tuple)):
+                items = list(items_val)
+            else:
+                raise Namel3ssError("Loop iterable must be a list/array-like")
+        else:
+            items = []
 
-        tasks = [asyncio.create_task(run_body(item, idx)) for idx, item in enumerate(items)]
-        for task in tasks:
-            results_states.append(await task)
-        # Collect outputs
-        collected = [st.diff() for st in results_states]
-        state.set(f"step.{node.id}.items", collected)
-        self._merge_branch_states(state, [f"{node.id}.{i}" for i in range(len(results_states))], results_states)
+        env = state.variables or runtime_ctx.variables or VariableEnvironment()
+        had_prev = bool(var_name and env.has(var_name))
+        prev_val = env.resolve(var_name) if had_prev and var_name else None
+        items_meta: list[dict[str, Any]] = []
+
+        try:
+            for idx, item in enumerate(items):
+                before_data = dict(state.data)
+                if var_name:
+                    if env.has(var_name):
+                        env.assign(var_name, item)
+                    else:
+                        env.declare(var_name, item)
+                    state.set(var_name, item)
+                state.set("loop.item", item)
+                await self._run_inline_sequence(f"{node.id}.{idx}", body, state, runtime_ctx, loop_item=item)
+                delta = {k: v for k, v in state.data.items() if before_data.get(k) != v}
+                items_meta.append(delta)
+                if state.context.get("__redirect_flow__"):
+                    break
+        finally:
+            if var_name:
+                if had_prev:
+                    env.assign(var_name, prev_val)
+                    state.set(var_name, prev_val)
+                else:
+                    env.remove(var_name)
+                    state.data.pop(var_name, None)
+            state.data.pop("loop.item", None)
+        state.set(f"step.{node.id}.items", items_meta)
         return {"for_each": len(items)}
 
     async def _execute_try_catch(self, node: FlowNode, state: FlowState, runtime_ctx: FlowRuntimeContext):
@@ -1103,6 +1283,33 @@ class FlowEngine:
                     state.data.pop(br.binding, None)
             break
 
+    async def _emit_state_change(
+        self,
+        runtime_ctx: FlowRuntimeContext,
+        flow_name: str | None,
+        step_name: str | None,
+        path: str,
+        old_value: Any,
+        new_value: Any,
+    ) -> None:
+        if not runtime_ctx.stream_callback:
+            return
+        event: StreamEvent = {
+            "kind": "state_change",
+            "flow": flow_name or "",
+            "step": step_name or "",
+            "path": path,
+            "old_value": old_value,
+            "new_value": new_value,
+        }
+        try:
+            result = runtime_ctx.stream_callback(event)
+            if inspect.isawaitable(result):
+                await result
+        except Exception:
+            # Streaming failures should not crash the flow execution path.
+            return
+
     async def _execute_statement(self, stmt: IRStatement, state: FlowState, runtime_ctx: FlowRuntimeContext, prefix: str, allow_return: bool = False) -> Any:
         env = state.variables or runtime_ctx.variables or VariableEnvironment()
         evaluator = self._build_evaluator(state, runtime_ctx)
@@ -1118,10 +1325,19 @@ class FlowEngine:
                 field = stmt.name[len("state.") :]
                 if not field:
                     raise Namel3ssError("N3F-410: set statements must update 'state.<field>'.")
+                old_value = state.get(field)
                 value = evaluator.evaluate(stmt.expr) if stmt.expr is not None else None
                 state.set(stmt.name, value)
                 state.set(field, value)
                 state.set("last_output", value)
+                await self._emit_state_change(
+                    runtime_ctx,
+                    flow_name=state.context.get("flow_name"),
+                    step_name=prefix.split(".")[0] if prefix else None,
+                    path=field,
+                    old_value=old_value,
+                    new_value=value,
+                )
                 return value
             if not env.has(stmt.name):
                 raise Namel3ssError(f"Variable '{stmt.name}' is not defined")
@@ -1462,6 +1678,15 @@ class FlowEngine:
         env = getattr(state, "variables", None)
         if env and env.has(name):
             return True, env.resolve(name)
+        if name == "secret":
+            secrets_mgr = (runtime_ctx.secrets if runtime_ctx else None) or self.secrets
+            return True, secrets_mgr
+        if name.startswith("secret."):
+            secrets_mgr = (runtime_ctx.secrets if runtime_ctx else None) or self.secrets
+            key = name[len("secret.") :]
+            if secrets_mgr:
+                return True, secrets_mgr.get(key)
+            return True, None
         if name == "state":
             return True, state.data
         if name.startswith("state."):
@@ -1655,8 +1880,10 @@ class FlowEngine:
     def _build_checkpoint_entry(self, label: str, state: FlowState) -> dict:
         return {"timestamp": time.time(), "label": label}
 
-    def _build_evaluator(self, state: FlowState, runtime_ctx: FlowRuntimeContext | None) -> ExpressionEvaluator:
-        env = getattr(state, "variables", None) or getattr(runtime_ctx, "variables", None) or VariableEnvironment()
+    def _build_evaluator(
+        self, state: FlowState, runtime_ctx: FlowRuntimeContext | None, env_override: VariableEnvironment | None = None
+    ) -> ExpressionEvaluator:
+        env = env_override or getattr(state, "variables", None) or getattr(runtime_ctx, "variables", None) or VariableEnvironment()
         return ExpressionEvaluator(
             env,
             resolver=lambda name: self._resolve_identifier(name, state, runtime_ctx),
@@ -1664,35 +1891,44 @@ class FlowEngine:
             helper_resolver=lambda name, args: self._call_helper(name, args, state, runtime_ctx),
         )
 
-    def _http_json_request(self, method: str, url: str, headers: dict[str, str], body: bytes | None) -> dict:
-        import json
-        import urllib.error
-        import urllib.request
-
+    def _http_json_request(
+        self, method: str, url: str, headers: dict[str, str], body: bytes | None
+    ) -> tuple[int, dict[str, str], str]:
         req = urllib.request.Request(url, data=body, headers=headers, method=method)
         try:  # pragma: no cover - exercised via monkeypatch in tests
             with urllib.request.urlopen(req, timeout=15) as resp:
-                text = resp.read().decode("utf-8")
-                try:
-                    return json.loads(text)
-                except ValueError as exc:  # pragma: no cover - fallback
-                    raise Namel3ssError("N3F-964: invalid JSON from tool") from exc
+                text = resp.read().decode("utf-8", errors="replace")
+                status = resp.getcode()
+                resp_headers = dict(resp.headers.items())
+                return status, resp_headers, text
         except urllib.error.HTTPError as exc:  # pragma: no cover - fallback
-            raise Namel3ssError(f"N3F-963: Tool HTTP error {exc.code}") from exc
-        except urllib.error.URLError as exc:  # pragma: no cover - fallback
-            raise Namel3ssError(f"N3F-963: Tool HTTP error {exc}") from exc
+            text = exc.read().decode("utf-8", errors="replace") if exc.fp else ""
+            resp_headers = dict(exc.headers.items()) if exc.headers else {}
+            return exc.code, resp_headers, text
 
     async def _execute_tool_call(self, node, state: FlowState, runtime_ctx: FlowRuntimeContext):
         target = node.config.get("target") if isinstance(node.config, dict) else None
         tool_cfg = runtime_ctx.tool_registry.get(target)
         if not tool_cfg:
-            raise Namel3ssError(f"N3L-964: Tool '{target}' is not declared.")
+            raise Namel3ssError(f"N3L-1400: Tool '{target}' is not declared.")
 
         evaluator = self._build_evaluator(state, runtime_ctx)
-        args_exprs = (node.config.get("params") or {}).get("args", {}) if isinstance(node.config, dict) else {}
+        params = node.config.get("params") or {}
+        args_exprs = params.get("input") or params.get("args") or {}
         arg_values: dict[str, Any] = {}
-        for k, expr in args_exprs.items():
-            arg_values[k] = evaluator.evaluate(expr)
+        if isinstance(args_exprs, dict):
+            for k, expr in args_exprs.items():
+                try:
+                    arg_values[k] = evaluator.evaluate(expr)
+                except Exception as exc:
+                    raise Namel3ssError(f"Failed to evaluate input '{k}' for tool '{tool_cfg.name}': {exc}") from exc
+
+        required_inputs = list(getattr(tool_cfg, "input_fields", []) or [])
+        missing_inputs = [field for field in required_inputs if field not in arg_values]
+        if missing_inputs:
+            raise Namel3ssError(
+                f"N3F-965: Missing arg '{missing_inputs[0]}' for tool '{tool_cfg.name}'."
+            )
 
         if hasattr(tool_cfg, "calls"):
             payload = arg_values if arg_values else {"message": state.get("slug")}
@@ -1701,47 +1937,84 @@ class FlowEngine:
             except Exception:
                 pass
 
-        if not hasattr(tool_cfg, "url_template"):
+        if not hasattr(tool_cfg, "url_expr") and not hasattr(tool_cfg, "url_template"):
             if callable(getattr(tool_cfg, "execute", None)):
                 return tool_cfg.execute(arg_values)
             if callable(tool_cfg):
                 return tool_cfg(arg_values)
             return {"result": arg_values}
 
-        headers: dict[str, str] = {}
-        for hk, h_expr in (getattr(tool_cfg, "headers", {}) or {}).items():
-            try:
-                headers[hk] = str(evaluator.evaluate(h_expr))
-            except Exception:
-                headers[hk] = ""
+        env = state.variables.clone() if state.variables else VariableEnvironment()
+        if env.has("input"):
+            env.assign("input", arg_values)
+        else:
+            env.declare("input", arg_values)
+        tool_evaluator = self._build_evaluator(state, runtime_ctx, env_override=env)
+
+        def _eval_value(expr: Any) -> Any:
+            if isinstance(expr, ast_nodes.Expr):
+                return tool_evaluator.evaluate(expr)
+            return expr
 
         method = (getattr(tool_cfg, "method", "GET") or "GET").upper()
 
-        try:
+        url_value: Any = None
+        if getattr(tool_cfg, "url_expr", None) is not None:
+            url_value = _eval_value(tool_cfg.url_expr)
+        else:
             url_template = getattr(tool_cfg, "url_template", None)
-            if not url_template:
-                return {}
-            url = url_template.format(**{k: str(v) for k, v in arg_values.items()})
-        except KeyError as exc:
-            missing = str(exc).strip("'\"")
-            raise Namel3ssError(
-                f"N3F-965: Missing arg '{missing}' for tool '{tool_cfg.name}' url_template."
-            )
+            if url_template:
+                try:
+                    url_value = url_template.format(**{k: "" if v is None else str(v) for k, v in arg_values.items()})
+                except KeyError as exc:
+                    missing = str(exc).strip("'\"")
+                    raise Namel3ssError(
+                        f"N3F-965: Missing arg '{missing}' for tool '{tool_cfg.name}' url."
+                    )
+        if not url_value:
+            raise Namel3ssError(f"N3F-965: Tool '{tool_cfg.name}' is missing a resolved URL.")
+        url_str = str(url_value)
+
+        headers: dict[str, str] = {}
+        for hk, h_expr in (getattr(tool_cfg, "headers", {}) or {}).items():
+            value = _eval_value(h_expr)
+            if value is None:
+                continue
+            headers[hk] = "" if value is None else str(value)
+
+        query_exprs = getattr(tool_cfg, "query_params", {}) or {}
+        if query_exprs:
+            parsed = urllib.parse.urlparse(url_str)
+            query_items = urllib.parse.parse_qsl(parsed.query, keep_blank_values=True)
+            for qk, q_expr in query_exprs.items():
+                val = _eval_value(q_expr)
+                if val is None:
+                    continue
+                if isinstance(val, list):
+                    for item in val:
+                        query_items.append((qk, "" if item is None else str(item)))
+                else:
+                    query_items.append((qk, "" if val is None else str(val)))
+            url_str = urllib.parse.urlunparse(parsed._replace(query=urllib.parse.urlencode(query_items, doseq=True)))
+
+        body_payload: Any = None
+        body_fields = getattr(tool_cfg, "body_fields", {}) or {}
+        if body_fields:
+            body_payload = {}
+            for bk, b_expr in body_fields.items():
+                body_payload[bk] = _eval_value(b_expr)
+        elif getattr(tool_cfg, "body_template", None) is not None:
+            body_payload = tool_evaluator.evaluate(tool_cfg.body_template)
 
         body_bytes: bytes | None = None
-        if tool_cfg.body_template is not None:
-            body_val = evaluator.evaluate(tool_cfg.body_template)
-            if isinstance(body_val, (dict, list)):
-                import json
-
-                body_bytes = json.dumps(body_val).encode("utf-8")
+        if body_payload is not None:
+            if isinstance(body_payload, (dict, list)):
+                body_bytes = json.dumps(body_payload).encode("utf-8")
                 headers.setdefault("Content-Type", "application/json")
-            elif isinstance(body_val, str):
-                body_bytes = body_val.encode("utf-8")
+            elif isinstance(body_payload, str):
+                body_bytes = body_payload.encode("utf-8")
             else:
-                import json
-
-                body_bytes = json.dumps(body_val).encode("utf-8")
+                body_bytes = json.dumps(body_payload).encode("utf-8")
                 headers.setdefault("Content-Type", "application/json")
 
         if runtime_ctx.event_logger:
@@ -1754,29 +2027,23 @@ class FlowEngine:
                         "step": node.id,
                         "flow_name": state.context.get("flow_name"),
                         "status": "running",
+                        "method": method,
+                        "url": url_str,
                     }
                 )
             except Exception:
                 pass
 
         try:
-            data = self._http_json_request(method, url, headers, body_bytes)
-            if runtime_ctx.event_logger:
-                try:
-                    runtime_ctx.event_logger.log(
-                        {
-                            "kind": "tool",
-                            "event_type": "end",
-                            "tool": tool_cfg.name,
-                            "step": node.id,
-                            "flow_name": state.context.get("flow_name"),
-                            "status": "success",
-                        }
-                    )
-                except Exception:
-                    pass
-            return data
-        except Namel3ssError as exc:
+            status, response_headers, raw_text = self._http_json_request(method, url_str, headers, body_bytes)
+        except urllib.error.URLError as exc:
+            result = {
+                "ok": False,
+                "status": None,
+                "data": None,
+                "headers": {},
+                "error": f"Network error: {getattr(exc, 'reason', exc)}",
+            }
             if runtime_ctx.event_logger:
                 try:
                     runtime_ctx.event_logger.log(
@@ -1787,30 +2054,278 @@ class FlowEngine:
                             "step": node.id,
                             "flow_name": state.context.get("flow_name"),
                             "status": "error",
-                            "message": str(exc),
+                            "message": result["error"],
                         }
                     )
                 except Exception:
                     pass
-            raise
-        except Exception as exc:
-            if runtime_ctx.event_logger:
-                try:
-                    runtime_ctx.event_logger.log(
-                        {
-                            "kind": "tool",
-                            "event_type": "error",
-                            "tool": tool_cfg.name,
-                            "step": node.id,
-                            "flow_name": state.context.get("flow_name"),
-                            "status": "error",
-                            "message": str(exc),
-                        }
-                    )
-                except Exception:
-                    pass
-            raise Namel3ssError(f"N3F-963: Tool '{tool_cfg.name}' failed with HTTP error: {exc}")
+            return result
 
+        parsed_body: Any = None
+        if raw_text:
+            try:
+                parsed_body = json.loads(raw_text)
+            except ValueError:
+                parsed_body = raw_text
+
+        ok = 200 <= (status or 0) < 300
+        result = {
+            "ok": ok,
+            "status": status,
+            "data": parsed_body,
+            "headers": response_headers,
+        }
+        if not ok:
+            result["error"] = f"HTTP {status}"
+
+        if runtime_ctx.event_logger:
+            try:
+                runtime_ctx.event_logger.log(
+                    {
+                        "kind": "tool",
+                        "event_type": "end" if ok else "error",
+                        "tool": tool_cfg.name,
+                        "step": node.id,
+                        "flow_name": state.context.get("flow_name"),
+                        "status": "success" if ok else "error",
+                        "status_code": status,
+                        "method": method,
+                        "url": url_str,
+                        "ok": ok,
+                    }
+                )
+            except Exception:
+                pass
+        return result
+
+    def _evaluate_expr_dict(
+        self,
+        entries: dict[str, ast_nodes.Expr] | None,
+        evaluator: ExpressionEvaluator,
+        step_name: str,
+        block_name: str,
+    ) -> dict[str, Any]:
+        if not isinstance(entries, dict):
+            return {}
+        values: dict[str, Any] = {}
+        for key, expr in entries.items():
+            try:
+                values[key] = evaluator.evaluate(expr) if isinstance(expr, ast_nodes.Expr) else expr
+            except Exception as exc:
+                raise Namel3ssError(
+                    f"Failed to evaluate '{key}' inside '{block_name}' for step '{step_name}': {exc}"
+                ) from exc
+        return values
+
+    def _resolve_record_default_value(self, field) -> Any:
+        if getattr(field, "default", None) == "now":
+            return datetime.utcnow().isoformat()
+        return field.default
+
+    def _coerce_record_value(self, record_name: str, field, value: Any, step_name: str) -> Any:
+        if value is None:
+            return None
+        ftype = getattr(field, "type", "string")
+        try:
+            if ftype in {"string", "text"}:
+                return "" if value is None else str(value)
+            if ftype == "int":
+                if isinstance(value, bool):
+                    return int(value)
+                if isinstance(value, (int, float)):
+                    if isinstance(value, float) and not value.is_integer():
+                        raise ValueError("cannot truncate non-integer float")
+                    return int(value)
+                return int(str(value))
+            if ftype == "float":
+                if isinstance(value, bool):
+                    return float(int(value))
+                if isinstance(value, (int, float)):
+                    return float(value)
+                return float(str(value))
+            if ftype == "bool":
+                if isinstance(value, bool):
+                    return value
+                if isinstance(value, str):
+                    normalized = value.strip().lower()
+                    if normalized in {"true", "false"}:
+                        return normalized == "true"
+                raise ValueError("expected boolean literal")
+            if ftype == "uuid":
+                text = str(value)
+                UUID(text)
+                return text
+            if ftype == "datetime":
+                if isinstance(value, datetime):
+                    return value.isoformat()
+                return str(value)
+        except Exception as exc:
+            raise Namel3ssError(
+                f"Field '{field.name}' on record '{record_name}' could not be coerced to type '{ftype}': {exc}"
+            ) from exc
+        return value
+
+    def _prepare_record_values(
+        self,
+        record,
+        values: dict[str, Any],
+        step_name: str,
+        include_defaults: bool,
+        enforce_required: bool,
+    ) -> dict[str, Any]:
+        normalized: dict[str, Any] = {}
+        for key, raw in values.items():
+            field = record.fields.get(key)
+            if not field:
+                raise Namel3ssError(
+                    f"Record '{record.name}' has no field named '{key}' (step '{step_name}')."
+                )
+            coerced = self._coerce_record_value(record.name, field, raw, step_name)
+            if coerced is None and enforce_required and (field.required or field.primary_key):
+                raise Namel3ssError(
+                    f"N3L-1502: Field '{key}' cannot be null when creating record '{record.name}'."
+                )
+            normalized[key] = coerced
+        if include_defaults:
+            for key, field in record.fields.items():
+                if key in normalized:
+                    continue
+                if field.default is not None:
+                    normalized[key] = self._resolve_record_default_value(field)
+                elif enforce_required and field.required:
+                    raise Namel3ssError(
+                        f"N3L-1502: Step '{step_name}' must provide field '{key}' for record '{record.name}'."
+                    )
+        return normalized
+
+    def _evaluate_limit_expr(
+        self,
+        expr: ast_nodes.Expr | None,
+        evaluator: ExpressionEvaluator,
+        step_name: str,
+    ) -> int | None:
+        if expr is None:
+            return None
+        try:
+            value = evaluator.evaluate(expr) if isinstance(expr, ast_nodes.Expr) else expr
+        except Exception as exc:
+            raise Namel3ssError(f"Failed to evaluate 'limit' for step '{step_name}': {exc}") from exc
+        if value is None:
+            return None
+        if not isinstance(value, (int, float)):
+            raise Namel3ssError(
+                f"'limit' must evaluate to a number in step '{step_name}'."
+            )
+        limit = int(value)
+        if limit < 0:
+            return 0
+        return limit
+
+    def _execute_record_step(
+        self,
+        kind: str,
+        record,
+        params: dict[str, Any],
+        evaluator: ExpressionEvaluator,
+        runtime_ctx: FlowRuntimeContext,
+        step_name: str,
+    ) -> Any:
+        frames = runtime_ctx.frames
+        if frames is None:
+            raise Namel3ssError("Frame registry unavailable for record operations.")
+        frame_name = getattr(record, "frame", None)
+        if not frame_name:
+            raise Namel3ssError(
+                f"Record '{record.name}' is missing an associated frame."
+            )
+        if kind == "db_create":
+            values = self._evaluate_expr_dict(params.get("values"), evaluator, step_name, "values")
+            normalized = self._prepare_record_values(
+                record,
+                values,
+                step_name,
+                include_defaults=True,
+                enforce_required=True,
+            )
+            frames.insert(frame_name, normalized)
+            return dict(normalized)
+        if kind == "db_get":
+            by_id_values = self._evaluate_expr_dict(params.get("by_id"), evaluator, step_name, "by id")
+            where_values = self._evaluate_expr_dict(params.get("where"), evaluator, step_name, "where")
+            filters: dict[str, Any] = {}
+            used_primary = False
+            if record.primary_key and record.primary_key in by_id_values:
+                pk_field = record.fields.get(record.primary_key)
+                if pk_field:
+                    filters[record.primary_key] = self._coerce_record_value(
+                        record.name,
+                        pk_field,
+                        by_id_values[record.primary_key],
+                        step_name,
+                    )
+                    used_primary = True
+            elif where_values:
+                for key, raw in where_values.items():
+                    field = record.fields.get(key)
+                    if not field:
+                        raise Namel3ssError(
+                            f"Record '{record.name}' has no field named '{key}' (step '{step_name}')."
+                        )
+                    filters[key] = self._coerce_record_value(record.name, field, raw, step_name)
+            rows = frames.query(frame_name, filters)
+            if used_primary:
+                return dict(rows[0]) if rows else None
+            limit_value = self._evaluate_limit_expr(params.get("limit"), evaluator, step_name)
+            if limit_value is not None:
+                rows = rows[: limit_value or 0]
+            return [dict(row) for row in rows]
+        if kind == "db_update":
+            by_id_values = self._evaluate_expr_dict(params.get("by_id"), evaluator, step_name, "by id")
+            if not record.primary_key or record.primary_key not in by_id_values:
+                raise Namel3ssError(
+                    f"Step '{step_name}' must include primary key '{record.primary_key}' inside 'by id'."
+                )
+            pk_field = record.fields.get(record.primary_key)
+            filters = {
+                record.primary_key: self._coerce_record_value(
+                    record.name,
+                    pk_field,
+                    by_id_values[record.primary_key],
+                    step_name,
+                )
+            }
+            set_values = self._evaluate_expr_dict(params.get("set"), evaluator, step_name, "set")
+            updates = self._prepare_record_values(
+                record,
+                set_values,
+                step_name,
+                include_defaults=False,
+                enforce_required=False,
+            )
+            rows = frames.query(frame_name, filters)
+            if not rows:
+                return None
+            for row in rows:
+                row.update(updates)
+            return dict(rows[0])
+        if kind == "db_delete":
+            by_id_values = self._evaluate_expr_dict(params.get("by_id"), evaluator, step_name, "by id")
+            if not record.primary_key or record.primary_key not in by_id_values:
+                raise Namel3ssError(
+                    f"Step '{step_name}' must include primary key '{record.primary_key}' inside 'by id'."
+                )
+            pk_field = record.fields.get(record.primary_key)
+            filters = {
+                record.primary_key: self._coerce_record_value(
+                    record.name,
+                    pk_field,
+                    by_id_values[record.primary_key],
+                    step_name,
+                )
+            }
+            deleted = frames.delete(frame_name, filters)
+            return {"ok": deleted > 0, "deleted": deleted}
+        raise Namel3ssError(f"Unsupported record operation '{kind}'.")
     def _eval_rulegroup(self, expr: ast_nodes.RuleGroupRefExpr, state: FlowState, runtime_ctx: FlowRuntimeContext) -> tuple[bool, Any]:
         groups = getattr(runtime_ctx.program, "rulegroups", {}) if runtime_ctx else {}
         rules = groups.get(expr.group_name) or {}

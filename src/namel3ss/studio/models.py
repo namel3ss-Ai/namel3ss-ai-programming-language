@@ -17,3 +17,4 @@ class DashboardSummary:
     total_plugins: int
     memory_items: int
     rag_documents: int
+    ai_calls: list[str]

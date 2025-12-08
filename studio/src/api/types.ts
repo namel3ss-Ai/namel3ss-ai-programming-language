@@ -341,3 +341,58 @@ export interface FmtPreviewResponse {
   formatted: string;
   changes_made: boolean;
 }
+
+export interface MemorySessionInfo {
+  id: string;
+  last_activity?: string | null;
+  turns: number;
+  user_id?: string | null;
+}
+
+export interface MemorySessionsResponse {
+  ai: string;
+  sessions: MemorySessionInfo[];
+}
+
+export interface MemoryTurn {
+  role: string;
+  content: string;
+  created_at?: string | null;
+}
+
+export interface MemoryPolicyInfo {
+  scope: string;
+  requested_scope: string;
+  scope_fallback?: boolean;
+  scope_note?: string | null;
+  retention_days?: number | null;
+  pii_policy: string;
+}
+
+export interface MemorySessionDetail {
+  ai: string;
+  session: string;
+  user_id?: string | null;
+  short_term: {
+    window?: number | null;
+    turns: MemoryTurn[];
+  };
+  long_term?: {
+    store?: string | null;
+    items: { id: string; summary: string; created_at?: string | null }[];
+  } | null;
+  profile?: {
+    store?: string | null;
+    facts: string[];
+  } | null;
+  policies?: {
+    short_term?: MemoryPolicyInfo | null;
+    long_term?: MemoryPolicyInfo | null;
+    profile?: MemoryPolicyInfo | null;
+  };
+  last_recall_snapshot?: {
+    timestamp?: string;
+    rules: { source?: string | null; count?: number | null; top_k?: number | null; include?: boolean | null }[];
+    messages: { role: string; content: string }[];
+  } | null;
+}

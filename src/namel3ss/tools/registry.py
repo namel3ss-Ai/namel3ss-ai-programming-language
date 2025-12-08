@@ -4,9 +4,9 @@ Registry for tools.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import re
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional, Sequence
 
 
 @dataclass
@@ -14,9 +14,13 @@ class ToolConfig:
     name: str
     kind: str
     method: str
-    url_template: str
-    headers: dict
+    url_expr: object | None = None
+    url_template: str | None = None
+    headers: dict = field(default_factory=dict)
+    query_params: dict = field(default_factory=dict)
+    body_fields: dict = field(default_factory=dict)
     body_template: object | None = None
+    input_fields: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -51,28 +55,38 @@ class ToolRegistry:
 _PLACEHOLDER_RE = re.compile(r"{([^{}]+)}")
 
 
-def build_ai_tool_specs(tool_names: List[str], tool_registry: ToolRegistry) -> List[AiToolSpec]:
+def build_ai_tool_specs(tool_refs: Sequence[Any], tool_registry: ToolRegistry) -> List[AiToolSpec]:
     """
     Build provider-neutral tool specs for AI function/tool-calling.
 
     Parameters are derived from placeholders in url_template; all are treated as string.
     """
     specs: List[AiToolSpec] = []
-    for tool_name in tool_names:
-        tool = tool_registry.get(tool_name)
+    for ref in tool_refs:
+        if isinstance(ref, str):
+            internal_name = ref
+            exposed_name = ref
+        else:
+            internal_name = getattr(ref, "internal_name", None) or getattr(ref, "name", None)
+            exposed_name = getattr(ref, "exposed_name", None) or internal_name
+        if not internal_name:
+            continue
+        tool = tool_registry.get(internal_name)
         if tool is None:
-            raise ValueError(f"Unknown tool '{tool_name}'")
-        placeholders = _PLACEHOLDER_RE.findall(tool.url_template or "")
-        properties = {name: {"type": "string"} for name in placeholders}
-        required = list(dict.fromkeys(placeholders))
+            raise ValueError(f"Unknown tool '{internal_name}'")
+        input_fields = list(getattr(tool, "input_fields", []) or [])
+        if not input_fields:
+            placeholders = _PLACEHOLDER_RE.findall(getattr(tool, "url_template", "") or "")
+            input_fields = list(dict.fromkeys(placeholders))
+        properties = {name: {"type": "string"} for name in input_fields}
         parameters = {
             "type": "object",
             "properties": properties,
-            "required": required,
+            "required": list(dict.fromkeys(input_fields)),
         }
         specs.append(
             AiToolSpec(
-                name=tool.name,
+                name=exposed_name,
                 description=f"Tool {tool.name} ({tool.kind})",
                 parameters=parameters,
             )

@@ -7,7 +7,7 @@ import TracePanel from "./panels/TracePanel";
 import MetricsPanel from "./panels/MetricsPanel";
 import JobsPanel from "./panels/JobsPanel";
 import DiagnosticsPanel from "./panels/DiagnosticsPanel";
-import RagMemoryPanel from "./panels/RagMemoryPanel";
+import MemoryPanel from "./panels/MemoryPanel";
 import FlowsPanel from "./panels/FlowsPanel";
 import PluginsPanel from "./panels/PluginsPanel";
 import OptimizerPanel from "./panels/OptimizerPanel";
@@ -37,7 +37,7 @@ const PANELS = [
   "Agents",
   "Metrics",
   "Jobs",
-  "RAG & Memory",
+  "Memory",
   "Plugins",
   "Optimizer",
   "Diagnostics",
@@ -82,8 +82,8 @@ const App: React.FC = () => {
         return <MetricsPanel client={client} />;
       case "Jobs":
         return <JobsPanel client={client} />;
-      case "RAG & Memory":
-        return <RagMemoryPanel client={client} />;
+      case "Memory":
+        return <MemoryPanel client={client} />;
       case "Plugins":
         return <PluginsPanel client={client} />;
       case "Optimizer":

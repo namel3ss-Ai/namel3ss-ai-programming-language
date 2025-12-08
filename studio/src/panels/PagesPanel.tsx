@@ -85,9 +85,11 @@ const PagesPanel: React.FC<Props> = ({ code, client }) => {
 
   const handleNavigate = async (onClick: any) => {
     if (!onClick || onClick.kind !== "navigate") return;
-    let targetName: string | null = onClick.targetPage || null;
-    if (!targetName && onClick.targetPath && pages.length > 0) {
-      const match = pages.find((p) => p.route === onClick.targetPath);
+    const target = onClick.target || {};
+    let targetName: string | null = target.pageName ?? onClick.targetPage ?? null;
+    const targetPath: string | null = target.path ?? onClick.targetPath ?? null;
+    if (!targetName && targetPath && pages.length > 0) {
+      const match = pages.find((p) => p.route === targetPath);
       targetName = match?.name || null;
     }
     if (!targetName) {
@@ -142,7 +144,8 @@ const PagesPanel: React.FC<Props> = ({ code, client }) => {
                           <button
                             key={`${btn.id || btn.label}-${idx}`}
                             onClick={() => handleNavigate(btn.onClick)}
-                            style={{ marginRight: 8 }}
+                            className={btn.className}
+                            style={{ ...(btn.style || {}), marginRight: 8 }}
                           >
                             {btn.label}
                           </button>

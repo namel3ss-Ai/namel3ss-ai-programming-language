@@ -5,9 +5,28 @@ Flow runtime models.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Literal, Optional, TypedDict
 
 from .graph import FlowError, FlowState
+
+
+class StreamEvent(TypedDict, total=False):
+    kind: Literal["chunk", "done", "error", "flow_done", "state_change"]
+    flow: str
+    step: str
+    channel: Optional[str]
+    role: Optional[str]
+    label: Optional[str]
+    mode: Optional[str]
+    delta: Optional[str]
+    full: Optional[str]
+    error: Optional[str]
+    code: Optional[str]
+    success: Optional[bool]
+    result: Optional[dict]
+    path: Optional[str]
+    old_value: Any
+    new_value: Any
 
 
 @dataclass

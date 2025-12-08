@@ -56,6 +56,8 @@ class PageDecl:
     sections: List["SectionDecl"] = field(default_factory=list)
     layout: List["LayoutElement"] = field(default_factory=list)
     styles: List["UIStyle"] = field(default_factory=list)
+    class_name: Optional[str] = None
+    style: Dict[str, str] = field(default_factory=dict)
     span: Optional[Span] = None
 
 
@@ -69,6 +71,13 @@ class ModelDecl:
 
 
 @dataclass
+class AiToolBinding:
+    internal_name: str
+    exposed_name: str
+    span: Optional[Span] = None
+
+
+@dataclass
 class AICallDecl:
     """ai \"name\": AI call binding to a model."""
 
@@ -78,7 +87,8 @@ class AICallDecl:
     description: Optional[str] = None
     system_prompt: Optional[str] = None
     memory_name: Optional[str] = None
-    tools: list[str] = field(default_factory=list)
+    memory: Optional["AiMemoryConfig"] = None
+    tools: List[AiToolBinding] = field(default_factory=list)
     span: Optional[Span] = None
 
 
@@ -130,11 +140,71 @@ class AgentDecl:
 
 @dataclass
 class MemoryDecl:
-    """memory \"name\": memory type."""
+    """memory "name": memory type."""
 
     name: str
     memory_type: Optional[str] = None
     retention: Optional[str] = None
+    span: Optional[Span] = None
+
+
+@dataclass
+class AiShortTermMemoryConfig:
+    window: Optional[int] = None
+    store: Optional[str] = None
+    retention_days: Optional[int] = None
+    pii_policy: Optional[str] = None
+    scope: Optional[str] = None
+    span: Optional[Span] = None
+
+
+@dataclass
+class AiLongTermMemoryConfig:
+    store: Optional[str] = None
+    pipeline: Optional[list["AiMemoryPipelineStep"]] = None
+    retention_days: Optional[int] = None
+    pii_policy: Optional[str] = None
+    scope: Optional[str] = None
+    span: Optional[Span] = None
+
+
+@dataclass
+class AiProfileMemoryConfig:
+    store: Optional[str] = None
+    extract_facts: Optional[bool] = None
+    pipeline: Optional[list["AiMemoryPipelineStep"]] = None
+    retention_days: Optional[int] = None
+    pii_policy: Optional[str] = None
+    scope: Optional[str] = None
+    span: Optional[Span] = None
+
+
+@dataclass
+class AiMemoryPipelineStep:
+    name: str = ""
+    type: str = ""
+    max_tokens: Optional[int] = None
+    span: Optional[Span] = None
+
+
+@dataclass
+class AiRecallRule:
+    source: str = ""
+    count: Optional[int] = None
+    top_k: Optional[int] = None
+    include: Optional[bool] = None
+    span: Optional[Span] = None
+
+
+@dataclass
+class AiMemoryConfig:
+    kind: Optional[str] = None
+    window: Optional[int] = None
+    store: Optional[str] = None
+    short_term: Optional[AiShortTermMemoryConfig] = None
+    long_term: Optional[AiLongTermMemoryConfig] = None
+    profile: Optional[AiProfileMemoryConfig] = None
+    recall: List[AiRecallRule] = field(default_factory=list)
     span: Optional[Span] = None
 
 
@@ -152,6 +222,24 @@ class FrameDecl:
     has_headers: bool = False
     select_cols: List[str] = field(default_factory=list)
     where: Optional["Expr"] = None
+    span: Optional[Span] = None
+
+
+@dataclass
+class RecordFieldDecl:
+    name: str
+    type: str
+    primary_key: bool = False
+    required: bool = False
+    default_expr: "Expr" | None = None
+    span: Optional[Span] = None
+
+
+@dataclass
+class RecordDecl:
+    name: str
+    frame: str
+    fields: List[RecordFieldDecl] = field(default_factory=list)
     span: Optional[Span] = None
 
 
@@ -270,6 +358,8 @@ class SectionDecl:
     components: List[ComponentDecl] = field(default_factory=list)
     layout: List["LayoutElement"] = field(default_factory=list)
     styles: List["UIStyle"] = field(default_factory=list)
+    class_name: Optional[str] = None
+    style: Dict[str, str] = field(default_factory=dict)
     span: Optional[Span] = None
 
 
@@ -285,6 +375,23 @@ class FlowStepDecl:
     statements: List["Statement | FlowAction"] = field(default_factory=list)
     conditional_branches: Optional[list["ConditionalBranch"]] = None
     when_expr: Optional[Expr] = None
+    streaming: bool = False
+    stream_channel: Optional[str] = None
+    stream_role: Optional[str] = None
+    stream_label: Optional[str] = None
+    stream_mode: Optional[str] = None
+    tools_mode: Optional[str] = None
+    span: Optional[Span] = None
+
+
+@dataclass
+class FlowLoopDecl:
+    """for each loop within a flow."""
+
+    name: str
+    var_name: str
+    iterable: Expr
+    steps: List[FlowStepDecl | "FlowLoopDecl"] = field(default_factory=list)
     span: Optional[Span] = None
 
 
@@ -294,7 +401,7 @@ class FlowDecl:
 
     name: str
     description: Optional[str] = None
-    steps: List[FlowStepDecl] = field(default_factory=list)
+    steps: List[FlowStepDecl | FlowLoopDecl] = field(default_factory=list)
     error_steps: List[FlowStepDecl] = field(default_factory=list)
     span: Optional[Span] = None
 
@@ -613,6 +720,8 @@ class RuleGroupDecl:
 class LayoutElement:
     span: Optional[Span] = None
     styles: List["UIStyle"] = field(default_factory=list)
+    class_name: Optional[str] = None
+    style: Dict[str, str] = field(default_factory=dict)
 
 
 @dataclass
@@ -698,6 +807,8 @@ class UIComponentDecl:
     params: List[str] = field(default_factory=list)
     render: List["LayoutElement"] = field(default_factory=list)
     styles: List[UIStyle] = field(default_factory=list)
+    class_name: Optional[str] = None
+    style: Dict[str, str] = field(default_factory=dict)
     span: Optional[Span] = None
 
 
@@ -706,6 +817,8 @@ class UIComponentCall(LayoutElement):
     name: str = ""
     args: List[Expr] = field(default_factory=list)
     named_args: Dict[str, List["Statement | FlowAction"]] = field(default_factory=dict)
+    class_name: Optional[str] = None
+    style: Dict[str, str] = field(default_factory=dict)
 
 
 @dataclass
@@ -746,9 +859,12 @@ class ToolDeclaration:
     name: str
     kind: str | None = None
     method: str | None = None
-    url_template: str | None = None
+    url_template: str | None = None  # legacy placeholder-based templates
+    url_expr: Expr | None = None
     headers: Dict[str, Expr] = field(default_factory=dict)
-    body_template: Expr | None = None
+    query_params: Dict[str, Expr] = field(default_factory=dict)
+    body_fields: Dict[str, Expr] = field(default_factory=dict)
+    body_template: Expr | None = None  # legacy body expression
     span: Optional[Span] = None
 
 

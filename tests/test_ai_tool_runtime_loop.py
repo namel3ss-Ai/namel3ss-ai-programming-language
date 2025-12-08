@@ -3,10 +3,10 @@ from textwrap import dedent
 
 import pytest
 
-from namel3ss import parser
-from namel3ss.ir import ast_to_ir
+from namel3ss import ast_nodes, parser
+from namel3ss.ir import IRAiCall, IRAiToolBinding, ast_to_ir
 from namel3ss.runtime.context import ExecutionContext, execute_ai_call_with_registry
-from namel3ss.ai.providers import ModelProvider
+from namel3ss.ai.providers import ChatToolResponse, ModelProvider
 from namel3ss.ai.models import ModelResponse
 from namel3ss.tools.registry import ToolConfig, ToolRegistry
 
@@ -18,12 +18,26 @@ class StubProvider(ModelProvider):
         self.calls = []
 
     def generate(self, messages, **kwargs):
-        self.calls.append({"messages": messages, "kwargs": kwargs})
+        self.calls.append({"method": "generate", "messages": [dict(m) for m in messages], "kwargs": kwargs})
         resp = self.responses.pop(0)
         return resp
 
     def stream(self, messages, **kwargs):
         raise NotImplementedError
+
+    def chat_with_tools(self, messages, tools=None, tool_choice="auto", **kwargs):
+        self.calls.append(
+            {"method": "chat", "messages": [dict(m) for m in messages], "kwargs": {"tools": tools, "tool_choice": tool_choice, **kwargs}}
+        )
+        resp = self.responses.pop(0)
+        if isinstance(resp, ModelResponse):
+            return ChatToolResponse(final_text=resp.text, tool_calls=[], raw=resp.raw, finish_reason=resp.finish_reason)
+        return ChatToolResponse(
+            final_text=resp.get("final_text"),
+            tool_calls=resp.get("tool_calls") or [],
+            raw=resp.get("raw"),
+            finish_reason=resp.get("finish_reason"),
+        )
 
 
 class StubRegistry:
@@ -66,7 +80,9 @@ def test_ai_tool_loop_happy_path():
         tool is "get_weather":
           kind is "http_json"
           method is "GET"
-          url_template is "https://api.example.com/weather?city={city}"
+          url is "https://api.example.com/weather"
+          query:
+            city: input.city
 
         ai is "assistant_with_tools":
           model is "gpt-4.1-mini"
@@ -78,30 +94,15 @@ def test_ai_tool_loop_happy_path():
     ir = ast_to_ir(module)
     ai_call = ir.ai_calls["assistant_with_tools"]
 
-    first = ModelResponse(
-        provider="stub",
-        model="stub-model",
-        messages=[],
-        text="",
-        raw={"tool_calls": [{"name": "get_weather", "arguments": {"city": "Brussels"}}]},
-    )
-    second = ModelResponse(
-        provider="stub", model="stub-model", messages=[], text="It is sunny in Brussels.", raw={}
-    )
+    first = {"tool_calls": [{"name": "get_weather", "arguments": {"city": "Brussels"}}], "final_text": ""}
+    second = {"tool_calls": [], "final_text": "It is sunny in Brussels."}
     provider = StubProvider([first, second])
     registry = StubRegistry(provider)
     router = StubRouter()
 
     tool_registry = ToolRegistry()
-    tool_registry.register(
-        ToolConfig(
-            name="get_weather",
-            kind="http_json",
-            method="GET",
-            url_template="https://api.example.com/weather?city={city}",
-            headers={},
-        )
-    )
+    for tool in ir.tools.values():
+        tool_registry.register(tool)
     ctx = ExecutionContext(
         app_name="app",
         request_id="req1",
@@ -117,7 +118,7 @@ def test_ai_tool_loop_happy_path():
     assert json.loads(tool_msg["content"]) == {"temp_c": 21, "condition": "Sunny"}
 
 
-def test_ai_tool_loop_limit_exceeded():
+def test_ai_tool_loop_unknown_tool_errors():
     code = dedent(
         """
         model "gpt-4.1-mini":
@@ -126,7 +127,9 @@ def test_ai_tool_loop_limit_exceeded():
         tool is "get_weather":
           kind is "http_json"
           method is "GET"
-          url_template is "https://api.example.com/weather?city={city}"
+          url is "https://api.example.com/weather"
+          query:
+            city: input.city
 
         ai is "assistant_with_tools":
           model is "gpt-4.1-mini"
@@ -138,26 +141,13 @@ def test_ai_tool_loop_limit_exceeded():
     ir = ast_to_ir(module)
     ai_call = ir.ai_calls["assistant_with_tools"]
 
-    looping_resp = ModelResponse(
-        provider="stub",
-        model="stub-model",
-        messages=[],
-        text="",
-        raw={"tool_calls": [{"name": "get_weather", "arguments": {"city": "Brussels"}}]},
-    )
-    provider = StubProvider([looping_resp, looping_resp, looping_resp, looping_resp])
+    bad_resp = {"tool_calls": [{"name": "missing_alias", "arguments": {"city": "Brussels"}}], "final_text": ""}
+    provider = StubProvider([bad_resp])
     registry = StubRegistry(provider)
     router = StubRouter()
     tool_registry = ToolRegistry()
-    tool_registry.register(
-        ToolConfig(
-            name="get_weather",
-            kind="http_json",
-            method="GET",
-            url_template="https://api.example.com/weather?city={city}",
-            headers={},
-        )
-    )
+    for tool in ir.tools.values():
+        tool_registry.register(tool)
     ctx = ExecutionContext(
         app_name="app",
         request_id="req1",
@@ -166,4 +156,30 @@ def test_ai_tool_loop_limit_exceeded():
     )
     with pytest.raises(Exception) as exc:
         execute_ai_call_with_registry(ai_call, registry, router, ctx)
-    assert "N3F-971" in str(exc.value)
+    assert "N3F-972" in str(exc.value)
+
+
+def test_step_tools_mode_none_disables_tool_loop():
+    ai_call = IRAiCall(
+        name="assistant_with_tools",
+        model_name="gpt-4.1-mini",
+        input_source="Hello",
+        tools=[IRAiToolBinding(internal_name="get_weather", exposed_name="get_weather")],
+    )
+    model_resp = ModelResponse(provider="stub", model="stub", messages=[], text="No tools", raw={})
+    provider = StubProvider([model_resp])
+    registry = StubRegistry(provider)
+    router = StubRouter()
+    tool_registry = ToolRegistry()
+    tool_registry.register(
+        ToolConfig(
+            name="get_weather",
+            kind="http_json",
+            method="GET",
+            url_expr=ast_nodes.Literal(value="https://example.com"),
+        )
+    )
+    ctx = ExecutionContext(app_name="app", request_id="req1", tool_registry=tool_registry)
+    result = execute_ai_call_with_registry(ai_call, registry, router, ctx, tools_mode="none")
+    assert result["provider_result"]["result"] == "No tools"
+    assert provider.calls[0]["method"] == "generate"

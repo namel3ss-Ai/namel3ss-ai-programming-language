@@ -12,7 +12,7 @@ page "home" at "/":
   section "main":
     button "Go":
       on click:
-        navigate "/chat"
+        navigate to "/chat"
 '''
     )
     page = _first_page(mod)
@@ -30,7 +30,7 @@ page is "home" at "/":
   section is "main":
     button is "Go":
       on click:
-        navigate is "/chat"
+        navigate "/chat"
 '''
     )
     btn = _first_page(mod).layout[0].components[0]
@@ -46,7 +46,7 @@ page "home" at "/":
   section "main":
     button "Go":
       on click:
-        navigate page "chat"
+        navigate to page "chat"
 '''
     )
     btn = _first_page(mod).layout[0].components[0]
@@ -62,7 +62,7 @@ page is "home" at "/":
   section is "main":
     button is "Go":
       on click:
-        navigate page is "chat"
+        navigate to page is "chat"
 '''
     )
     btn = _first_page(mod).layout[0].components[0]

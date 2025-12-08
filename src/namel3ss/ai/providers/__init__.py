@@ -3,9 +3,29 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from typing import Any, Dict, Iterable, List
+from dataclasses import dataclass
+from typing import Any, Dict, Iterable, List, Optional, TypedDict
 
 from ..models import ModelResponse, ModelStreamChunk
+
+
+class ToolSchema(TypedDict, total=False):
+    name: str
+    description: Optional[str]
+    parameters: Dict[str, Any]
+
+
+class ToolCallResult(TypedDict, total=False):
+    name: str
+    arguments: Dict[str, Any]
+
+
+@dataclass
+class ChatToolResponse:
+    final_text: Optional[str]
+    tool_calls: List[ToolCallResult]
+    raw: Any | None = None
+    finish_reason: Optional[str] = None
 
 
 class ModelProvider(ABC):
@@ -31,6 +51,25 @@ class ModelProvider(ABC):
 
     def invoke_stream(self, messages: List[Dict[str, str]], **kwargs: Any) -> Iterable[ModelStreamChunk]:
         return self.stream(messages, **kwargs)
+
+    def chat_with_tools(
+        self,
+        messages: List[Dict[str, str]],
+        tools: List[ToolSchema] | None = None,
+        tool_choice: str = "auto",
+        **kwargs: Any,
+    ) -> ChatToolResponse:
+        """
+        Optional hook for providers that support model-driven tool calls.
+        Default implementation falls back to a normal generate() call.
+        """
+        response = self.generate(messages, **kwargs)
+        return ChatToolResponse(
+            final_text=response.text,
+            tool_calls=[],
+            raw=response.raw,
+            finish_reason=response.finish_reason,
+        )
 
 
 class DummyProvider(ModelProvider):

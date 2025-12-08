@@ -59,6 +59,8 @@ class Parser:
             return self.parse_agent()
         if token.value == "memory":
             return self.parse_memory()
+        if token.value == "record":
+            return self.parse_record()
         if token.value == "frame":
             return self.parse_frame()
         if token.value == "vector_store":
@@ -466,7 +468,8 @@ class Parser:
         description = None
         system_prompt = None
         memory_name = None
-        tools: list[str] = []
+        memory_config: ast_nodes.AiMemoryConfig | None = None
+        tool_bindings: list[ast_nodes.AiToolBinding] = []
         while not self.check("DEDENT"):
             if self.match("NEWLINE"):
                 continue
@@ -522,31 +525,28 @@ class Parser:
                 description = desc_token.value
                 self.optional_newline()
             elif field_token.value == "memory":
-                if memory_name is not None:
+                if memory_name is not None or memory_config is not None:
                     raise self.error("N3L-802: memory may only appear once inside an ai block.", field_token)
                 self.advance()
-                mem_tok = self.consume("STRING")
-                memory_name = mem_tok.value
-                self.optional_newline()
+                if self.match_value("KEYWORD", "is"):
+                    mem_tok = self.consume("STRING")
+                    mem_kind = mem_tok.value or ""
+                    if mem_kind != "conversation":
+                        raise self.error(
+                            f"N3L-1200: Unsupported memory kind '{mem_kind}' on AI '{name.value or ''}'. Only 'conversation' is supported in this version.",
+                            mem_tok,
+                        )
+                    memory_config = ast_nodes.AiMemoryConfig(kind=mem_kind, span=self._span(mem_tok))
+                    self.optional_newline()
+                elif self.check("STRING"):
+                    value_token = self.consume("STRING")
+                    memory_name = value_token.value
+                    self.optional_newline()
+                else:
+                    memory_config = self._parse_ai_memory_block(name.value or "", field_token)
             elif field_token.value == "tools":
                 self.advance()
-                self.consume("COLON")
-                if self.match("NEWLINE"):
-                    if self.check("INDENT"):
-                        self.consume("INDENT")
-                        while not self.check("DEDENT"):
-                            if self.match("NEWLINE"):
-                                continue
-                            if self.match("DASH"):
-                                pass
-                            tok = self.consume("STRING")
-                            tools.append(tok.value or "")
-                            self.optional_newline()
-                        self.consume("DEDENT")
-                else:
-                    tok = self.consume("STRING")
-                    tools.append(tok.value or "")
-                self.optional_newline()
+                tool_bindings.extend(self._parse_ai_tools_block())
             else:
                 self.consume("KEYWORD")  # raise if unexpected
                 raise self.error(
@@ -562,9 +562,462 @@ class Parser:
             description=description,
             system_prompt=system_prompt,
             memory_name=memory_name,
-            tools=tools,
+            memory=memory_config,
+            tools=tool_bindings,
             span=self._span(start),
         )
+
+    def _parse_ai_tools_block(self) -> list[ast_nodes.AiToolBinding]:
+        bindings: list[ast_nodes.AiToolBinding] = []
+        self.consume("COLON")
+        if self.match("NEWLINE"):
+            if self.check("INDENT"):
+                self.consume("INDENT")
+                while not self.check("DEDENT"):
+                    if self.match("NEWLINE"):
+                        continue
+                    if self.match("DASH"):
+                        if self.match("NEWLINE"):
+                            continue
+                    binding = self._parse_ai_tool_binding_entry()
+                    bindings.append(binding)
+                    self.optional_newline()
+                self.consume("DEDENT")
+        else:
+            bindings.append(self._parse_ai_tool_binding_entry())
+        self.optional_newline()
+        return bindings
+
+    def _parse_ai_tool_binding_entry(self) -> ast_nodes.AiToolBinding:
+        if self.check("STRING"):
+            tok = self.consume("STRING")
+            value = tok.value or ""
+            return ast_nodes.AiToolBinding(
+                internal_name=value,
+                exposed_name=value,
+                span=self._span(tok),
+            )
+        if self.peek().value == "tool":
+            self.consume("KEYWORD", "tool")
+            self.consume("KEYWORD", "is")
+            name_tok = self.consume("STRING")
+            internal_name = name_tok.value or ""
+            exposed_name = internal_name
+            binding_span = self._span(name_tok)
+            # Allow inline alias (tool is "x" as is "alias")
+            if self.match_value("KEYWORD", "as"):
+                self.consume("KEYWORD", "is")
+                alias_tok = self.consume("STRING")
+                exposed_name = alias_tok.value or "" or internal_name
+                binding_span = self._span(alias_tok)
+            else:
+                self.optional_newline()
+                if self.check("INDENT"):
+                    self.consume("INDENT")
+                    while not self.check("DEDENT"):
+                        if self.match("NEWLINE"):
+                            continue
+                        field_tok = self.consume("KEYWORD")
+                        if field_tok.value == "as":
+                            self.consume("KEYWORD", "is")
+                            alias_tok = self.consume("STRING")
+                            exposed_name = alias_tok.value or "" or internal_name
+                            binding_span = self._span(alias_tok)
+                        else:
+                            raise self.error(
+                                f"Unexpected field '{field_tok.value}' in tool binding.",
+                                field_tok,
+                            )
+                        self.optional_newline()
+                    self.consume("DEDENT")
+            return ast_nodes.AiToolBinding(
+                internal_name=internal_name,
+                exposed_name=exposed_name or internal_name,
+                span=binding_span,
+            )
+        tok = self.peek()
+        raise self.error(
+            "Expected a tool name or 'tool is \"name\"' entry inside tools list.",
+            tok,
+        )
+
+    def _parse_ai_memory_block(self, ai_name: str, field_token: Token) -> ast_nodes.AiMemoryConfig:
+        start_span = self._span(field_token)
+        self.consume("COLON")
+        self.consume("NEWLINE")
+        self.consume("INDENT")
+        mem_kind: str | None = None
+        mem_window: int | None = None
+        mem_store: str | None = None
+        short_term_cfg: ast_nodes.AiShortTermMemoryConfig | None = None
+        long_term_cfg: ast_nodes.AiLongTermMemoryConfig | None = None
+        profile_cfg: ast_nodes.AiProfileMemoryConfig | None = None
+        recall_rules: list[ast_nodes.AiRecallRule] = []
+        while not self.check("DEDENT"):
+            if self.match("NEWLINE"):
+                continue
+            mem_field = self.consume_any({"KEYWORD", "IDENT"})
+            field_name = mem_field.value or ""
+            if field_name == "kind":
+                self.consume("KEYWORD", "is")
+                kind_tok = self.consume("STRING")
+                mem_kind = kind_tok.value or ""
+            elif field_name == "window":
+                self.consume("KEYWORD", "is")
+                num_tok = self.consume("NUMBER")
+                mem_window = self._consume_positive_int(
+                    num_tok, "N3L-1202: memory window must be a positive integer."
+                )
+            elif field_name == "store":
+                self.consume("KEYWORD", "is")
+                store_tok = self.consume("STRING")
+                mem_store = store_tok.value or ""
+                if not mem_store:
+                    raise self.error("N3L-1203: memory store must be a non-empty string.", store_tok)
+            elif field_name == "kinds":
+                short_term_cfg, long_term_cfg, profile_cfg = self._parse_memory_kinds_block()
+                continue
+            elif field_name == "recall":
+                recall_rules = self._parse_memory_recall_block()
+                continue
+            else:
+                raise self.error(f"Unexpected field '{field_name}' in memory block", mem_field)
+            self.optional_newline()
+        self.consume("DEDENT")
+        self.optional_newline()
+        return ast_nodes.AiMemoryConfig(
+            kind=mem_kind,
+            window=mem_window,
+            store=mem_store,
+            short_term=short_term_cfg,
+            long_term=long_term_cfg,
+            profile=profile_cfg,
+            recall=recall_rules,
+            span=start_span,
+        )
+
+    def _parse_memory_kinds_block(
+        self,
+    ) -> tuple[
+        ast_nodes.AiShortTermMemoryConfig | None,
+        ast_nodes.AiLongTermMemoryConfig | None,
+        ast_nodes.AiProfileMemoryConfig | None,
+    ]:
+        self.consume("COLON")
+        self.consume("NEWLINE")
+        self.consume("INDENT")
+        short_term_cfg: ast_nodes.AiShortTermMemoryConfig | None = None
+        long_term_cfg: ast_nodes.AiLongTermMemoryConfig | None = None
+        profile_cfg: ast_nodes.AiProfileMemoryConfig | None = None
+        while not self.check("DEDENT"):
+            if self.match("NEWLINE"):
+                continue
+            kind_tok = self.consume_any({"KEYWORD", "IDENT"})
+            kind_name = kind_tok.value or ""
+            self.consume("COLON")
+            self.consume("NEWLINE")
+            self.consume("INDENT")
+            if kind_name == "short_term":
+                if short_term_cfg is not None:
+                    raise self.error("short_term memory kind may only be defined once.", kind_tok)
+                short_term_cfg = self._parse_short_term_kind()
+            elif kind_name == "long_term":
+                if long_term_cfg is not None:
+                    raise self.error("long_term memory kind may only be defined once.", kind_tok)
+                long_term_cfg = self._parse_long_term_kind()
+            elif kind_name == "profile":
+                if profile_cfg is not None:
+                    raise self.error("profile memory kind may only be defined once.", kind_tok)
+                profile_cfg = self._parse_profile_kind()
+            else:
+                raise self.error(
+                    f"Unexpected memory kind '{kind_name}' (expected short_term, long_term, or profile).",
+                    kind_tok,
+                )
+            self.consume("DEDENT")
+            self.optional_newline()
+        self.consume("DEDENT")
+        self.optional_newline()
+        return short_term_cfg, long_term_cfg, profile_cfg
+
+    def _parse_short_term_kind(self) -> ast_nodes.AiShortTermMemoryConfig:
+        window: int | None = None
+        store: str | None = None
+        retention_days: int | None = None
+        pii_policy: str | None = None
+        scope: str | None = None
+        while not self.check("DEDENT"):
+            if self.match("NEWLINE"):
+                continue
+            field_tok = self.consume_any({"KEYWORD", "IDENT"})
+            field_name = field_tok.value or ""
+            if field_name == "window":
+                self.consume("KEYWORD", "is")
+                num_tok = self.consume("NUMBER")
+                window = self._consume_positive_int(
+                    num_tok, "N3L-1202: memory window must be a positive integer."
+                )
+            elif field_name == "store":
+                self.consume("KEYWORD", "is")
+                store_tok = self.consume("STRING")
+                store = store_tok.value or ""
+                if not store:
+                    raise self.error("N3L-1203: memory store must be a non-empty string.", store_tok)
+            elif field_name == "retention_days":
+                self.consume("KEYWORD", "is")
+                num_tok = self.consume("NUMBER")
+                retention_days = self._consume_positive_int(
+                    num_tok, "N3L-1202: retention_days must be a positive integer."
+                )
+            elif field_name == "pii_policy":
+                self.consume("KEYWORD", "is")
+                policy_tok = self.consume("STRING")
+                pii_policy = (policy_tok.value or "").strip()
+            elif field_name == "scope":
+                self.consume("KEYWORD", "is")
+                scope_tok = self.consume("STRING")
+                scope = (scope_tok.value or "").strip()
+            else:
+                raise self.error(f"Unexpected field '{field_name}' in short_term memory kind.", field_tok)
+            self.optional_newline()
+        return ast_nodes.AiShortTermMemoryConfig(
+            window=window,
+            store=store,
+            retention_days=retention_days,
+            pii_policy=pii_policy,
+            scope=scope,
+        )
+
+    def _parse_long_term_kind(self) -> ast_nodes.AiLongTermMemoryConfig:
+        store: str | None = None
+        pipeline: list[ast_nodes.AiMemoryPipelineStep] | None = None
+        retention_days: int | None = None
+        pii_policy: str | None = None
+        scope: str | None = None
+        while not self.check("DEDENT"):
+            if self.match("NEWLINE"):
+                continue
+            field_tok = self.consume_any({"KEYWORD", "IDENT"})
+            field_name = field_tok.value or ""
+            if field_name == "store":
+                self.consume("KEYWORD", "is")
+                store_tok = self.consume("STRING")
+                store = store_tok.value or ""
+                if not store:
+                    raise self.error("N3L-1203: memory store must be a non-empty string.", store_tok)
+            elif field_name == "pipeline":
+                pipeline = self._parse_memory_pipeline_block()
+            elif field_name == "retention_days":
+                self.consume("KEYWORD", "is")
+                num_tok = self.consume("NUMBER")
+                retention_days = self._consume_positive_int(
+                    num_tok, "N3L-1202: retention_days must be a positive integer."
+                )
+            elif field_name == "pii_policy":
+                self.consume("KEYWORD", "is")
+                policy_tok = self.consume("STRING")
+                pii_policy = (policy_tok.value or "").strip()
+            elif field_name == "scope":
+                self.consume("KEYWORD", "is")
+                scope_tok = self.consume("STRING")
+                scope = (scope_tok.value or "").strip()
+            else:
+                raise self.error(f"Unexpected field '{field_name}' in long_term memory kind.", field_tok)
+            self.optional_newline()
+        if not store:
+            raise self.error("long_term memory kind requires a store.", self.peek())
+        return ast_nodes.AiLongTermMemoryConfig(
+            store=store,
+            pipeline=pipeline,
+            retention_days=retention_days,
+            pii_policy=pii_policy,
+            scope=scope,
+        )
+
+    def _parse_profile_kind(self) -> ast_nodes.AiProfileMemoryConfig:
+        store: str | None = None
+        extract_facts: bool | None = None
+        pipeline: list[ast_nodes.AiMemoryPipelineStep] | None = None
+        retention_days: int | None = None
+        pii_policy: str | None = None
+        scope: str | None = None
+        while not self.check("DEDENT"):
+            if self.match("NEWLINE"):
+                continue
+            field_tok = self.consume_any({"KEYWORD", "IDENT"})
+            field_name = field_tok.value or ""
+            if field_name == "store":
+                self.consume("KEYWORD", "is")
+                store_tok = self.consume("STRING")
+                store = store_tok.value or ""
+                if not store:
+                    raise self.error("N3L-1203: memory store must be a non-empty string.", store_tok)
+            elif field_name == "extract_facts":
+                self.consume("KEYWORD", "is")
+                bool_tok = self.consume_any({"KEYWORD", "IDENT"})
+                extract_facts = self._consume_bool_literal(
+                    bool_tok, "extract_facts must be true or false."
+                )
+            elif field_name == "pipeline":
+                pipeline = self._parse_memory_pipeline_block()
+            elif field_name == "retention_days":
+                self.consume("KEYWORD", "is")
+                num_tok = self.consume("NUMBER")
+                retention_days = self._consume_positive_int(
+                    num_tok, "N3L-1202: retention_days must be a positive integer."
+                )
+            elif field_name == "pii_policy":
+                self.consume("KEYWORD", "is")
+                policy_tok = self.consume("STRING")
+                pii_policy = (policy_tok.value or "").strip()
+            elif field_name == "scope":
+                self.consume("KEYWORD", "is")
+                scope_tok = self.consume("STRING")
+                scope = (scope_tok.value or "").strip()
+            else:
+                raise self.error(f"Unexpected field '{field_name}' in profile memory kind.", field_tok)
+            self.optional_newline()
+        if not store:
+            raise self.error("profile memory kind requires a store.", self.peek())
+        return ast_nodes.AiProfileMemoryConfig(
+            store=store,
+            extract_facts=extract_facts,
+            pipeline=pipeline,
+            retention_days=retention_days,
+            pii_policy=pii_policy,
+            scope=scope,
+        )
+
+    def _parse_memory_recall_block(self) -> list[ast_nodes.AiRecallRule]:
+        self.consume("COLON")
+        self.consume("NEWLINE")
+        self.consume("INDENT")
+        rules: list[ast_nodes.AiRecallRule] = []
+        while not self.check("DEDENT"):
+            if self.match("NEWLINE"):
+                continue
+            self.consume("DASH")
+            rule = ast_nodes.AiRecallRule()
+            start_tok = self.peek()
+            nested_indent = 0
+            while True:
+                if nested_indent == 0 and (self.check("DEDENT") or self.check("DASH")):
+                    break
+                if self.match("NEWLINE"):
+                    continue
+                if self.match("INDENT"):
+                    nested_indent += 1
+                    continue
+                if nested_indent > 0 and self.match("DEDENT"):
+                    nested_indent -= 1
+                    continue
+                field_tok = self.consume_any({"KEYWORD", "IDENT"})
+                field_name = field_tok.value or ""
+                if field_name == "source":
+                    self.consume("KEYWORD", "is")
+                    source_tok = self.consume_any({"STRING", "IDENT", "KEYWORD"})
+                    rule.source = (source_tok.value or "").strip()
+                    if rule.source not in {"short_term", "long_term", "profile"}:
+                        raise self.error(
+                            "N3L-1202: Recall rule source must be one of short_term, long_term, or profile.",
+                            source_tok,
+                        )
+                elif field_name == "count":
+                    self.consume("KEYWORD", "is")
+                    num_tok = self.consume("NUMBER")
+                    rule.count = self._consume_positive_int(
+                        num_tok, "N3L-1202: memory count must be a positive integer."
+                    )
+                elif field_name == "top_k":
+                    self.consume("KEYWORD", "is")
+                    num_tok = self.consume("NUMBER")
+                    rule.top_k = self._consume_positive_int(
+                        num_tok, "N3L-1202: memory top_k must be a positive integer."
+                    )
+                elif field_name == "include":
+                    self.consume("KEYWORD", "is")
+                    bool_tok = self.consume_any({"KEYWORD", "IDENT"})
+                    rule.include = self._consume_bool_literal(
+                        bool_tok, "include must be true or false."
+                    )
+                else:
+                    raise self.error(f"Unexpected field '{field_name}' in recall rule.", field_tok)
+                self.optional_newline()
+            if not rule.source:
+                raise self.error("Recall rule must specify a source.", start_tok)
+            if nested_indent != 0:
+                raise self.error("Incomplete recall rule indentation.", self.peek())
+            rules.append(rule)
+        self.consume("DEDENT")
+        self.optional_newline()
+        return rules
+
+    def _parse_memory_pipeline_block(self) -> list[ast_nodes.AiMemoryPipelineStep]:
+        self.consume("COLON")
+        self.consume("NEWLINE")
+        self.consume("INDENT")
+        steps: list[ast_nodes.AiMemoryPipelineStep] = []
+        while not self.check("DEDENT"):
+            if self.match("NEWLINE"):
+                continue
+            self.consume("DASH")
+            step = ast_nodes.AiMemoryPipelineStep()
+            start_tok = self.peek()
+            nested_indent = 0
+            while True:
+                if nested_indent == 0 and (self.check("DEDENT") or self.check("DASH")):
+                    break
+                if self.match("NEWLINE"):
+                    continue
+                if self.match("INDENT"):
+                    nested_indent += 1
+                    continue
+                if nested_indent > 0 and self.match("DEDENT"):
+                    nested_indent -= 1
+                    continue
+                field_tok = self.consume_any({"KEYWORD", "IDENT"})
+                field_name = field_tok.value or ""
+                if field_name == "step":
+                    self.consume("KEYWORD", "is")
+                    name_tok = self.consume("STRING")
+                    step.name = (name_tok.value or "").strip()
+                elif field_name == "type":
+                    self.consume("KEYWORD", "is")
+                    type_tok = self.consume_any({"STRING", "IDENT", "KEYWORD"})
+                    step.type = (type_tok.value or "").strip()
+                elif field_name == "max_tokens":
+                    self.consume("KEYWORD", "is")
+                    num_tok = self.consume("NUMBER")
+                    step.max_tokens = self._consume_positive_int(
+                        num_tok, "N3L-1202: max_tokens must be a positive integer."
+                    )
+                else:
+                    raise self.error(f"Unexpected field '{field_name}' in memory pipeline step.", field_tok)
+                self.optional_newline()
+            if not step.name:
+                raise self.error("Memory pipeline step requires a non-empty 'step' name.", start_tok)
+            if not step.type:
+                raise self.error("Memory pipeline step requires a 'type'.", start_tok)
+            step.span = self._span(start_tok)
+            steps.append(step)
+        self.consume("DEDENT")
+        self.optional_newline()
+        return steps
+
+    def _consume_positive_int(self, token: Token, error_msg: str) -> int:
+        try:
+            value = int(token.value or "0")
+        except Exception:
+            value = 0
+        if value <= 0:
+            raise self.error(error_msg, token)
+        return value
+
+    def _consume_bool_literal(self, token: Token, error_msg: str) -> bool:
+        literal = (token.value or "").lower()
+        if literal not in {"true", "false"}:
+            raise self.error(error_msg, token)
+        return literal == "true"
 
     def parse_ai_called_block(
         self,
@@ -720,6 +1173,117 @@ class Parser:
             name=name.value or "", memory_type=memory_type, retention=retention, span=self._span(start)
         )
 
+    def parse_record(self) -> ast_nodes.RecordDecl:
+        start = self.consume("KEYWORD", "record")
+        if self.match_value("KEYWORD", "is"):
+            name_tok = self.consume_any({"STRING", "IDENT"})
+        else:
+            name_tok = self.consume("STRING")
+        self.consume("COLON")
+        self.consume("NEWLINE")
+        self.consume("INDENT")
+
+        frame_name: str | None = None
+        field_decls: list[ast_nodes.RecordFieldDecl] = []
+        allowed_fields: Set[str] = {"frame", "fields"}
+        while not self.check("DEDENT"):
+            if self.match("NEWLINE"):
+                continue
+            field_token = self.consume("KEYWORD")
+            if field_token.value not in allowed_fields:
+                raise self.error(
+                    f"Unexpected field '{field_token.value}' in record block",
+                    field_token,
+                )
+            if field_token.value == "frame":
+                if self.match_value("KEYWORD", "is"):
+                    frame_tok = self.consume_any({"STRING", "IDENT", "KEYWORD"})
+                else:
+                    frame_tok = self.consume_any({"STRING", "IDENT", "KEYWORD"})
+                frame_name = frame_tok.value or ""
+                self.optional_newline()
+                continue
+            if field_token.value == "fields":
+                self.consume("COLON")
+                self.consume("NEWLINE")
+                if self.check("INDENT"):
+                    self.consume("INDENT")
+                    while not self.check("DEDENT"):
+                        if self.match("NEWLINE"):
+                            continue
+                        field_name_tok = self.consume_any({"IDENT", "KEYWORD", "STRING"})
+                        self.consume("COLON")
+                        self.consume("NEWLINE")
+                        self.consume("INDENT")
+                        field_type: str | None = None
+                        primary_key = False
+                        required = False
+                        default_expr: ast_nodes.Expr | None = None
+                        field_allowed = {"type", "primary_key", "required", "default"}
+                        while not self.check("DEDENT"):
+                            if self.match("NEWLINE"):
+                                continue
+                            prop_tok = self.consume("KEYWORD")
+                            if prop_tok.value not in field_allowed:
+                                raise self.error(
+                                    f"Unexpected field '{prop_tok.value}' inside record field '{field_name_tok.value}'.",
+                                    prop_tok,
+                                )
+                            if prop_tok.value == "type":
+                                if self.match_value("KEYWORD", "is"):
+                                    type_tok = self.consume_any({"STRING", "IDENT"})
+                                else:
+                                    type_tok = self.consume_any({"STRING", "IDENT"})
+                                field_type = type_tok.value or ""
+                            elif prop_tok.value in {"primary_key", "required"}:
+                                if self.match_value("KEYWORD", "is"):
+                                    bool_tok = self.consume_any({"KEYWORD", "IDENT"})
+                                else:
+                                    bool_tok = self.consume_any({"KEYWORD", "IDENT"})
+                                bool_val = (bool_tok.value or "").lower()
+                                if bool_val not in {"true", "false"}:
+                                    raise self.error(
+                                        f"Field '{prop_tok.value}' must be 'true' or 'false'.",
+                                        bool_tok,
+                                    )
+                                if prop_tok.value == "primary_key":
+                                    primary_key = bool_val == "true"
+                                else:
+                                    required = bool_val == "true"
+                            else:  # default
+                                if self.match_value("KEYWORD", "is"):
+                                    default_expr = self.parse_expression()
+                                else:
+                                    default_expr = self.parse_expression()
+                            self.optional_newline()
+                        self.consume("DEDENT")
+                        field_decls.append(
+                            ast_nodes.RecordFieldDecl(
+                                name=field_name_tok.value or "",
+                                type=field_type or "",
+                                primary_key=primary_key,
+                                required=required,
+                                default_expr=default_expr,
+                                span=self._span(field_name_tok),
+                            )
+                        )
+                        self.optional_newline()
+                    self.consume("DEDENT")
+                self.optional_newline()
+                continue
+        self.consume("DEDENT")
+        self.optional_newline()
+        if not frame_name:
+            raise self.error("Record must specify a frame.", name_tok)
+        if not field_decls:
+            raise self.error("Record must declare at least one field.", name_tok)
+        return ast_nodes.RecordDecl(
+            name=name_tok.value or "",
+            frame=frame_name or "",
+            fields=field_decls,
+            span=self._span(start),
+        )
+
     def parse_vector_store(self) -> ast_nodes.VectorStoreDecl:
         start = self.consume("KEYWORD", "vector_store")
         if self.match_value("KEYWORD", "is"):
@@ -820,7 +1384,10 @@ class Parser:
         kind = None
         method = None
         url_template = None
+        url_expr: ast_nodes.Expr | None = None
         headers: dict[str, ast_nodes.Expr] = {}
+        query_params: dict[str, ast_nodes.Expr] = {}
+        body_fields: dict[str, ast_nodes.Expr] = {}
         body_template: ast_nodes.Expr | None = None
         self.consume("COLON")
         self.consume("NEWLINE")
@@ -855,6 +1422,14 @@ class Parser:
                     url_template = url_tok.value
                     self.optional_newline()
                     continue
+                if tok.value == "url":
+                    self.consume("KEYWORD", "url")
+                    if self.match_value("KEYWORD", "is"):
+                        url_expr = self.parse_expression()
+                    else:
+                        url_expr = self.parse_expression()
+                    self.optional_newline()
+                    continue
                 if tok.value == "body_template":
                     self.consume("KEYWORD", "body_template")
                     if self.match_value("KEYWORD", "is"):
@@ -870,10 +1445,40 @@ class Parser:
                     if self.check("INDENT"):
                         self.consume("INDENT")
                         while not self.check("DEDENT"):
-                            key_tok = self.consume_any({"IDENT", "STRING"})
+                            key_tok = self.consume_any({"IDENT", "STRING", "KEYWORD"})
                             self.consume("COLON")
                             expr = self.parse_expression()
                             headers[key_tok.value or ""] = expr
+                            self.optional_newline()
+                        self.consume("DEDENT")
+                    self.optional_newline()
+                    continue
+                if tok.value == "query":
+                    self.consume("KEYWORD", "query")
+                    self.consume("COLON")
+                    self.consume("NEWLINE")
+                    if self.check("INDENT"):
+                        self.consume("INDENT")
+                        while not self.check("DEDENT"):
+                            key_tok = self.consume_any({"IDENT", "STRING", "KEYWORD"})
+                            self.consume("COLON")
+                            expr = self.parse_expression()
+                            query_params[key_tok.value or ""] = expr
+                            self.optional_newline()
+                        self.consume("DEDENT")
+                    self.optional_newline()
+                    continue
+                if tok.value == "body":
+                    self.consume("KEYWORD", "body")
+                    self.consume("COLON")
+                    self.consume("NEWLINE")
+                    if self.check("INDENT"):
+                        self.consume("INDENT")
+                        while not self.check("DEDENT"):
+                            key_tok = self.consume_any({"IDENT", "STRING", "KEYWORD"})
+                            self.consume("COLON")
+                            expr = self.parse_expression()
+                            body_fields[key_tok.value or ""] = expr
                             self.optional_newline()
                         self.consume("DEDENT")
                     self.optional_newline()
@@ -888,7 +1493,10 @@ class Parser:
             kind=kind,
             method=method,
             url_template=url_template,
+             url_expr=url_expr,
             headers=headers,
+             query_params=query_params,
+             body_fields=body_fields,
             body_template=body_template,
             span=self._span(start),
         )
@@ -1081,6 +1689,8 @@ class Parser:
         params: list[str] = []
         render_layout: list[ast_nodes.LayoutElement] = []
         styles: list[ast_nodes.UIStyle] = []
+        class_name = None
+        style_map: dict[str, str] = {}
         self.consume("COLON")
         self.consume("NEWLINE")
         if self.check("INDENT"):
@@ -1109,6 +1719,16 @@ class Parser:
                         self.consume("DEDENT")
                     self.optional_newline()
                     continue
+                if tok.value == "class":
+                    self.consume("KEYWORD", "class")
+                    class_name = self._parse_class_value()
+                    self.optional_newline()
+                    continue
+                if tok.value == "style":
+                    self.consume("KEYWORD", "style")
+                    style_map = self.parse_style_map_block()
+                    self.optional_newline()
+                    continue
                 raise self.error("N3U-3501: missing render block", tok)
             self.consume("DEDENT")
         self.optional_newline()
@@ -1119,6 +1739,8 @@ class Parser:
             params=params,
             render=render_layout,
             styles=styles,
+            class_name=class_name,
+            style=style_map,
             span=self._span(start_tok),
         )
 
@@ -1201,6 +1823,37 @@ class Parser:
             return ast_nodes.UIStyle(kind=kind, value=val_tok.value or "", span=self._span(tok))
         raise self.error("N3U-3101: style outside of a page or section", tok)
 
+    def parse_style_map_block(self) -> dict[str, str]:
+        style_map: dict[str, str] = {}
+        self.consume("COLON")
+        self.consume("NEWLINE")
+        if not self.check("INDENT"):
+            raise self.error("N3U-3500: style block must be indented", self.peek())
+        self.consume("INDENT")
+        while not self.check("DEDENT"):
+            if self.match("NEWLINE"):
+                continue
+            key_tok = self.consume_any({"IDENT", "KEYWORD", "STRING"})
+            self.consume("COLON")
+            if not self.check("STRING"):
+                raise self.error("N3U-3501: style values must be string literals", self.peek())
+            val_tok = self.consume("STRING")
+            style_map[key_tok.value or ""] = val_tok.value or ""
+            self.optional_newline()
+        self.consume("DEDENT")
+        return style_map
+
+    def _parse_class_value(self) -> str:
+        if self.match_value("KEYWORD", "is"):
+            if not self.check("STRING"):
+                raise self.error("N3U-3502: class value must be a string literal", self.peek())
+            tok = self.consume("STRING")
+        else:
+            if not self.check("STRING"):
+                raise self.error("N3U-3502: class value must be a string literal", self.peek())
+            tok = self.consume("STRING")
+        return tok.value or ""
+
     def parse_layout_block(self, container_styles: list[ast_nodes.UIStyle] | None = None) -> tuple[list[ast_nodes.LayoutElement], list[ast_nodes.UIStyle]]:
         elements: list[ast_nodes.LayoutElement] = []
         styles: list[ast_nodes.UIStyle] = container_styles or []
@@ -1263,23 +1916,86 @@ class Parser:
             if tok.value == "heading":
                 self.consume("KEYWORD", "heading")
                 txt_tok = self.consume("STRING")
+                class_name = None
+                style_map: dict[str, str] = {}
                 node = ast_nodes.HeadingNode(text=txt_tok.value or "", span=self._span(txt_tok))
+                if self.match("COLON"):
+                    self.consume("NEWLINE")
+                    if not self.check("INDENT"):
+                        raise self.error("N3U-1301: invalid heading block", self.peek())
+                    self.consume("INDENT")
+                    while not self.check("DEDENT"):
+                        if self.match("NEWLINE"):
+                            continue
+                        field_tok = self.consume_any({"KEYWORD", "IDENT"})
+                        if field_tok.value == "value":
+                            if self.match_value("KEYWORD", "is"):
+                                value_expr = self.parse_expression()
+                            else:
+                                value_expr = self.parse_expression()
+                            if isinstance(value_expr, ast_nodes.Literal) and isinstance(value_expr.value, str):
+                                node.text = value_expr.value
+                        elif field_tok.value == "class":
+                            class_name = self._parse_class_value()
+                        elif field_tok.value == "style":
+                            style_map = self.parse_style_map_block()
+                        else:
+                            raise self.error(f"Unexpected field '{field_tok.value}' in heading", field_tok)
+                        self.optional_newline()
+                    self.consume("DEDENT")
+                node.class_name = class_name
+                node.style = style_map
                 elements.append(node)
                 last_element = node
                 self.optional_newline()
                 continue
             if tok.value == "text":
                 start_tok = self.consume("KEYWORD", "text")
+                class_name = None
+                style_map: dict[str, str] = {}
+                text_expr = None
                 if self.match_value("KEYWORD", "is"):
-                    txt_tok = self.consume("STRING")
-                    node = ast_nodes.TextNode(text=txt_tok.value or "", span=self._span(txt_tok))
+                    if self.check("STRING"):
+                        txt_tok = self.consume("STRING")
+                        literal_text = txt_tok.value or ""
+                    else:
+                        text_expr = self.parse_expression()
+                        literal_text = text_expr.value if isinstance(text_expr, ast_nodes.Literal) and isinstance(text_expr.value, str) else ""
                 elif self.check("STRING") and self.peek_offset(1).type in {"NEWLINE", "DEDENT", "EOF"}:
                     txt_tok = self.consume("STRING")
-                    node = ast_nodes.TextNode(text=txt_tok.value or "", span=self._span(txt_tok))
+                    literal_text = txt_tok.value or ""
                 else:
-                    expr = self.parse_expression()
-                    literal_text = expr.value if isinstance(expr, ast_nodes.Literal) and isinstance(expr.value, str) else ""
-                    node = ast_nodes.TextNode(text=literal_text, expr=expr, span=self._span(start_tok))
+                    text_expr = self.parse_expression()
+                    literal_text = text_expr.value if isinstance(text_expr, ast_nodes.Literal) and isinstance(text_expr.value, str) else ""
+                node = ast_nodes.TextNode(text=literal_text, expr=text_expr, span=self._span(start_tok))
+                if self.match("COLON"):
+                    self.consume("NEWLINE")
+                    if not self.check("INDENT"):
+                        raise self.error("N3U-1301: invalid text block", self.peek())
+                    self.consume("INDENT")
+                    while not self.check("DEDENT"):
+                        if self.match("NEWLINE"):
+                            continue
+                        field_tok = self.consume_any({"KEYWORD", "IDENT"})
+                        if field_tok.value == "value":
+                            if self.match_value("KEYWORD", "is"):
+                                text_expr = self.parse_expression()
+                            else:
+                                text_expr = self.parse_expression()
+                            if isinstance(text_expr, ast_nodes.Literal) and isinstance(text_expr.value, str):
+                                literal_text = text_expr.value
+                        elif field_tok.value == "class":
+                            class_name = self._parse_class_value()
+                        elif field_tok.value == "style":
+                            style_map = self.parse_style_map_block()
+                        else:
+                            raise self.error(f"Unexpected field '{field_tok.value}' in text block", field_tok)
+                        self.optional_newline()
+                    self.consume("DEDENT")
+                    node.expr = text_expr
+                    node.text = literal_text
+                node.class_name = class_name
+                node.style = style_map
                 elements.append(node)
                 last_element = node
                 self.optional_newline()
@@ -1287,7 +2003,39 @@ class Parser:
             if tok.value == "image":
                 self.consume("KEYWORD", "image")
                 url_tok = self.consume("STRING")
+                class_name = None
+                style_map: dict[str, str] = {}
                 node = ast_nodes.ImageNode(url=url_tok.value or "", span=self._span(url_tok))
+                if self.match("COLON"):
+                    self.consume("NEWLINE")
+                    if not self.check("INDENT"):
+                        raise self.error("N3U-1301: invalid image block", self.peek())
+                    self.consume("INDENT")
+                    while not self.check("DEDENT"):
+                        if self.match("NEWLINE"):
+                            continue
+                        field_tok = self.consume_any({"KEYWORD", "IDENT"})
+                        if field_tok.value in {"url", "src"}:
+                            if self.match_value("KEYWORD", "is"):
+                                if not self.check("STRING"):
+                                    raise self.error("N3U-3102: image url must be string", self.peek())
+                                url_tok = self.consume("STRING")
+                                node.url = url_tok.value or ""
+                            else:
+                                if not self.check("STRING"):
+                                    raise self.error("N3U-3102: image url must be string", self.peek())
+                                url_tok = self.consume("STRING")
+                                node.url = url_tok.value or ""
+                        elif field_tok.value == "class":
+                            class_name = self._parse_class_value()
+                        elif field_tok.value == "style":
+                            style_map = self.parse_style_map_block()
+                        else:
+                            raise self.error(f"Unexpected field '{field_tok.value}' in image", field_tok)
+                        self.optional_newline()
+                    self.consume("DEDENT")
+                node.class_name = class_name
+                node.style = style_map
                 elements.append(node)
                 last_element = node
                 self.optional_newline()
@@ -1301,6 +2049,8 @@ class Parser:
                 var_name = None
                 field_type = None
                 validation: ast_nodes.UIValidationRules | None = None
+                class_name = None
+                style_map: dict[str, str] = {}
                 if self.match("COLON"):
                     self.consume("NEWLINE")
                     self.consume("INDENT")
@@ -1337,6 +2087,10 @@ class Parser:
                                     validation.pattern = str(expr.value)
                                 elif field_tok.value == "message":
                                     validation.message = str(expr.value)
+                        elif field_tok.value == "class":
+                            class_name = self._parse_class_value()
+                        elif field_tok.value == "style":
+                            style_map = self.parse_style_map_block()
                         else:
                             raise self.error(f"Unexpected field '{field_tok.value}' in input", field_tok)
                         self.optional_newline()
@@ -1355,6 +2109,8 @@ class Parser:
                     var_name=var_name or "",
                     field_type=field_type,
                     validation=validation,
+                    class_name=class_name,
+                    style=style_map,
                     span=self._span(start_tok),
                 )
                 elements.append(node)
@@ -1369,6 +2125,8 @@ class Parser:
                     label_tok = self.consume("STRING")
                 var_name = None
                 validation = None
+                class_name = None
+                style_map: dict[str, str] = {}
                 if self.match("COLON"):
                     self.consume("NEWLINE")
                     if self.check("INDENT"):
@@ -1400,6 +2158,10 @@ class Parser:
                                         validation.pattern = str(expr.value)
                                     elif field_tok.value == "message":
                                         validation.message = str(expr.value)
+                            elif field_tok.value == "class":
+                                class_name = self._parse_class_value()
+                            elif field_tok.value == "style":
+                                style_map = self.parse_style_map_block()
                             else:
                                 raise self.error(f"Unexpected field '{field_tok.value}' in textarea", field_tok)
                             self.optional_newline()
@@ -1412,6 +2174,8 @@ class Parser:
                         var_tok = self.consume_any({"IDENT"})
                     var_name = var_tok.value
                 node = ast_nodes.TextareaNode(label=label_tok.value or "", var_name=var_name, validation=validation, span=self._span(start_tok))
+                node.class_name = class_name
+                node.style = style_map
                 elements.append(node)
                 last_element = node
                 self.optional_newline()
@@ -1427,7 +2191,35 @@ class Parser:
                     txt_tok = self.consume("STRING")
                 else:
                     txt_tok = self.consume("STRING")
+                class_name = None
+                style_map: dict[str, str] = {}
                 node = ast_nodes.BadgeNode(text=txt_tok.value or "", span=self._span(start_tok))
+                if self.match("COLON"):
+                    self.consume("NEWLINE")
+                    if not self.check("INDENT"):
+                        raise self.error("N3U-1301: invalid badge block", self.peek())
+                    self.consume("INDENT")
+                    while not self.check("DEDENT"):
+                        if self.match("NEWLINE"):
+                            continue
+                        field_tok = self.consume_any({"KEYWORD", "IDENT"})
+                        if field_tok.value == "text":
+                            if self.match_value("KEYWORD", "is"):
+                                val_expr = self.parse_expression()
+                            else:
+                                val_expr = self.parse_expression()
+                            if isinstance(val_expr, ast_nodes.Literal) and isinstance(val_expr.value, str):
+                                node.text = val_expr.value
+                        elif field_tok.value == "class":
+                            class_name = self._parse_class_value()
+                        elif field_tok.value == "style":
+                            style_map = self.parse_style_map_block()
+                        else:
+                            raise self.error(f"Unexpected field '{field_tok.value}' in badge", field_tok)
+                        self.optional_newline()
+                    self.consume("DEDENT")
+                node.class_name = class_name
+                node.style = style_map
                 elements.append(node)
                 last_element = node
                 self.optional_newline()
@@ -1466,9 +2258,29 @@ class Parser:
         self.consume("NEWLINE")
         layout: list[ast_nodes.LayoutElement] = []
         styles: list[ast_nodes.UIStyle] = []
+        class_name = None
+        style_map: dict[str, str] = {}
         if self.check("INDENT"):
             self.consume("INDENT")
-            layout, styles = self.parse_layout_block([])
+            parsed_layout = False
+            while not self.check("DEDENT"):
+                if self.match("NEWLINE"):
+                    continue
+                if self.peek().value == "class":
+                    self.consume("KEYWORD", "class")
+                    class_name = self._parse_class_value()
+                    self.optional_newline()
+                    continue
+                if self.peek().value == "style":
+                    self.consume("KEYWORD", "style")
+                    style_map = self.parse_style_map_block()
+                    self.optional_newline()
+                    continue
+                layout, styles = self.parse_layout_block([])
+                parsed_layout = True
+                break
+            if not parsed_layout:
+                layout = []
             self.consume("DEDENT")
         self.optional_newline()
         return ast_nodes.SectionDecl(
@@ -1476,6 +2288,8 @@ class Parser:
             components=layout,
             layout=layout,
             styles=styles,
+            class_name=class_name,
+            style=style_map,
             span=self._span(start),
         )
 
@@ -1492,12 +2306,39 @@ class Parser:
         self.consume("NEWLINE")
         children: list[ast_nodes.LayoutElement] = []
         styles: list[ast_nodes.UIStyle] = []
+        class_name = None
+        style_map: dict[str, str] = {}
         if self.check("INDENT"):
             self.consume("INDENT")
-            children, styles = self.parse_layout_block([])
+            parsed_layout = False
+            while not self.check("DEDENT"):
+                if self.match("NEWLINE"):
+                    continue
+                if self.peek().value == "class":
+                    self.consume("KEYWORD", "class")
+                    class_name = self._parse_class_value()
+                    self.optional_newline()
+                    continue
+                if self.peek().value == "style":
+                    self.consume("KEYWORD", "style")
+                    style_map = self.parse_style_map_block()
+                    self.optional_newline()
+                    continue
+                children, styles = self.parse_layout_block([])
+                parsed_layout = True
+                break
+            if not parsed_layout:
+                children = []
             self.consume("DEDENT")
         self.optional_newline()
-        return ast_nodes.CardNode(title=title, children=children, styles=styles, span=self._span(start))
+        return ast_nodes.CardNode(
+            title=title,
+            children=children,
+            styles=styles,
+            class_name=class_name,
+            style=style_map,
+            span=self._span(start),
+        )
 
     def parse_row(self) -> ast_nodes.RowNode:
         start = self.consume("KEYWORD", "row")
@@ -1507,12 +2348,32 @@ class Parser:
         self.consume("NEWLINE")
         children: list[ast_nodes.LayoutElement] = []
         styles: list[ast_nodes.UIStyle] = []
+        class_name = None
+        style_map: dict[str, str] = {}
         if self.check("INDENT"):
             self.consume("INDENT")
-            children, styles = self.parse_layout_block([])
+            parsed_layout = False
+            while not self.check("DEDENT"):
+                if self.match("NEWLINE"):
+                    continue
+                if self.peek().value == "class":
+                    self.consume("KEYWORD", "class")
+                    class_name = self._parse_class_value()
+                    self.optional_newline()
+                    continue
+                if self.peek().value == "style":
+                    self.consume("KEYWORD", "style")
+                    style_map = self.parse_style_map_block()
+                    self.optional_newline()
+                    continue
+                children, styles = self.parse_layout_block([])
+                parsed_layout = True
+                break
+            if not parsed_layout:
+                children = []
             self.consume("DEDENT")
         self.optional_newline()
-        return ast_nodes.RowNode(children=children, styles=styles, span=self._span(start))
+        return ast_nodes.RowNode(children=children, styles=styles, class_name=class_name, style=style_map, span=self._span(start))
 
     def parse_column(self) -> ast_nodes.ColumnNode:
         start = self.consume("KEYWORD", "column")
@@ -1522,12 +2383,32 @@ class Parser:
         self.consume("NEWLINE")
         children: list[ast_nodes.LayoutElement] = []
         styles: list[ast_nodes.UIStyle] = []
+        class_name = None
+        style_map: dict[str, str] = {}
         if self.check("INDENT"):
             self.consume("INDENT")
-            children, styles = self.parse_layout_block([])
+            parsed_layout = False
+            while not self.check("DEDENT"):
+                if self.match("NEWLINE"):
+                    continue
+                if self.peek().value == "class":
+                    self.consume("KEYWORD", "class")
+                    class_name = self._parse_class_value()
+                    self.optional_newline()
+                    continue
+                if self.peek().value == "style":
+                    self.consume("KEYWORD", "style")
+                    style_map = self.parse_style_map_block()
+                    self.optional_newline()
+                    continue
+                children, styles = self.parse_layout_block([])
+                parsed_layout = True
+                break
+            if not parsed_layout:
+                children = []
             self.consume("DEDENT")
         self.optional_newline()
-        return ast_nodes.ColumnNode(children=children, styles=styles, span=self._span(start))
+        return ast_nodes.ColumnNode(children=children, styles=styles, class_name=class_name, style=style_map, span=self._span(start))
 
     def parse_message_list(self) -> ast_nodes.MessageListNode:
         start = self.consume("KEYWORD", "message_list")
@@ -1535,18 +2416,36 @@ class Parser:
         self.consume("NEWLINE")
         children: list[ast_nodes.MessageNode] = []
         styles: list[ast_nodes.UIStyle] = []
+        class_name = None
+        style_map: dict[str, str] = {}
         if self.check("INDENT"):
             self.consume("INDENT")
             while not self.check("DEDENT"):
                 if self.peek().value == "message":
                     children.append(self.parse_message())
                     continue
+                if self.peek().value == "class":
+                    self.consume("KEYWORD", "class")
+                    class_name = self._parse_class_value()
+                    self.optional_newline()
+                    continue
+                if self.peek().value == "style":
+                    self.consume("KEYWORD", "style")
+                    style_map = self.parse_style_map_block()
+                    self.optional_newline()
+                    continue
                 if self.match("NEWLINE"):
                     continue
                 raise ParseError(f"Unexpected token inside message_list: {self.peek().value}")
             self.consume("DEDENT")
         self.optional_newline()
-        return ast_nodes.MessageListNode(children=children, styles=styles, span=self._span(start))
+        return ast_nodes.MessageListNode(
+            children=children,
+            styles=styles,
+            class_name=class_name,
+            style=style_map,
+            span=self._span(start),
+        )
 
     def parse_message(self) -> ast_nodes.MessageNode:
         start = self.consume("KEYWORD", "message")
@@ -1561,6 +2460,8 @@ class Parser:
         self.consume("NEWLINE")
         role_expr = None
         text_expr = None
+        class_name = None
+        style_map: dict[str, str] = {}
         if self.check("INDENT"):
             self.consume("INDENT")
             while not self.check("DEDENT"):
@@ -1582,17 +2483,36 @@ class Parser:
                         text_expr = self.parse_expression()
                     self.optional_newline()
                     continue
+                if self.peek().value == "class":
+                    self.consume("KEYWORD", "class")
+                    class_name = self._parse_class_value()
+                    self.optional_newline()
+                    continue
+                if self.peek().value == "style":
+                    self.consume("KEYWORD", "style")
+                    style_map = self.parse_style_map_block()
+                    self.optional_newline()
+                    continue
                 if self.match("NEWLINE"):
                     continue
                 raise ParseError(f"Unexpected token in message block: {self.peek().value}")
             self.consume("DEDENT")
         self.optional_newline()
-        return ast_nodes.MessageNode(name=name, role=role_expr, text_expr=text_expr, span=self._span(start))
+        return ast_nodes.MessageNode(
+            name=name,
+            role=role_expr,
+            text_expr=text_expr,
+            class_name=class_name,
+            style=style_map,
+            span=self._span(start),
+        )
 
     def parse_component_call(self) -> ast_nodes.UIComponentCall:
         name_tok = self.consume_any({"IDENT"})
         args: list[ast_nodes.Expr] = []
         named_args: dict[str, list[ast_nodes.Statement | ast_nodes.FlowAction]] = {}
+        class_name = None
+        style_map: dict[str, str] = {}
         # optional positional expression before colon
         if not self.check("COLON"):
             args.append(self.parse_expression())
@@ -1605,6 +2525,14 @@ class Parser:
                     if self.match("NEWLINE"):
                         continue
                     key_tok = self.consume_any({"IDENT", "KEYWORD"})
+                    if key_tok.value == "class":
+                        class_name = self._parse_class_value()
+                        self.optional_newline()
+                        continue
+                    if key_tok.value == "style":
+                        style_map = self.parse_style_map_block()
+                        self.optional_newline()
+                        continue
                     self.consume("COLON")
                     block_items: list[ast_nodes.Statement | ast_nodes.FlowAction] = []
                     if self.check("NEWLINE"):
@@ -1624,7 +2552,14 @@ class Parser:
                     self.optional_newline()
                 self.consume("DEDENT")
         self.optional_newline()
-        return ast_nodes.UIComponentCall(name=name_tok.value or "", args=args, named_args=named_args, span=self._span(name_tok))
+        return ast_nodes.UIComponentCall(
+            name=name_tok.value or "",
+            args=args,
+            named_args=named_args,
+            class_name=class_name,
+            style=style_map,
+            span=self._span(name_tok),
+        )
 
     def parse_button(self) -> ast_nodes.UIButtonNode:
         start_tok = self.consume("KEYWORD", "button")
@@ -1632,6 +2567,7 @@ class Parser:
             label_tok = self.consume_any({"STRING", "IDENT"})
         else:
             label_tok = self.consume_any({"STRING", "IDENT"})
+        label_text = label_tok.value or ""
         self.consume("COLON")
         self.consume("NEWLINE")
         if not self.check("INDENT"):
@@ -1639,12 +2575,37 @@ class Parser:
         self.consume("INDENT")
         handler: ast_nodes.UIClickHandler | None = None
         label_expr = None
+        class_name = None
+        style_map: dict[str, str] = {}
         if label_tok.type == "IDENT":
             label_expr = ast_nodes.Identifier(name=label_tok.value or "", span=self._span(label_tok))
         while not self.check("DEDENT"):
             if self.match("NEWLINE"):
                 continue
             tok = self.peek()
+            if tok.value == "label":
+                self.consume_any({"KEYWORD", "IDENT"})
+                if self.match_value("KEYWORD", "is"):
+                    lbl_tok = self.consume_any({"STRING", "IDENT"})
+                else:
+                    lbl_tok = self.consume_any({"STRING", "IDENT"})
+                label_text = lbl_tok.value or ""
+                if lbl_tok.type == "IDENT":
+                    label_expr = ast_nodes.Identifier(name=lbl_tok.value or "", span=self._span(lbl_tok))
+                else:
+                    label_expr = None
+                self.optional_newline()
+                continue
+            if tok.value == "class":
+                self.consume_any({"KEYWORD", "IDENT"})
+                class_name = self._parse_class_value()
+                self.optional_newline()
+                continue
+            if tok.value == "style":
+                self.consume_any({"KEYWORD", "IDENT"})
+                style_map = self.parse_style_map_block()
+                self.optional_newline()
+                continue
             if tok.value == "on":
                 self.consume("KEYWORD", "on")
                 self.consume("KEYWORD", "click")
@@ -1669,6 +2630,14 @@ class Parser:
                         continue
                     raise self.error("N3U-2202: invalid action in click handler", self.peek())
                 self.consume("DEDENT")
+                if actions:
+                    navigate_actions = [act for act in actions if getattr(act, "kind", None) == "navigate"]
+                    if navigate_actions and len(navigate_actions) != len(actions):
+                        button_name = label_text or "<button>"
+                        raise self.error(
+                            f"N3L-1300: Click handler for button '{button_name}' cannot contain both a flow call and navigation. Choose one action.",
+                            start_tok,
+                        )
                 handler = ast_nodes.UIClickHandler(actions=actions, span=self._span(tok))
                 self.optional_newline()
                 continue
@@ -1677,10 +2646,18 @@ class Parser:
         self.optional_newline()
         if not handler or not handler.actions:
             raise self.error("N3U-2201: on click missing or empty", start_tok)
-        return ast_nodes.UIButtonNode(label=label_tok.value or "", label_expr=label_expr, handler=handler, span=self._span(start_tok))
+        return ast_nodes.UIButtonNode(
+            label=label_text,
+            label_expr=label_expr,
+            handler=handler,
+            class_name=class_name,
+            style=style_map,
+            span=self._span(start_tok),
+        )
 
     def _parse_navigate_action(self) -> ast_nodes.NavigateAction:
         start_tok = self.consume("KEYWORD", "navigate")
+        self.match_value("KEYWORD", "to")
         target_path = None
         target_page = None
         if self.match_value("KEYWORD", "page"):
@@ -1772,10 +2749,10 @@ class Parser:
         self.consume("COLON")
         self.consume("NEWLINE")
         description = None
-        steps: List[ast_nodes.FlowStepDecl] = []
+        steps: List[ast_nodes.FlowStepDecl | ast_nodes.FlowLoopDecl] = []
         if self.check("INDENT"):
             self.consume("INDENT")
-        allowed_fields: Set[str] = {"description", "step", "on"}
+        allowed_fields: Set[str] = {"description", "step", "on", "for"}
         error_steps: List[ast_nodes.FlowStepDecl] = []
         on_error_seen = False
         while not self.check("DEDENT"):
@@ -1795,14 +2772,20 @@ class Parser:
                     prefix = None
                     if self.peek().value in {"first", "then", "finally"}:
                         prefix = self.consume("KEYWORD").value
-                    steps.append(self.parse_english_flow_step(prefix))
+                    if self.peek().value == "for":
+                        steps.append(self.parse_flow_loop())
+                    else:
+                        steps.append(self.parse_english_flow_step(prefix))
                 self.consume("DEDENT")
                 self.optional_newline()
                 continue
 
             if field_token.value in {"first", "then", "finally"}:
                 prefix = self.consume("KEYWORD").value
-                steps.append(self.parse_english_flow_step(prefix))
+                if self.peek().value == "for":
+                    steps.append(self.parse_flow_loop())
+                else:
+                    steps.append(self.parse_english_flow_step(prefix))
                 continue
 
             field_token = self.consume("KEYWORD")
@@ -1817,6 +2800,8 @@ class Parser:
                 self.optional_newline()
             elif field_token.value == "step":
                 steps.append(self.parse_flow_step())
+            elif field_token.value == "for":
+                steps.append(self.parse_flow_loop(start_token=field_token))
             elif field_token.value == "on":
                 if on_error_seen:
                     raise self.error("N3L-980: multiple 'on error' blocks are not allowed", field_token)
@@ -2058,6 +3043,53 @@ class Parser:
             when_expr,
         )
 
+    def parse_flow_loop(self, start_token: Token | None = None) -> ast_nodes.FlowLoopDecl:
+        start = start_token or self.consume("KEYWORD", "for")
+        if self.match_value("KEYWORD", "each"):
+            pass
+        if self.match_value("KEYWORD", "is"):
+            pass
+        if self.peek().type not in {"IDENT", "KEYWORD"}:
+            tok = self.peek()
+            raise self.error(
+                f"N3L-900: Invalid loop variable name '{tok.value}' in flow.",
+                tok,
+            )
+        var_tok = self.consume_any({"IDENT", "KEYWORD"})
+        var_name = var_tok.value or ""
+        if not var_name.isidentifier():
+            raise self.error(
+                f"N3L-900: Invalid loop variable name '{var_name}' in flow.",
+                var_tok,
+            )
+        if not self.match_value("KEYWORD", "in"):
+            raise self.error("Expected 'in' after loop variable", self.peek())
+        iterable_expr = self.parse_expression()
+        self.consume("COLON")
+        self.consume("NEWLINE")
+        self.consume("INDENT")
+        steps: list[ast_nodes.FlowStepDecl | ast_nodes.FlowLoopDecl] = []
+        while not self.check("DEDENT"):
+            if self.match("NEWLINE"):
+                continue
+            tok = self.peek()
+            if tok.value == "for":
+                steps.append(self.parse_flow_loop())
+            elif tok.value == "step":
+                self.consume("KEYWORD", "step")
+                steps.append(self.parse_flow_step())
+            else:
+                raise self.error("Unexpected content inside loop; expected step or nested loop", tok)
+        self.consume("DEDENT")
+        self.optional_newline()
+        return ast_nodes.FlowLoopDecl(
+            name=f"for_each_{var_name}",
+            var_name=var_name,
+            iterable=iterable_expr,
+            steps=[s for s in steps if isinstance(s, ast_nodes.FlowStepDecl) or isinstance(s, ast_nodes.FlowLoopDecl)],
+            span=self._span(start),
+        )
+
     def parse_english_flow_step(self, prefix: str | None) -> ast_nodes.FlowStepDecl:
         if prefix:
             self.consume("KEYWORD", "step")
@@ -2117,8 +3149,11 @@ class Parser:
         allowed_fields: Set[str] = {
             "kind",
             "target",
+            "tool",
+            "tools",
             "message",
             "frame",
+            "record",
             "vector_store",
             "values",
             "where",
@@ -2126,8 +3161,15 @@ class Parser:
             "query_text",
             "top_k",
             "args",
+            "input",
+            "by",
+            "limit",
             "when",
             "streaming",
+            "stream_channel",
+            "stream_role",
+            "stream_label",
+            "stream_mode",
         } if allow_fields else set()
         script_mode = False
         while not self.check("DEDENT"):
@@ -2221,6 +3263,19 @@ class Parser:
                 else:
                     target_token = self.consume_string_value(field_token, "target")
                 target = target_token.value
+            elif field_token.value == "tool":
+                if kind is None:
+                    kind = "tool"
+                elif kind != "tool":
+                    raise self.error(
+                        "Field 'tool' may only be used on steps where kind is 'tool'.",
+                        field_token,
+                    )
+                if self.match_value("KEYWORD", "is"):
+                    tool_token = self.consume_any({"STRING", "IDENT", "KEYWORD"})
+                else:
+                    tool_token = self.consume_string_value(field_token, "tool")
+                target = tool_token.value
             elif field_token.value == "streaming":
                 if self.match_value("KEYWORD", "is"):
                     bool_token = self.consume_any({"KEYWORD", "IDENT"})
@@ -2233,6 +3288,36 @@ class Parser:
                         bool_token,
                     )
                 extra_params["streaming"] = streaming_val == "true"
+            elif field_token.value == "stream_channel":
+                if self.match_value("KEYWORD", "is"):
+                    channel_tok = self.consume("STRING")
+                else:
+                    channel_tok = self.consume_string_value(field_token, "stream_channel")
+                extra_params["stream_channel"] = channel_tok.value or ""
+            elif field_token.value == "stream_role":
+                if self.match_value("KEYWORD", "is"):
+                    role_tok = self.consume("STRING")
+                else:
+                    role_tok = self.consume_string_value(field_token, "stream_role")
+                extra_params["stream_role"] = role_tok.value or ""
+            elif field_token.value == "stream_label":
+                if self.match_value("KEYWORD", "is"):
+                    label_tok = self.consume("STRING")
+                else:
+                    label_tok = self.consume_string_value(field_token, "stream_label")
+                extra_params["stream_label"] = label_tok.value or ""
+            elif field_token.value == "stream_mode":
+                if self.match_value("KEYWORD", "is"):
+                    mode_tok = self.consume("STRING")
+                else:
+                    mode_tok = self.consume_string_value(field_token, "stream_mode")
+                mode_val = (mode_tok.value or "").lower()
+                if mode_val and mode_val not in {"tokens", "sentences", "full"}:
+                    raise self.error(
+                        "N3L-995: Field 'stream_mode' must be one of 'tokens', 'sentences', or 'full'.",
+                        mode_tok,
+                    )
+                extra_params["stream_mode"] = mode_val
             elif field_token.value == "message":
                 if self.match_value("KEYWORD", "is"):
                     msg_token = self.consume_any({"STRING", "IDENT", "KEYWORD"})
@@ -2250,12 +3335,30 @@ class Parser:
                 else:
                     frame_tok = self.consume_string_value(field_token, "frame")
                 extra_params["frame"] = frame_tok.value
+            elif field_token.value == "record":
+                if self.match_value("KEYWORD", "is"):
+                    record_tok = self.consume_any({"STRING", "IDENT", "KEYWORD"})
+                else:
+                    record_tok = self.consume_string_value(field_token, "record")
+                extra_params["record"] = record_tok.value
             elif field_token.value == "vector_store":
                 if self.match_value("KEYWORD", "is"):
                     vs_tok = self.consume_any({"STRING", "IDENT", "KEYWORD"})
                 else:
                     vs_tok = self.consume_string_value(field_token, "vector_store")
                 extra_params["vector_store"] = vs_tok.value
+            elif field_token.value == "tools":
+                if self.match_value("KEYWORD", "is"):
+                    mode_tok = self.consume_any({"STRING", "IDENT", "KEYWORD"})
+                else:
+                    mode_tok = self.consume_string_value(field_token, "tools")
+                mode_val = (mode_tok.value or "").strip().lower()
+                if mode_val not in {"auto", "none"}:
+                    raise self.error(
+                        "Field 'tools' must be set to 'auto' or 'none'.",
+                        mode_tok,
+                    )
+                extra_params["tools_mode"] = mode_val
             elif field_token.value == "query_text":
                 if self.match_value("KEYWORD", "is"):
                     expr = self.parse_expression()
@@ -2268,7 +3371,32 @@ class Parser:
                 else:
                     expr = self.parse_expression()
                 extra_params["top_k"] = expr
-            elif field_token.value in {"values", "where", "set", "args"}:
+            elif field_token.value == "limit":
+                if self.match_value("KEYWORD", "is"):
+                    expr = self.parse_expression()
+                else:
+                    expr = self.parse_expression()
+                extra_params["limit"] = expr
+            elif field_token.value == "by":
+                if self.peek().value != "id":
+                    raise self.error("Expected 'id' after 'by' in step block", self.peek())
+                self.consume("KEYWORD", "id")
+                self.consume("COLON")
+                self.consume("NEWLINE")
+                self.consume("INDENT")
+                entries: dict[str, ast_nodes.Expr] = {}
+                while not self.check("DEDENT"):
+                    if self.match("NEWLINE"):
+                        continue
+                    key_tok = self.consume_any({"IDENT", "KEYWORD", "STRING"})
+                    self.consume("COLON")
+                    expr = self.parse_expression()
+                    entries[key_tok.value or ""] = expr
+                    self.optional_newline()
+                self.consume("DEDENT")
+                extra_params["by_id"] = entries
+                self.optional_newline()
+            elif field_token.value in {"values", "where", "set", "args", "input"}:
                 self.consume("COLON")
                 self.consume("NEWLINE")
                 self.consume("INDENT")
@@ -2285,11 +3413,26 @@ class Parser:
                 extra_params[field_token.value] = entries
             self.optional_newline()
         # Auto-wrap frame_* actions into a FlowAction to preserve params
-        if kind in {"frame_insert", "frame_query", "frame_update", "frame_delete", "vector_index_frame", "vector_query"} and not statements:
+        if kind in {
+            "frame_insert",
+            "frame_query",
+            "frame_update",
+            "frame_delete",
+            "vector_index_frame",
+            "vector_query",
+            "db_create",
+            "db_get",
+            "db_update",
+            "db_delete",
+        } and not statements:
             action = ast_nodes.FlowAction(
                 kind=kind,
-                target=(extra_params.get("frame") or extra_params.get("vector_store") or target or "") or "",
-                args={k: v for k, v in extra_params.items() if k in {"values", "where", "set", "vector_store", "query_text", "top_k"}},
+                target=(extra_params.get("frame") or extra_params.get("record") or extra_params.get("vector_store") or target or "") or "",
+                args={
+                    k: v
+                    for k, v in extra_params.items()
+                    if k in {"values", "where", "set", "vector_store", "query_text", "top_k", "by_id", "limit"}
+                },
                 span=None,
             )
             statements.append(action)
@@ -2307,6 +3450,35 @@ class Parser:
         goto_action,
         when_expr,
     ) -> ast_nodes.FlowStepDecl:
+        streaming_flag = bool(extra_params.get("streaming"))
+        stream_channel = extra_params.get("stream_channel") or None
+        stream_role = extra_params.get("stream_role") or None
+        stream_label = extra_params.get("stream_label") or None
+        stream_mode = extra_params.get("stream_mode") or None
+        if stream_mode is not None:
+            allowed_modes = {"tokens", "sentences", "full"}
+            if stream_mode not in allowed_modes:
+                raise self.error(
+                    f"N3L-995: Field 'stream_mode' on AI step '{step_name_token.value}' must be one of 'tokens', 'sentences', or 'full'.",
+                    step_name_token,
+                )
+        stream_kwargs = {
+            "streaming": streaming_flag,
+            "stream_channel": stream_channel,
+            "stream_role": stream_role,
+            "stream_label": stream_label,
+            "stream_mode": stream_mode,
+        }
+        if kind in {"db_create", "db_get", "db_update", "db_delete"}:
+            record_name = extra_params.get("record") or target
+            if not record_name:
+                raise self.error(
+                    f"Step '{step_name_token.value}' with kind '{kind}' must specify a record.",
+                    step_name_token,
+                )
+            target = record_name
+            extra_params.pop("record", None)
+        tools_mode = extra_params.pop("tools_mode", None)
         if statements:
             only_actions = all(isinstance(stmt, ast_nodes.FlowAction) for stmt in statements)
             if only_actions and len(statements) == 1 and not conditional_branches:
@@ -2319,6 +3491,8 @@ class Parser:
                     params=action.args or extra_params or {},
                     statements=[],
                     when_expr=when_expr,
+                    **stream_kwargs,
+                    tools_mode=tools_mode,
                     span=self._span(step_name_token),
                 )
             return ast_nodes.FlowStepDecl(
@@ -2329,6 +3503,8 @@ class Parser:
                 params=extra_params or {},
                 statements=statements,
                 when_expr=when_expr,
+                **stream_kwargs,
+                tools_mode=tools_mode,
                 span=self._span(step_name_token),
             )
         if conditional_branches:
@@ -2339,6 +3515,8 @@ class Parser:
                 params=extra_params or {},
                 conditional_branches=conditional_branches,
                 when_expr=when_expr,
+                **stream_kwargs,
+                tools_mode=tools_mode,
                 span=self._span(step_name_token),
             )
         if goto_action:
@@ -2347,6 +3525,8 @@ class Parser:
                 kind="goto_flow",
                 target=goto_action.target,
                 when_expr=when_expr,
+                **stream_kwargs,
+                tools_mode=tools_mode,
                 span=self._span(step_name_token),
             )
         if kind == "tool" and not target:
@@ -2362,6 +3542,8 @@ class Parser:
             message=message,
             params=extra_params or {},
             when_expr=when_expr,
+            **stream_kwargs,
+            tools_mode=tools_mode,
             span=self._span(step_name_token),
         )
 

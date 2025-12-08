@@ -23,7 +23,14 @@ from .errors import ParseError
 from .lang.formatter import format_source
 from .flows.triggers import FlowTrigger, TriggerManager
 from .runtime.engine import Engine
-from .runtime.context import ExecutionContext
+from .runtime.context import (
+    DEFAULT_SHORT_TERM_WINDOW,
+    ExecutionContext,
+    clear_recall_snapshot,
+    filter_items_by_retention,
+    filter_turns_by_retention,
+    get_last_recall_snapshot,
+)
 from .ui.renderer import UIRenderer
 from .ui.runtime import UIEventRouter
 from .ui.components import UIEvent, UIContext
@@ -56,9 +63,48 @@ from .optimizer.engine import OptimizerEngine
 from .optimizer.apply import SuggestionApplier
 from .examples.manager import resolve_example_path, get_examples_root
 from .ui.manifest import build_ui_manifest
+from .flows.models import StreamEvent
 
 BASE_DIR = Path(__file__).resolve().parents[2]
 STUDIO_STATIC_DIR = BASE_DIR / "studio" / "static"
+
+
+def _serialize_stream_event(evt: StreamEvent) -> dict[str, Any]:
+    mapping: dict[str, Any] = {
+        "flow": evt.get("flow"),
+        "step": evt.get("step"),
+        "channel": evt.get("channel"),
+        "role": evt.get("role"),
+        "label": evt.get("label"),
+        "mode": evt.get("mode"),
+    }
+    kind = evt.get("kind")
+    if kind == "chunk":
+        mapping["event"] = "ai_chunk"
+        mapping["delta"] = evt.get("delta") or ""
+    elif kind == "done":
+        mapping["event"] = "ai_done"
+        mapping["full"] = evt.get("full") or ""
+    elif kind == "error":
+        mapping["event"] = "flow_error"
+        mapping["error"] = evt.get("error") or ""
+        if evt.get("code") is not None:
+            mapping["code"] = evt.get("code")
+    elif kind == "flow_done":
+        mapping["event"] = "flow_done"
+        mapping["success"] = bool(evt.get("success", True))
+        if "result" in evt and evt.get("result") is not None:
+            mapping["result"] = evt.get("result")
+    elif kind == "state_change":
+        mapping["event"] = "state_change"
+        mapping["path"] = evt.get("path")
+        if "old_value" in evt:
+            mapping["old_value"] = evt.get("old_value")
+        if "new_value" in evt:
+            mapping["new_value"] = evt.get("new_value")
+    else:
+        mapping["event"] = kind or "unknown"
+    return {k: v for k, v in mapping.items() if v is not None or k in {"delta", "full", "event", "old_value", "new_value"}}
 
 
 class ParseRequest(BaseModel):
@@ -203,6 +249,10 @@ class FmtPreviewResponse(BaseModel):
     changes_made: bool
 
 
+class MemoryClearRequest(BaseModel):
+    kinds: List[str] | None = None
+
+
 def _parse_source_to_ast(source: str) -> Dict[str, Any]:
     tokens = lexer.Lexer(source).tokenize()
     module = parser.Parser(tokens).parse_module()
@@ -238,6 +288,37 @@ def create_app() -> FastAPI:
     trigger_manager.file_watcher = file_watcher
     optimizer_storage = OptimizerStorage(Path(SecretsManager().get("N3_OPTIMIZER_DB") or "optimizer.db"))
     overlay_store = OverlayStore(Path(SecretsManager().get("N3_OPTIMIZER_OVERLAYS") or "optimizer_overlays.json"))
+    state_subscribers: list[asyncio.Queue] = []
+
+    async def _broadcast_state_event(evt: dict[str, Any]) -> None:
+        if evt.get("event") != "state_change":
+            return
+        for subscriber in list(state_subscribers):
+            try:
+                await subscriber.put(evt)
+            except Exception:
+                try:
+                    state_subscribers.remove(subscriber)
+                except ValueError:
+                    pass
+
+    def _register_state_subscriber() -> asyncio.Queue:
+        queue: asyncio.Queue = asyncio.Queue()
+        state_subscribers.append(queue)
+        return queue
+
+    def _unregister_state_subscriber(queue: asyncio.Queue) -> None:
+        try:
+            state_subscribers.remove(queue)
+        except ValueError:
+            pass
+
+    async def _global_state_stream_callback(evt: StreamEvent) -> None:
+        data = _serialize_stream_event(evt)
+        await _broadcast_state_event(data)
+
+    app.state.broadcast_state_event = _broadcast_state_event
+    app.state.register_state_subscriber = _register_state_subscriber
 
     def _project_root() -> Path:
         return project_root
@@ -375,6 +456,92 @@ def create_app() -> FastAPI:
             raise HTTPException(status_code=400, detail="No .ai files found")
         combined = "\n\n".join(sources)
         return Engine._load_program(combined, filename=str(base / "project.ai"))
+
+    def _build_project_engine(program: ir.IRProgram | None = None) -> Engine:
+        prog = program or _project_program()
+        return Engine(
+            prog,
+            metrics_tracker=metrics_tracker,
+            trigger_manager=trigger_manager,
+            plugin_registry=plugin_registry,
+        )
+
+    def _short_term_store_name(mem_cfg: Any) -> str:
+        short_cfg = getattr(mem_cfg, "short_term", None)
+        store = getattr(short_cfg, "store", None) if short_cfg else None
+        if store:
+            return store
+        store = getattr(mem_cfg, "store", None)
+        return store or "default_memory"
+
+    def _long_term_store_name(mem_cfg: Any) -> str | None:
+        long_cfg = getattr(mem_cfg, "long_term", None)
+        return getattr(long_cfg, "store", None) if long_cfg else None
+
+    def _profile_store_name(mem_cfg: Any) -> str | None:
+        profile_cfg = getattr(mem_cfg, "profile", None)
+        return getattr(profile_cfg, "store", None) if profile_cfg else None
+
+    def _long_term_key(ai_id: str) -> str:
+        return f"{ai_id}::long_term"
+
+    def _profile_key(ai_id: str) -> str:
+        return f"{ai_id}::profile"
+
+    def _default_scope(kind: str, user_id: str | None) -> str:
+        if kind == "short_term":
+            return "per_session"
+        if kind in {"long_term", "profile"}:
+            return "per_user" if user_id else "per_session"
+        return "per_session"
+
+    def _compute_scope_keys(
+        kind: str,
+        cfg_scope: str | None,
+        base_key: str,
+        session_id: str,
+        user_id: str | None,
+    ) -> dict[str, Any]:
+        default_scope = _default_scope(kind, user_id)
+        scope = (cfg_scope or default_scope) or "per_session"
+        fallback = False
+        if scope == "per_user":
+            if user_id:
+                session_key = f"user:{user_id}"
+            else:
+                session_key = session_id
+                scope = "per_session"
+                fallback = True
+        elif scope == "shared":
+            session_key = "shared"
+        else:
+            session_key = session_id
+        return {
+            "ai_key": base_key,
+            "session_key": session_key,
+            "scope": scope,
+            "fallback": fallback,
+            "requested": cfg_scope or default_scope,
+        }
+
+    def _build_policy_info(
+        kind: str,
+        cfg: Any | None,
+        scope_info: dict[str, Any] | None,
+        user_id: str | None,
+    ) -> dict[str, Any] | None:
+        if cfg is None or scope_info is None:
+            return None
+        policy = {
+            "scope": scope_info["scope"],
+            "requested_scope": scope_info["requested"],
+            "scope_fallback": scope_info["fallback"],
+            "retention_days": getattr(cfg, "retention_days", None),
+            "pii_policy": getattr(cfg, "pii_policy", None) or "none",
+        }
+        if scope_info["fallback"] and scope_info["requested"] == "per_user" and not user_id:
+            policy["scope_note"] = "Using per_session fallback (no user identity)."
+        return policy
 
     @app.get("/health")
     def health() -> Dict[str, str]:
@@ -525,6 +692,7 @@ def create_app() -> FastAPI:
             rel_path = str(path.relative_to(get_examples_root().parent))
         except ValueError:
             rel_path = str(path)
+        rel_path = rel_path.replace("\\", "/")
         return {"name": name, "path": rel_path, "source": source}
 
     @app.get("/studio", response_class=HTMLResponse)
@@ -696,6 +864,22 @@ def create_app() -> FastAPI:
         except Exception as exc:  # pragma: no cover
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 
+    @app.get("/api/ui/state/stream")
+    async def api_ui_state_stream(principal: Principal = Depends(get_principal)):
+        if not can_run_flow(principal.role):
+            raise HTTPException(status_code=403, detail="Forbidden")
+        queue = _register_state_subscriber()
+
+        async def event_stream():
+            try:
+                while True:
+                    item = await queue.get()
+                    yield json.dumps(item) + "\n"
+            finally:
+                _unregister_state_subscriber(queue)
+
+        return StreamingResponse(event_stream(), media_type="application/json")
+
     @app.post("/api/ui/flow/execute")
     def api_ui_flow_execute(payload: UIFlowExecuteRequest, principal: Principal = Depends(get_principal)) -> Dict[str, Any]:
         if not can_run_flow(principal.role):
@@ -716,6 +900,7 @@ def create_app() -> FastAPI:
                     trigger_manager=trigger_manager,
                     plugin_registry=plugin_registry,
                 )
+            engine.flow_engine.global_stream_callback = _global_state_stream_callback
             result = engine.execute_flow(payload.flow, principal_role=principal.role.value, payload={"state": payload.args})
             return {"success": True, "result": result}
         except Exception as exc:  # pragma: no cover
@@ -741,6 +926,7 @@ def create_app() -> FastAPI:
                     trigger_manager=trigger_manager,
                     plugin_registry=plugin_registry,
                 )
+            engine.flow_engine.global_stream_callback = _global_state_stream_callback
             if payload.flow not in engine.program.flows:
                 raise HTTPException(status_code=404, detail="Flow not found")
             flow = engine.program.flows[payload.flow]
@@ -748,6 +934,7 @@ def create_app() -> FastAPI:
                 app_name="__flow__",
                 request_id=str(uuid.uuid4()),
                 memory_engine=engine.memory_engine,
+                memory_stores=engine.memory_stores,
                 rag_engine=engine.rag_engine,
                 tracer=Tracer(),
                 tool_registry=engine.tool_registry,
@@ -759,29 +946,39 @@ def create_app() -> FastAPI:
 
             queue: asyncio.Queue = asyncio.Queue()
 
-            async def emit(event: dict[str, Any]):
-                await queue.put(event)
+            async def emit(event: StreamEvent):
+                serialized = _serialize_stream_event(event)
+                await queue.put(serialized)
+                await _broadcast_state_event(serialized)
 
             async def runner():
                 try:
-                    result = await engine.flow_engine.run_flow_async(flow, context, initial_state=initial_state, stream_callback=emit)
+                    result = await engine.flow_engine.run_flow_async(
+                        flow, context, initial_state=initial_state, stream_callback=emit
+                    )
                     if result.errors:
+                        err = result.errors[0]
                         await emit(
                             {
-                                "event": "flow_error",
-                                "error": result.errors[0].error if result.errors else "Flow error",
+                                "kind": "error",
+                                "flow": flow.name,
+                                "step": err.node_id or err.error,
+                                "error": err.error,
                             }
                         )
                     else:
+                        serialized_result = result.to_dict() if hasattr(result, "to_dict") else asdict(result)
                         await emit(
                             {
-                                "event": "flow_done",
+                                "kind": "flow_done",
+                                "flow": flow.name,
+                                "step": flow.steps[-1].name if flow.steps else flow.name,
                                 "success": True,
-                                "result": result.to_dict() if hasattr(result, "to_dict") else asdict(result),
+                                "result": serialized_result,
                             }
                         )
                 except Exception as exc:  # pragma: no cover
-                    await emit({"event": "flow_error", "error": str(exc)})
+                    await emit({"kind": "error", "flow": flow.name, "step": flow.name, "error": str(exc)})
                 finally:
                     await queue.put(None)
 
@@ -799,6 +996,214 @@ def create_app() -> FastAPI:
             raise
         except Exception as exc:  # pragma: no cover
             raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    @app.get("/api/memory/ai/{ai_id}/sessions")
+    def api_memory_sessions(ai_id: str, principal: Principal = Depends(get_principal)) -> Dict[str, Any]:
+        if not can_view_pages(principal.role):
+            raise HTTPException(status_code=403, detail="Forbidden")
+        program = _project_program()
+        ai_calls = getattr(program, "ai_calls", {})
+        if ai_id not in ai_calls:
+            raise HTTPException(status_code=404, detail="AI not found")
+        ai_call = ai_calls[ai_id]
+        mem_cfg = getattr(ai_call, "memory", None)
+        if not mem_cfg:
+            return {"ai": ai_id, "sessions": []}
+        engine = _build_project_engine(program)
+        store_name = _short_term_store_name(mem_cfg)
+        backend = engine.memory_stores.get(store_name)
+        if backend is None:
+            raise HTTPException(status_code=404, detail=f"Memory store '{store_name}' unavailable")
+        sessions = backend.list_sessions(ai_id)
+        serialized = [
+            {
+                "id": entry.get("id"),
+                "last_activity": entry.get("last_activity"),
+                "turns": entry.get("turns", 0),
+                "user_id": entry.get("user_id"),
+            }
+            for entry in sessions
+        ]
+        return {"ai": ai_id, "sessions": serialized}
+
+    @app.get("/api/memory/ai/{ai_id}/sessions/{session_id}")
+    def api_memory_session_detail(
+        ai_id: str, session_id: str, principal: Principal = Depends(get_principal)
+    ) -> Dict[str, Any]:
+        if not can_view_pages(principal.role):
+            raise HTTPException(status_code=403, detail="Forbidden")
+        program = _project_program()
+        ai_calls = getattr(program, "ai_calls", {})
+        if ai_id not in ai_calls:
+            raise HTTPException(status_code=404, detail="AI not found")
+        ai_call = ai_calls[ai_id]
+        mem_cfg = getattr(ai_call, "memory", None)
+        if not mem_cfg:
+            return {"ai": ai_id, "session": session_id, "short_term": {"turns": []}}
+        engine = _build_project_engine(program)
+        memory_stores = engine.memory_stores
+        short_cfg = getattr(mem_cfg, "short_term", None)
+        if short_cfg is None and (getattr(mem_cfg, "kind", None) or getattr(mem_cfg, "window", None) or getattr(mem_cfg, "store", None)):
+            short_cfg = ir.IRAiShortTermMemoryConfig(window=getattr(mem_cfg, "window", None), store=getattr(mem_cfg, "store", None))
+        short_store_name = _short_term_store_name(mem_cfg)
+        short_backend = memory_stores.get(short_store_name)
+        session_user_id: str | None = None
+        if short_backend and hasattr(short_backend, "get_session_user"):
+            try:
+                session_user_id = short_backend.get_session_user(ai_id, session_id)
+            except Exception:
+                session_user_id = None
+        short_scope = _compute_scope_keys(
+            "short_term",
+            getattr(short_cfg, "scope", None) if short_cfg else None,
+            ai_id,
+            session_id,
+            session_user_id,
+        )
+        short_history: List[Dict[str, Any]] = []
+        if short_backend:
+            short_history = short_backend.get_full_history(short_scope["ai_key"], short_scope["session_key"])
+            short_history = filter_turns_by_retention(
+                short_history,
+                getattr(short_cfg, "retention_days", None) if short_cfg else None,
+            )
+        short_window = (
+            getattr(short_cfg, "window", None)
+            or getattr(mem_cfg, "window", None)
+            or DEFAULT_SHORT_TERM_WINDOW
+        )
+        long_cfg = getattr(mem_cfg, "long_term", None)
+        long_scope = (
+            _compute_scope_keys("long_term", getattr(long_cfg, "scope", None), _long_term_key(ai_id), session_id, session_user_id)
+            if long_cfg
+            else None
+        )
+        long_store_name = _long_term_store_name(mem_cfg)
+        long_items: List[Dict[str, Any]] = []
+        if (
+            long_scope
+            and long_store_name
+            and long_store_name in memory_stores
+        ):
+            long_backend = memory_stores[long_store_name]
+            long_items = long_backend.list_items(long_scope["ai_key"], long_scope["session_key"])
+            long_items = filter_items_by_retention(
+                long_items,
+                getattr(long_cfg, "retention_days", None),
+            )
+        profile_cfg = getattr(mem_cfg, "profile", None)
+        profile_scope = (
+            _compute_scope_keys("profile", getattr(profile_cfg, "scope", None), _profile_key(ai_id), session_id, session_user_id)
+            if profile_cfg
+            else None
+        )
+        profile_store_name = _profile_store_name(mem_cfg)
+        profile_facts: List[str] = []
+        if (
+            profile_scope
+            and profile_store_name
+            and profile_store_name in memory_stores
+        ):
+            profile_backend = memory_stores[profile_store_name]
+            profile_history = profile_backend.get_full_history(profile_scope["ai_key"], profile_scope["session_key"])
+            profile_history = filter_turns_by_retention(
+                profile_history,
+                getattr(profile_cfg, "retention_days", None),
+            )
+            profile_facts = [
+                turn.get("content", "")
+                for turn in profile_history
+                if (turn.get("role") or "").lower() == "system"
+            ]
+        policies = {
+            "short_term": _build_policy_info("short_term", short_cfg, short_scope, session_user_id),
+            "long_term": _build_policy_info("long_term", long_cfg, long_scope, session_user_id),
+            "profile": _build_policy_info("profile", profile_cfg, profile_scope, session_user_id),
+        }
+        snapshot = get_last_recall_snapshot(ai_id, session_id)
+        return {
+            "ai": ai_id,
+            "session": session_id,
+            "user_id": session_user_id,
+            "short_term": {
+                "window": short_window,
+                "turns": short_history,
+            },
+            "long_term": {"store": long_store_name, "items": long_items} if long_store_name else None,
+            "profile": {"store": profile_store_name, "facts": profile_facts} if profile_store_name else None,
+            "policies": policies,
+            "last_recall_snapshot": snapshot,
+        }
+
+    @app.post("/api/memory/ai/{ai_id}/sessions/{session_id}/clear")
+    def api_memory_session_clear(
+        ai_id: str,
+        session_id: str,
+        payload: MemoryClearRequest,
+        principal: Principal = Depends(get_principal),
+    ) -> Dict[str, Any]:
+        if not can_view_pages(principal.role):
+            raise HTTPException(status_code=403, detail="Forbidden")
+        program = _project_program()
+        ai_calls = getattr(program, "ai_calls", {})
+        if ai_id not in ai_calls:
+            raise HTTPException(status_code=404, detail="AI not found")
+        mem_cfg = getattr(ai_calls[ai_id], "memory", None)
+        if not mem_cfg:
+            return {"success": True}
+        engine = _build_project_engine(program)
+        memory_stores = engine.memory_stores
+        kinds = payload.kinds or ["short_term", "long_term", "profile"]
+        short_cfg = getattr(mem_cfg, "short_term", None)
+        if short_cfg is None and (getattr(mem_cfg, "kind", None) or getattr(mem_cfg, "window", None) or getattr(mem_cfg, "store", None)):
+            short_cfg = ir.IRAiShortTermMemoryConfig(window=getattr(mem_cfg, "window", None), store=getattr(mem_cfg, "store", None))
+        short_store_name = _short_term_store_name(mem_cfg)
+        short_backend = memory_stores.get(short_store_name)
+        session_user_id: str | None = None
+        if short_backend and hasattr(short_backend, "get_session_user"):
+            try:
+                session_user_id = short_backend.get_session_user(ai_id, session_id)
+            except Exception:
+                session_user_id = None
+        short_scope = _compute_scope_keys(
+            "short_term",
+            getattr(short_cfg, "scope", None) if short_cfg else None,
+            ai_id,
+            session_id,
+            session_user_id,
+        )
+        if "short_term" in kinds and short_store_name in memory_stores:
+            memory_stores[short_store_name].clear_session(short_scope["ai_key"], short_scope["session_key"])
+        long_cfg = getattr(mem_cfg, "long_term", None)
+        long_scope = (
+            _compute_scope_keys("long_term", getattr(long_cfg, "scope", None), _long_term_key(ai_id), session_id, session_user_id)
+            if long_cfg
+            else None
+        )
+        long_store_name = _long_term_store_name(mem_cfg)
+        if (
+            "long_term" in kinds
+            and long_scope
+            and long_store_name
+            and long_store_name in memory_stores
+        ):
+            memory_stores[long_store_name].clear_session(long_scope["ai_key"], long_scope["session_key"])
+        profile_cfg = getattr(mem_cfg, "profile", None)
+        profile_scope = (
+            _compute_scope_keys("profile", getattr(profile_cfg, "scope", None), _profile_key(ai_id), session_id, session_user_id)
+            if profile_cfg
+            else None
+        )
+        profile_store_name = _profile_store_name(mem_cfg)
+        if (
+            "profile" in kinds
+            and profile_scope
+            and profile_store_name
+            and profile_store_name in memory_stores
+        ):
+            memory_stores[profile_store_name].clear_session(profile_scope["ai_key"], profile_scope["session_key"])
+        clear_recall_snapshot(ai_id, session_id)
+        return {"success": True}
 
     def _find_element_by_id(pages: list[dict[str, Any]], element_id: str) -> dict[str, Any] | None:
         for page in pages:
@@ -1404,10 +1809,16 @@ def create_app() -> FastAPI:
     def api_studio_summary(principal: Principal = Depends(get_principal)) -> Dict[str, Any]:
         if principal.role not in {Role.ADMIN, Role.DEVELOPER, Role.VIEWER}:
             raise HTTPException(status_code=403, detail="Forbidden")
-        # Build a minimal runtime for counting
-        engine = Engine.from_source(
-            "", metrics_tracker=metrics_tracker, trigger_manager=trigger_manager, plugin_registry=plugin_registry
-        )
+        try:
+            engine = _build_project_engine()
+        except HTTPException:
+            engine = Engine.from_source(
+                "", metrics_tracker=metrics_tracker, trigger_manager=trigger_manager, plugin_registry=plugin_registry
+            )
+        except Exception:
+            engine = Engine.from_source(
+                "", metrics_tracker=metrics_tracker, trigger_manager=trigger_manager, plugin_registry=plugin_registry
+            )
         studio = StudioEngine(
             job_queue=global_job_queue,
             tracer=Tracer(),

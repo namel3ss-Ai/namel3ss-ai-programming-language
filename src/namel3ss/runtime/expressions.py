@@ -118,6 +118,11 @@ class ExpressionEvaluator:
                 return bool(left) and bool(right)
             if op == "or":
                 return bool(left) or bool(right)
+            if op == "+":
+                if isinstance(left, list) and isinstance(right, list):
+                    return left + right
+                if isinstance(left, str) and isinstance(right, str):
+                    return left + right
             if op in {"+", "-", "*", "/", "%"}:
                 lnum = self._to_number(left)
                 rnum = self._to_number(right)

@@ -6,9 +6,9 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass, field
-from typing import Any, Dict, Optional
+from typing import Any, Callable, Dict, Optional
 
-from ..ir import IRFlow
+from ..ir import IRFlow, IRFlowLoop, IRFlowStep
 from ..runtime.expressions import VariableEnvironment
 
 
@@ -91,16 +91,18 @@ class FlowRuntimeContext:
     metrics: Any = None
     secrets: Any = None
     memory_engine: Any = None
+    memory_stores: Any = None
     rag_engine: Any = None
     frames: Any = None
     vectorstores: Any = None
+    records: Any = None
     execution_context: Any = None
     max_parallel_tasks: int = 4
     parallel_semaphore: asyncio.Semaphore | None = None
     step_results: list | None = None
     variables: VariableEnvironment | None = None
     event_logger: Any = None
-    stream_callback: Any = None
+    stream_callback: Callable[[Any], Any] | None = None
 
 
 def flow_ir_to_graph(flow: IRFlow) -> FlowGraph:
@@ -108,6 +110,49 @@ def flow_ir_to_graph(flow: IRFlow) -> FlowGraph:
     Translate the existing sequential IRFlow into a FlowGraph representation.
     This keeps DSL/IR stable while enabling richer runtime semantics.
     """
+
+    def _ir_step_to_config(step: IRFlowStep) -> dict:
+        return {
+            "target": step.target,
+            "step_name": step.name,
+            "branches": getattr(step, "conditional_branches", None),
+            "message": getattr(step, "message", None),
+            "params": getattr(step, "params", {}) or {},
+            "statements": getattr(step, "statements", None),
+            "when": getattr(step, "when_expr", None),
+            "stream": {
+                "streaming": getattr(step, "streaming", False),
+                "stream_channel": getattr(step, "stream_channel", None),
+                "stream_role": getattr(step, "stream_role", None),
+                "stream_label": getattr(step, "stream_label", None),
+                "stream_mode": getattr(step, "stream_mode", None),
+            },
+            "tools_mode": getattr(step, "tools_mode", None),
+        }
+
+    def _loop_to_dict(loop: "IRFlowLoop") -> dict:
+        return {
+            "id": loop.name,
+            "name": loop.name,
+            "kind": "for_each",
+            "config": {
+                "step_name": loop.name,
+                "var_name": loop.var_name,
+                "iterable_expr": loop.iterable,
+                "body": [_ir_item_to_inline(child) for child in loop.body],
+            },
+        }
+
+    def _ir_item_to_inline(item: IRFlowStep | "IRFlowLoop") -> dict:
+        if hasattr(item, "var_name"):
+            return _loop_to_dict(item)  # type: ignore[arg-type]
+        cfg = _ir_step_to_config(item)  # type: ignore[arg-type]
+        return {
+            "id": getattr(item, "name", cfg.get("step_name")),
+            "name": getattr(item, "name", cfg.get("step_name")),
+            "kind": getattr(item, "kind", "function"),
+            **cfg,
+        }
 
     nodes: dict[str, FlowNode] = {}
     prev_id: str | None = None
@@ -118,19 +163,11 @@ def flow_ir_to_graph(flow: IRFlow) -> FlowGraph:
         prev_error: str | None = None
         for step in flow.error_steps:
             node_id = f"error::{step.name}"
+            cfg = _ir_step_to_config(step)
             node = FlowNode(
                 id=node_id,
                 kind=step.kind,
-                config={
-                    "target": step.target,
-                    "step_name": step.name,
-                    "branches": getattr(step, "conditional_branches", None),
-                    "message": getattr(step, "message", None),
-                    "params": getattr(step, "params", {}) or {},
-                    "statements": getattr(step, "statements", None),
-                    "when": getattr(step, "when_expr", None),
-                    "reason": "error_handler",
-                },
+                config={**cfg, "reason": "error_handler"},
                 next_ids=[],
             )
             nodes[node_id] = node
@@ -140,30 +177,41 @@ def flow_ir_to_graph(flow: IRFlow) -> FlowGraph:
             if error_entry_id is None:
                 error_entry_id = node_id
 
-    for step in flow.steps:
-        node_id = step.name
-        node = FlowNode(
-            id=node_id,
-            kind=step.kind,
-            config={
-                "target": step.target,
-                "step_name": step.name,
-                "branches": getattr(step, "conditional_branches", None),
-                "message": getattr(step, "message", None),
-                "params": getattr(step, "params", {}) or {},
-                "statements": getattr(step, "statements", None),
-                "when": getattr(step, "when_expr", None),
-                "reason": "unconditional" if step.kind == "goto_flow" else None,
-            },
-            next_ids=[],
-        )
-        node.error_boundary_id = error_entry_id
+    def _add_node_from_item(item: IRFlowStep | IRFlowLoop) -> None:
+        nonlocal prev_id, entry_id
+        if isinstance(item, IRFlowLoop):
+            node_id = item.name
+            node = FlowNode(
+                id=node_id,
+                kind="for_each",
+                config={
+                    "step_name": item.name,
+                    "var_name": item.var_name,
+                    "iterable_expr": item.iterable,
+                    "body": [_ir_item_to_inline(child) for child in item.body],
+                },
+                next_ids=[],
+                error_boundary_id=error_entry_id,
+            )
+        else:
+            node_id = item.name
+            cfg = _ir_step_to_config(item)
+            node = FlowNode(
+                id=node_id,
+                kind=item.kind,
+                config={**cfg, "reason": "unconditional" if item.kind == "goto_flow" else None},
+                next_ids=[],
+                error_boundary_id=error_entry_id,
+            )
         nodes[node_id] = node
         if prev_id:
             nodes[prev_id].next_ids.append(node_id)
         prev_id = node_id
         if entry_id is None:
             entry_id = node_id
+
+    for item in flow.steps:
+        _add_node_from_item(item)
 
     if entry_id is None:
         # Empty flows are allowed; create a no-op node so engine can still run.

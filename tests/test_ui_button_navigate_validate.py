@@ -11,7 +11,7 @@ page "home" at "/":
   section "main":
     button "Go":
       on click:
-        navigate
+        navigate to
 '''
         )
     assert "N3L-950" in str(exc.value)
@@ -24,9 +24,24 @@ page "home" at "/":
   section "main":
     button "Go":
       on click:
-        navigate page "chat"
+        navigate to page "chat"
 '''
     )
     with pytest.raises(ir.IRError) as exc:
         ir.ast_to_ir(mod)
-    assert "N3L-951" in str(exc.value)
+    assert "N3L-1301" in str(exc.value)
+
+
+def test_navigate_and_flow_not_allowed_together():
+    with pytest.raises(errors.ParseError) as exc:
+        parser.parse_source(
+            '''
+page "home" at "/":
+  section "main":
+    button "Go":
+      on click:
+        do flow "start_chat"
+        navigate to page "chat"
+'''
+        )
+    assert "N3L-1300" in str(exc.value)

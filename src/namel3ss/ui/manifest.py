@@ -80,6 +80,15 @@ def _layout(
     parent_id: str | None = None,
     index: int = 0,
 ) -> dict[str, Any]:
+    def _apply_styling(data: dict[str, Any], element: IRLayoutElement) -> dict[str, Any]:
+        class_name = getattr(element, "class_name", None)
+        if class_name:
+            data["className"] = class_name
+        style_map = getattr(element, "style", None)
+        if isinstance(style_map, dict) and style_map:
+            data["style"] = style_map
+        return data
+
     base_signature = f"{parent_id or 'root'}:{el.__class__.__name__}"
     key_value = None
     for attr in ("text", "label", "name", "url"):
@@ -90,7 +99,7 @@ def _layout(
         base_signature = f"{base_signature}:{key_value}"
     el_id = _make_element_id(base_signature, id_registry)
     if isinstance(el, IRHeading):
-        return {
+        data = {
             "type": "heading",
             "id": el_id,
             "parent_id": parent_id,
@@ -100,6 +109,7 @@ def _layout(
             "source_path": source_path,
             "property_map": {"text": {"value": el.text}},
         }
+        return _apply_styling(data, el)
     if isinstance(el, IRText):
         data = {
             "type": "text",
@@ -111,9 +121,9 @@ def _layout(
         }
         if getattr(el, "expr", None) is not None:
             data["expr"] = True
-        return data
+        return _apply_styling(data, el)
     if isinstance(el, IRImage):
-        return {
+        data = {
             "type": "image",
             "id": el_id,
             "parent_id": parent_id,
@@ -121,8 +131,9 @@ def _layout(
             "url": el.url,
             "styles": _styles(getattr(el, "styles", [])),
         }
+        return _apply_styling(data, el)
     if isinstance(el, IREmbedForm):
-        return {
+        data = {
             "type": "form",
             "id": el_id,
             "parent_id": parent_id,
@@ -130,8 +141,9 @@ def _layout(
             "form_name": el.form_name,
             "styles": _styles(getattr(el, "styles", [])),
         }
+        return _apply_styling(data, el)
     if isinstance(el, IRCard):
-        return {
+        data = {
             "type": "card",
             "id": el_id,
             "parent_id": parent_id,
@@ -141,8 +153,9 @@ def _layout(
             "styles": _styles(getattr(el, "styles", [])),
             "source_path": source_path,
         }
+        return _apply_styling(data, el)
     if isinstance(el, IRRow):
-        return {
+        data = {
             "type": "row",
             "id": el_id,
             "parent_id": parent_id,
@@ -151,8 +164,9 @@ def _layout(
             "styles": _styles(getattr(el, "styles", [])),
             "source_path": source_path,
         }
+        return _apply_styling(data, el)
     if isinstance(el, IRColumn):
-        return {
+        data = {
             "type": "column",
             "id": el_id,
             "parent_id": parent_id,
@@ -161,6 +175,7 @@ def _layout(
             "styles": _styles(getattr(el, "styles", [])),
             "source_path": source_path,
         }
+        return _apply_styling(data, el)
     if isinstance(el, IRTextarea):
         data = {
             "type": "textarea",
@@ -183,9 +198,9 @@ def _layout(
                 "pattern": el.validation.get("pattern"),
                 "message": el.validation.get("message"),
             }
-        return data
+        return _apply_styling(data, el)
     if isinstance(el, IRBadge):
-        return {
+        data = {
             "type": "badge",
             "id": el_id,
             "parent_id": parent_id,
@@ -195,8 +210,9 @@ def _layout(
             "source_path": source_path,
             "property_map": {"text": {"value": el.text}},
         }
+        return _apply_styling(data, el)
     if isinstance(el, IRMessageList):
-        return {
+        data = {
             "type": "message_list",
             "id": el_id,
             "parent_id": parent_id,
@@ -205,6 +221,7 @@ def _layout(
             "styles": _styles(getattr(el, "styles", [])),
             "source_path": source_path,
         }
+        return _apply_styling(data, el)
     if isinstance(el, IRMessage):
         data = {
             "type": "message",
@@ -231,7 +248,7 @@ def _layout(
                 data["text_expr"] = True
         if el.name:
             data["name"] = el.name
-        return data
+        return _apply_styling(data, el)
     if isinstance(el, IRUIInput):
         data = {
             "type": "input",
@@ -255,7 +272,7 @@ def _layout(
                 "pattern": el.validation.get("pattern"),
                 "message": el.validation.get("message"),
             }
-        return data
+        return _apply_styling(data, el)
     if isinstance(el, IRUIButton):
         button_data = {
             "type": "button",
@@ -271,19 +288,21 @@ def _layout(
         # Provide a premium onClick shape for navigation
         navigate = next((a for a in el.actions if a.kind == "navigate"), None)
         if navigate:
-            nav_entry: dict[str, Any] = {"kind": "navigate"}
-            if navigate.target_path:
-                nav_entry["targetPath"] = navigate.target_path
+            target_info: dict[str, Any] = {"pageName": None, "path": None}
             if navigate.target_page:
-                nav_entry["targetPage"] = navigate.target_page
-                if program:
-                    target_page = program.pages.get(navigate.target_page)
-                    route = target_page.route if target_page and target_page.route else f"/{navigate.target_page}"
-                    nav_entry.setdefault("targetPath", route)
+                target_info["pageName"] = navigate.target_page
+            if navigate.target_path:
+                target_info["path"] = navigate.target_path
+            if navigate.target_page and program:
+                target_page = program.pages.get(navigate.target_page)
+                route = target_page.route if target_page and target_page.route else f"/{navigate.target_page}"
+                if target_info["path"] is None:
+                    target_info["path"] = route
+            nav_entry = {"kind": "navigate", "target": target_info}
             button_data["onClick"] = nav_entry
-        return button_data
+        return _apply_styling(button_data, el)
     if isinstance(el, IRUIConditional):
-        return {
+        data = {
             "type": "conditional",
             "id": el_id,
             "parent_id": parent_id,
@@ -299,8 +318,9 @@ def _layout(
             ],
             "source_path": source_path,
         }
+        return _apply_styling(data, el)
     if isinstance(el, IRSection):
-        return {
+        data = {
             "type": "section",
             "id": el_id,
             "parent_id": parent_id,
@@ -313,8 +333,9 @@ def _layout(
             "styles": _styles(getattr(el, "styles", [])),
             "source_path": source_path,
         }
+        return _apply_styling(data, el)
     if isinstance(el, IRUIComponentCall):
-        return {
+        data = {
             "type": "component_call",
             "id": el_id,
             "parent_id": parent_id,
@@ -322,6 +343,7 @@ def _layout(
             "name": el.name,
             "styles": _styles(getattr(el, "styles", [])),
         }
+        return _apply_styling(data, el)
     return {}
 
 
@@ -329,7 +351,7 @@ def _page_manifest(
     page: IRPage, id_registry: dict[str, int], program: IRProgram, source_path: str | None = None
 ) -> dict[str, Any]:
     route = page.route or f"/{page.name}"
-    return {
+    data = {
         "name": page.name,
         "id": f"page_{page.name}",
         "route": route,
@@ -341,6 +363,13 @@ def _page_manifest(
         "styles": _styles(getattr(page, "styles", [])),
         "source_path": source_path,
     }
+    class_name = getattr(page, "class_name", None)
+    if class_name:
+        data["className"] = class_name
+    style_map = getattr(page, "style", None)
+    if isinstance(style_map, dict) and style_map:
+        data["style"] = style_map
+    return data
 
 
 def build_ui_manifest(program: IRProgram) -> Dict[str, Any]:
@@ -356,6 +385,8 @@ def build_ui_manifest(program: IRProgram) -> Dict[str, Any]:
                     _layout(el, id_registry, program, parent_id=comp.name, index=i) for i, el in enumerate(comp.render)
                 ],
                 "styles": _styles(comp.styles),
+                "className": comp.class_name,
+                "style": comp.style or {},
             }
         )
     theme = {}

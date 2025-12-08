@@ -57,6 +57,8 @@ class Engine:
     ) -> None:
         self.program = program
         self.secrets_manager = SecretsManager()
+        from ..memory.registry import build_memory_store_registry
+        self.memory_stores = build_memory_store_registry(self.secrets_manager)
         self.metrics_tracker = metrics_tracker or MetricsTracker()
         self.job_queue: JobQueue = global_job_queue
         self.scheduler = JobScheduler(self.job_queue)
@@ -110,6 +112,7 @@ class Engine:
         self._load_plugins()
         self.ui_renderer = UIRenderer()
         self.graph = self.build_graph(program)
+        self._validate_memory_stores()
 
     @classmethod
     def from_file(
@@ -331,11 +334,29 @@ class Engine:
         register_builtin_tools(registry)
         return registry
 
+    def _validate_memory_stores(self) -> None:
+        available = set(self.memory_stores.keys())
+        for ai_call in self.program.ai_calls.values():
+            mem_cfg = getattr(ai_call, "memory", None)
+            if mem_cfg:
+                store_names = []
+                if hasattr(mem_cfg, "referenced_store_names"):
+                    store_names = mem_cfg.referenced_store_names()
+                else:
+                    store_names = [getattr(mem_cfg, "store", None)]
+                for store_name in store_names:
+                    resolved = store_name or "default_memory"
+                    if resolved not in available:
+                        raise Namel3ssError(
+                            f"N3L-1201: Memory store '{resolved}' referenced on AI '{ai_call.name}' is not configured for this project."
+                        )
+
     def _build_default_execution_context(self) -> ExecutionContext:
         return ExecutionContext(
             app_name="__ui__",
             request_id=str(uuid4()),
             memory_engine=self.memory_engine,
+            memory_stores=self.memory_stores,
             rag_engine=self.rag_engine,
             tracer=Tracer(),
             tool_registry=self.tool_registry,
@@ -369,6 +390,7 @@ class Engine:
                 app_name=app_name,
                 request_id=str(uuid4()),
                 memory_engine=self.memory_engine,
+                memory_stores=self.memory_stores,
                 rag_engine=self.rag_engine,
                 tracer=Tracer(),
                 tool_registry=self.tool_registry,
@@ -435,6 +457,7 @@ class Engine:
                 app_name="__agent__",
                 request_id=str(uuid4()),
                 memory_engine=self.memory_engine,
+                memory_stores=self.memory_stores,
                 rag_engine=self.rag_engine,
                 tracer=Tracer(),
                 tool_registry=self.tool_registry,
@@ -454,6 +477,7 @@ class Engine:
             app_name="__page__",
             request_id=str(uuid4()),
             memory_engine=self.memory_engine,
+            memory_stores=self.memory_stores,
             rag_engine=self.rag_engine,
             tracer=Tracer(),
             tool_registry=self.tool_registry,
@@ -503,6 +527,7 @@ class Engine:
                 app_name="__flow__",
                 request_id=str(uuid4()),
                 memory_engine=self.memory_engine,
+                memory_stores=self.memory_stores,
                 rag_engine=self.rag_engine,
                 tracer=Tracer(),
                 tool_registry=self.tool_registry,

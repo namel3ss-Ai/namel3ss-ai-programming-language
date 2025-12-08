@@ -20,6 +20,8 @@ import {
   FmtPreviewResponse,
   PluginMetadata,
   PluginsResponse,
+  MemorySessionDetail,
+  MemorySessionsResponse,
 } from "./types";
 
 const defaultBase = import.meta.env.VITE_API_BASE_URL || "http://localhost:8000";
@@ -46,11 +48,21 @@ export const postDiagnostics = (source: string) =>
     body: JSON.stringify({ code: source }),
   });
 
+type StreamEventBase = {
+  flow?: string;
+  step?: string;
+  channel?: string | null;
+  role?: string | null;
+  label?: string | null;
+  mode?: string | null;
+};
+
 export type StreamEvent =
-  | { event: "ai_chunk"; step: string; delta: string }
-  | { event: "ai_done"; step: string; full: string }
-  | { event: "flow_done"; success: boolean; result: any }
-  | { event: "flow_error"; error: string; code?: string };
+  | (StreamEventBase & { event: "ai_chunk"; delta: string })
+  | (StreamEventBase & { event: "ai_done"; full: string })
+  | (StreamEventBase & { event: "flow_done"; success: boolean; result: any })
+  | (StreamEventBase & { event: "flow_error"; error: string; code?: string })
+  | (StreamEventBase & { event: "state_change"; path: string; old_value?: any; new_value?: any });
 
 export async function runFlowStreaming(flow: string, args: any, onEvent: (event: StreamEvent) => void): Promise<void> {
   const url = `${defaultBase}/api/ui/flow/stream`;
@@ -89,6 +101,48 @@ export async function runFlowStreaming(flow: string, args: any, onEvent: (event:
       idx = buffer.indexOf("\n");
     }
   }
+}
+
+export function subscribeStateStream(onEvent: (event: StreamEvent) => void): () => void {
+  const url = `${defaultBase}/api/ui/state/stream`;
+  const controller = new AbortController();
+  (async () => {
+    const res = await fetch(url, {
+      method: "GET",
+      headers: {
+        "X-API-Key": apiKey,
+      },
+      signal: controller.signal,
+    });
+    if (!res.ok || !res.body) {
+      return;
+    }
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = "";
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      let idx = buffer.indexOf("\n");
+      while (idx !== -1) {
+        const line = buffer.slice(0, idx).trim();
+        buffer = buffer.slice(idx + 1);
+        if (line) {
+          try {
+            const evt = JSON.parse(line) as StreamEvent;
+            onEvent(evt);
+          } catch {
+            // ignore malformed lines
+          }
+        }
+        idx = buffer.indexOf("\n");
+      }
+    }
+  })().catch(() => {
+    // ignore subscription errors in preview mode
+  });
+  return () => controller.abort();
 }
 
 export const postFmtPreview = (source: string) =>
@@ -133,6 +187,25 @@ export const ApiClient = {
     }),
   postDiagnostics,
   fetchJobs: () => request<JobsResponse>("/api/jobs"),
+  fetchMemorySessions: (aiId: string) =>
+    request<MemorySessionsResponse>(`/api/memory/ai/${encodeURIComponent(aiId)}/sessions`, {
+      method: "GET",
+    }),
+  fetchMemorySessionDetail: (aiId: string, sessionId: string) =>
+    request<MemorySessionDetail>(
+      `/api/memory/ai/${encodeURIComponent(aiId)}/sessions/${encodeURIComponent(sessionId)}`,
+      {
+        method: "GET",
+      },
+    ),
+  clearMemorySession: (aiId: string, sessionId: string, kinds?: string[]) =>
+    request<{ success: boolean }>(
+      `/api/memory/ai/${encodeURIComponent(aiId)}/sessions/${encodeURIComponent(sessionId)}/clear`,
+      {
+        method: "POST",
+        body: JSON.stringify({ kinds }),
+      },
+    ),
   queryRag: (code: string, query: string, indexes?: string[]) =>
     request<RAGQueryResponse>("/api/rag/query", {
       method: "POST",
@@ -178,4 +251,5 @@ export const ApiClient = {
   postFmtPreview,
   postRunApp,
   runFlowStreaming,
+  subscribeStateStream,
 };

@@ -20,7 +20,7 @@ page is "home" at "/":
   section is "main":
     button is "Go":
       on click:
-        navigate is "/chat"
+        navigate to "/chat"
 
 page is "chat" at "/chat":
   section is "main":
@@ -33,8 +33,9 @@ page is "chat" at "/chat":
     assert btn is not None
     assert btn.get("onClick") is not None
     assert btn["onClick"]["kind"] == "navigate"
-    assert btn["onClick"]["targetPath"] == "/chat"
-    assert "targetPage" not in btn["onClick"] or btn["onClick"]["targetPage"] is None
+    target = btn["onClick"]["target"]
+    assert target["path"] == "/chat"
+    assert target["pageName"] is None
 
 
 def test_manifest_includes_navigate_page():
@@ -44,7 +45,7 @@ page is "home" at "/":
   section is "main":
     button is "Go":
       on click:
-        navigate page is "chat"
+        navigate to page is "chat"
 
 page is "chat" at "/chat":
   section is "main":
@@ -57,5 +58,6 @@ page is "chat" at "/chat":
     assert btn is not None
     assert btn.get("onClick") is not None
     assert btn["onClick"]["kind"] == "navigate"
-    assert btn["onClick"]["targetPage"] == "chat"
-    assert btn["onClick"]["targetPath"] == "/chat"
+    target = btn["onClick"]["target"]
+    assert target["pageName"] == "chat"
+    assert target["path"] == "/chat"

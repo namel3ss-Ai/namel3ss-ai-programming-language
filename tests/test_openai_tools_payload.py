@@ -15,7 +15,9 @@ def test_openai_body_includes_tools(monkeypatch):
         tool is "get_weather":
           kind is "http_json"
           method is "GET"
-          url_template is "https://api.example.com/weather?city={city}"
+          url is "https://api.example.com/weather"
+          query:
+            city: input.city
 
         ai is "assistant_with_tools":
           model is "gpt-4.1-mini"

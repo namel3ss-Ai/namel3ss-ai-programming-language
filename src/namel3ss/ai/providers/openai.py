@@ -8,7 +8,7 @@ from typing import Any, Callable, Dict, Iterable, List, Optional
 
 from ...errors import Namel3ssError
 from ..models import ModelResponse, ModelStreamChunk, TokenUsage
-from . import ModelProvider
+from . import ChatToolResponse, ModelProvider, ToolCallResult
 
 HttpClient = Callable[[str, Dict[str, Any], Dict[str, str]], Dict[str, Any]]
 HttpStreamClient = Callable[[str, Dict[str, Any], Dict[str, str]], Iterable[Dict[str, Any]]]
@@ -56,8 +56,27 @@ class OpenAIProvider(ModelProvider):
         }
         if json_mode:
             body["response_format"] = {"type": "json_object"}
-        if "tools" in kwargs and kwargs["tools"]:
-            body["tools"] = kwargs["tools"]
+        tools_payload = kwargs.get("tools")
+        if tools_payload:
+            normalized_tools: List[Dict[str, Any]] = []
+            for tool in tools_payload:
+                if "function" in tool:
+                    normalized_tools.append(tool)
+                else:
+                    normalized_tools.append(
+                        {
+                            "type": "function",
+                            "function": {
+                                "name": tool.get("name"),
+                                "description": tool.get("description"),
+                                "parameters": tool.get("parameters"),
+                            },
+                        }
+                    )
+            body["tools"] = normalized_tools
+        tool_choice = kwargs.get("tool_choice")
+        if tool_choice:
+            body["tool_choice"] = tool_choice
         # Optional parameters
         for key in ("temperature", "top_p", "max_tokens", "seed", "frequency_penalty", "presence_penalty"):
             if key in kwargs and kwargs[key] is not None:
@@ -119,6 +138,50 @@ class OpenAIProvider(ModelProvider):
                 finish_reason=finish_reason,
                 is_final=finish_reason is not None,
             )
+
+    def chat_with_tools(
+        self,
+        messages: List[Dict[str, str]],
+        tools: List[Dict[str, Any]] | None = None,
+        tool_choice: str = "auto",
+        json_mode: bool = False,
+        **kwargs: Any,
+    ) -> ChatToolResponse:
+        if not self.api_key and "Authorization" not in self._extra_headers:
+            raise Namel3ssError("OpenAI API key missing for provider")
+        body = self._build_body(messages, json_mode, tools=tools, tool_choice=tool_choice, **kwargs)
+        data = self._http_client(self.base_url, body, self._build_headers())
+        tool_calls: List[ToolCallResult] = []
+        final_text: str | None = None
+        finish_reason: str | None = None
+        if isinstance(data, dict):
+            choices = data.get("choices") or []
+            if choices:
+                choice = choices[0]
+                finish_reason = choice.get("finish_reason")
+                message = choice.get("message") or {}
+                final_text = message.get("content")
+                for call in message.get("tool_calls") or []:
+                    func = call.get("function") or {}
+                    name = func.get("name") or call.get("name") or ""
+                    args_payload = func.get("arguments") or call.get("arguments") or {}
+                    arguments: Dict[str, Any]
+                    if isinstance(args_payload, str):
+                        try:
+                            arguments = json.loads(args_payload)
+                        except json.JSONDecodeError:
+                            arguments = {"__raw__": args_payload}
+                    elif isinstance(args_payload, dict):
+                        arguments = args_payload
+                    else:
+                        arguments = {}
+                    tool_calls.append(ToolCallResult(name=name, arguments=arguments))  # type: ignore[call-arg]
+        return ChatToolResponse(
+            final_text=final_text,
+            tool_calls=tool_calls,
+            raw=data,
+            finish_reason=finish_reason,
+        )
 
     # Default HTTP client implementations (stdlib)
     def _default_http_client(self, url: str, body: Dict[str, Any], headers: Dict[str, str]) -> Dict[str, Any]:

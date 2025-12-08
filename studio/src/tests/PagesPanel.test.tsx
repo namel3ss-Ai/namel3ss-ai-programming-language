@@ -22,21 +22,23 @@ describe("PagesPanel", () => {
       ui: {
         pages: [
           {
-            name: "home",
-            route: "/",
-            layout: [
-              {
-                type: "section",
-                name: "main",
+                name: "home",
+                route: "/",
                 layout: [
-                  {
-                    type: "button",
-                    label: "Go to Chat",
-                    onClick: { kind: "navigate", targetPage: "chat", targetPath: "/chat" },
-                  },
-                ],
-              },
-            ],
+                    {
+                      type: "section",
+                      name: "main",
+                      layout: [
+                        {
+                          type: "button",
+                          label: "Go to Chat",
+                          className: "primary-btn",
+                          style: { background: "#000" },
+                          onClick: { kind: "navigate", target: { pageName: "chat", path: "/chat" } },
+                        },
+                      ],
+                    },
+                  ],
           },
           {
             name: "chat",
@@ -71,5 +73,16 @@ describe("PagesPanel", () => {
     fireEvent.click(btn);
     await waitFor(() => expect(fakeClient.fetchPageUI).toHaveBeenCalledTimes(2));
     expect(await screen.findByText(/Current page: chat/)).toBeInTheDocument();
+  });
+
+  it("applies className and style to preview buttons", async () => {
+    render(<PagesPanel code={'page "home":\n  route "/"\n'} client={fakeClient} />);
+    fireEvent.click(screen.getByText("Refresh"));
+    await waitFor(() => expect(fakeClient.fetchPages).toHaveBeenCalled());
+    fireEvent.click(await screen.findByText("home"));
+    await waitFor(() => expect(fakeClient.fetchPageUI).toHaveBeenCalled());
+    const btn = await screen.findByText("Go to Chat");
+    expect(btn.className).toContain("primary-btn");
+    expect(btn.getAttribute("style") || "").toContain("background");
   });
 });

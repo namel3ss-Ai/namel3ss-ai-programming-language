@@ -66,34 +66,37 @@ flow "process_ticket":
 
 ## Tools & external HTTP APIs
 
-Declare tools once, then call them from flows. HTTP JSON tools accept a URL template with placeholders, optional headers, and an HTTP method.
+Declare HTTP JSON tools once, then call them from flows with structured inputs.
 
 ```ai
 tool is "get_weather":
   kind is "http_json"
   method is "GET"
-  url_template is "https://api.example.com/weather?city={city}"
+  url is "https://api.example.com/weather"
   headers:
     x-api-key: config.weather_api_key
+  query:
+    city: input.city
 
 flow is "check_weather":
   step is "call_tool":
     kind is "tool"
-    target is "get_weather"
-    args:
+    tool is "get_weather"
+    input:
       city: state.city
 
   step is "store":
     kind is "set"
     target is state.weather
-    value is step "call_tool" output
+    value is step.call_tool.output.data
 ```
 
 Notes and diagnostics:
 
-- Only `kind is "http_json"` tools are supported in this phase.
-- Tool declaration errors: N3L-960 (kind), N3L-961 (method), N3L-962 (url_template), N3L-964 (unknown tool in a flow).
-- Runtime errors: N3F-963 (HTTP failure), N3F-964 (invalid JSON), N3F-965 (missing arg for a placeholder).
+- Tools in this phase must use `kind is "http_json"`; define `method`, `url`, and optional `query`, `headers`, or `body` mappings.
+- Tool declaration diagnostics: N3L-960 (kind), N3L-961 (method), N3L-962 (missing URL), N3L-1400 (step references an undeclared tool).
+- Runtime diagnostics: N3F-963 (network/HTTP failure) and N3F-965 (missing required `input.*` values or unresolved URL parts).
+- Every tool step exposes `step.<name>.output` with `{ ok, status, data, headers, error? }`.
 - AI-to-tool composition arrives in a later phase.
 
 ## Exercises

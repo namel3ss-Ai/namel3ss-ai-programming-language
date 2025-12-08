@@ -68,10 +68,10 @@ def test_flow_invalid_reference_raises():
 
 def test_flow_invalid_tool_reference_raises():
     module = parse_source(
-        'flow "bad":\n'
-        '  step "missing":\n'
-        '    kind "tool"\n'
-        '    target "unknown"\n'
+'flow "bad":\n'
+'  step "missing":\n'
+'    kind "tool"\n'
+'    tool "unknown"\n'
     )
     with pytest.raises(IRError):
         ast_to_ir(module)

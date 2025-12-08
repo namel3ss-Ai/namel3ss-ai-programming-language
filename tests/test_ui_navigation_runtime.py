@@ -7,13 +7,13 @@ page is "home" at "/":
   section is "main":
     button is "Go to Chat":
       on click:
-        navigate is "/chat"
+        navigate to "/chat"
 
 page is "chat" at "/chat":
   section is "main":
     button is "Back":
       on click:
-        navigate is "/"
+        navigate to "/"
 """
 
 
@@ -22,13 +22,13 @@ page is "home" at "/":
   section is "main":
     button is "Go to Chat":
       on click:
-        navigate page is "chat"
+        navigate to page is "chat"
 
 page is "chat" at "/chat":
   section is "main":
     button is "Back":
       on click:
-        navigate page is "home"
+        navigate to page is "home"
 """
 
 

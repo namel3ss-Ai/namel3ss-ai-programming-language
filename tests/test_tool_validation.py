@@ -18,7 +18,9 @@ def test_valid_tool_and_registry():
         tool is "get_weather":
           kind is "http_json"
           method is "GET"
-          url_template is "https://api.example.com/weather?city={city}"
+          url is "https://api.example.com/weather"
+          query:
+            city: input.city
         '''
     )
     program = build_program(code)
@@ -29,16 +31,19 @@ def test_valid_tool_and_registry():
                 name=tool.name,
                 kind=tool.kind or "",
                 method=tool.method or "",
-                url_template=tool.url_template or "",
+                url_expr=tool.url_expr,
                 headers=tool.headers,
-                body_template=tool.body_template,
+                query_params=tool.query_params,
+                body_fields=tool.body_fields,
+                input_fields=list(tool.input_fields),
             )
         )
-    assert "get_weather" in reg.tools
     cfg = reg.get("get_weather")
+    assert cfg is not None
     assert cfg.kind == "http_json"
     assert cfg.method == "GET"
-    assert cfg.url_template.startswith("https://api.example.com")
+    assert cfg.url_expr.value == "https://api.example.com/weather"
+    assert "city" in cfg.query_params
 
 
 def test_missing_kind_errors():
@@ -46,7 +51,7 @@ def test_missing_kind_errors():
         '''
         tool "get_weather":
           method "GET"
-          url_template "https://api.example.com/weather?city={city}"
+          url "https://api.example.com/weather"
         '''
     )
     with pytest.raises(IRError) as exc:
@@ -60,7 +65,7 @@ def test_invalid_kind_errors():
         tool "get_weather":
           kind "xyz"
           method "GET"
-          url_template "https://api.example.com/weather?city={city}"
+          url "https://api.example.com/weather"
         '''
     )
     with pytest.raises(IRError) as exc:
@@ -73,7 +78,7 @@ def test_missing_method_errors():
         '''
         tool "get_weather":
           kind "http_json"
-          url_template "https://api.example.com/weather?city={city}"
+          url "https://api.example.com/weather"
         '''
     )
     with pytest.raises(IRError) as exc:
@@ -86,8 +91,8 @@ def test_invalid_method_errors():
         '''
         tool "get_weather":
           kind "http_json"
-          method "PUT"
-          url_template "https://api.example.com/weather?city={city}"
+          method "TRACE"
+          url "https://api.example.com/weather"
         '''
     )
     with pytest.raises(IRError) as exc:
@@ -95,7 +100,7 @@ def test_invalid_method_errors():
     assert "N3L-961" in str(exc.value)
 
 
-def test_missing_url_template_errors():
+def test_missing_url_errors():
     code = dedent(
         '''
         tool "get_weather":
@@ -114,12 +119,12 @@ def test_duplicate_tool_errors():
         tool "get_weather":
           kind "http_json"
           method "GET"
-          url_template "https://api.example.com/weather?city={city}"
+          url "https://api.example.com/weather"
 
         tool is "get_weather":
           kind is "http_json"
           method is "GET"
-          url_template is "https://api.example.com/weather?city={city}"
+          url is "https://api.example.com/weather"
         '''
     )
     with pytest.raises(IRError):

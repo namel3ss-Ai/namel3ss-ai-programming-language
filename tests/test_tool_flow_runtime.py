@@ -1,3 +1,4 @@
+import json
 import pytest
 from textwrap import dedent
 
@@ -5,7 +6,6 @@ from namel3ss import parser
 from namel3ss.agent.engine import AgentRunner
 from namel3ss.ai.registry import ModelRegistry
 from namel3ss.ai.router import ModelRouter
-from namel3ss.errors import Namel3ssError
 from namel3ss.flows.engine import FlowEngine
 from namel3ss.ir import ast_to_ir
 from namel3ss.metrics.tracker import MetricsTracker
@@ -37,13 +37,15 @@ def test_tool_flow_runtime_success(monkeypatch):
         tool is "get_weather":
           kind is "http_json"
           method is "GET"
-          url_template is "https://api.example.com/weather?city={city}"
+          url is "https://api.example.com/weather"
+          query:
+            city: input.city
 
         flow is "check_weather":
           step is "call_tool":
             kind is "tool"
-            target is "get_weather"
-            args:
+            tool is "get_weather"
+            input:
               city: "Brussels"
         '''
     )
@@ -57,15 +59,15 @@ def test_tool_flow_runtime_success(monkeypatch):
         captured["url"] = url
         captured["headers"] = headers
         captured["body"] = body
-        return {"temp_c": 21, "condition": "Sunny"}
+        return 200, {"Content-Type": "application/json"}, json.dumps({"temp_c": 21, "condition": "Sunny"})
 
     engine._http_json_request = fake_http  # type: ignore
 
     last_ctx = {}
     orig_build = engine._build_runtime_context
 
-    def patched_build(ctx):
-        runtime_ctx = orig_build(ctx)
+    def patched_build(ctx, stream_callback=None):
+        runtime_ctx = orig_build(ctx, stream_callback=stream_callback)
         last_ctx["ctx"] = runtime_ctx
         return runtime_ctx
 
@@ -74,7 +76,9 @@ def test_tool_flow_runtime_success(monkeypatch):
     exec_ctx = ExecutionContext(app_name="test", request_id="req")
     result = engine.run_flow(ir.flows["check_weather"], exec_ctx, initial_state={})
     assert result.state is not None
-    assert result.state.get("last_output") == {"temp_c": 21, "condition": "Sunny"}
+    last_output = result.state.get("last_output")
+    assert last_output["ok"] is True
+    assert last_output["data"] == {"temp_c": 21, "condition": "Sunny"}
     assert captured["method"] == "GET"
     assert "Brussels" in captured["url"]
 
@@ -90,12 +94,14 @@ def test_tool_flow_runtime_missing_arg_errors(monkeypatch):
         tool "get_weather":
           kind "http_json"
           method "GET"
-          url_template "https://api.example.com/weather?city={city}"
+          url "https://api.example.com/weather"
+          query:
+            city: input.city
 
         flow "check_weather":
           step "call_tool":
             kind "tool"
-            target "get_weather"
+            tool "get_weather"
         '''
     )
     ir = ast_to_ir(parser.parse_source(code))
@@ -112,13 +118,15 @@ def test_tool_flow_runtime_http_error(monkeypatch):
         tool "get_weather":
           kind "http_json"
           method "GET"
-          url_template "https://api.example.com/weather?city={city}"
+          url "https://api.example.com/weather"
+          query:
+            city: input.city
 
         flow "check_weather":
           step "call_tool":
             kind "tool"
-            target "get_weather"
-            args:
+            tool "get_weather"
+            input:
               city: "Nowhere"
         '''
     )
@@ -126,10 +134,12 @@ def test_tool_flow_runtime_http_error(monkeypatch):
     engine = _build_engine(ir)
 
     def fake_http(method, url, headers, body):
-        raise Namel3ssError("N3F-963: Tool HTTP error 500")
+        return 500, {"Content-Type": "application/json"}, json.dumps({"error": "bad request"})
 
     engine._http_json_request = fake_http  # type: ignore
     exec_ctx = ExecutionContext(app_name="test", request_id="req")
     result = engine.run_flow(ir.flows["check_weather"], exec_ctx, initial_state={})
-    assert result.errors, "Expected http error to be captured"
-    assert any("N3F-963" in err.error for err in result.errors)
+    assert not result.errors, "HTTP error should surface via step output"
+    last_output = result.state.get("last_output")
+    assert last_output["ok"] is False
+    assert last_output["status"] == 500

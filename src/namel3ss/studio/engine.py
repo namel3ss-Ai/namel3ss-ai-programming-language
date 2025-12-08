@@ -40,14 +40,15 @@ class StudioEngine:
 
         memory_items = 0
         if self.memory_engine:
-            # sum counts across all spaces
-            spaces = getattr(self.memory_engine, "spaces", {})
+            spaces = getattr(self.memory_engine, "spaces", {}) or {}
             for space in spaces:
                 memory_items += len(self.memory_engine.store.list(space))
 
         rag_documents = 0
         if self.rag_engine and hasattr(self.rag_engine, "store"):
             rag_documents = len(getattr(self.rag_engine.store, "_chunks", []))
+
+        ai_calls = list((getattr(self.ir_program, "ai_calls", {}) or {}).keys())
 
         return DashboardSummary(
             total_jobs=total_jobs,
@@ -58,4 +59,5 @@ class StudioEngine:
             total_plugins=total_plugins,
             memory_items=memory_items,
             rag_documents=rag_documents,
+            ai_calls=ai_calls,
         )

@@ -9,8 +9,8 @@ describe("runFlowStreaming", () => {
   it("parses newline-delimited events", async () => {
     const events: any[] = [];
     const chunks = [
-      `{"event":"ai_chunk","step":"answer","delta":"Hel"}\n{"event":"ai_chunk","step":"answer","delta":"lo"}\n`,
-      `{"event":"ai_done","step":"answer","full":"Hello"}\n{"event":"flow_done","success":true}\n`,
+      `{"event":"ai_chunk","flow":"chat_turn","step":"answer","channel":"chat","role":"assistant","label":"Support Bot","mode":"tokens","delta":"Hel"}\n{"event":"ai_chunk","flow":"chat_turn","step":"answer","channel":"chat","role":"assistant","label":"Support Bot","mode":"tokens","delta":"lo"}\n`,
+      `{"event":"ai_done","flow":"chat_turn","step":"answer","channel":"chat","role":"assistant","label":"Support Bot","mode":"tokens","full":"Hello"}\n{"event":"flow_done","flow":"chat_turn","success":true}\n`,
     ];
     const mockReader = {
       read: vi
@@ -29,6 +29,7 @@ describe("runFlowStreaming", () => {
     await runFlowStreaming("chat_turn", { question: "Hi" }, (evt) => events.push(evt));
     expect(events).toHaveLength(4);
     expect(events[0].delta).toBe("Hel");
+    expect(events[0].channel).toBe("chat");
     expect(events[2].full).toBe("Hello");
   });
 });

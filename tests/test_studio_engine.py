@@ -40,7 +40,7 @@ def test_studio_engine_builds_summary():
         def list_plugins(self):
             return [SimpleNamespace(name="p1"), SimpleNamespace(name="p2")]
 
-    ir_program = SimpleNamespace(flows={"f": 1}, agents={"a": 1}, plugins={"p": 1})
+    ir_program = SimpleNamespace(flows={"f": 1}, agents={"a": 1}, plugins={"p": 1}, ai_calls={"support_bot": object()})
 
     engine = StudioEngine(
         job_queue=FakeJobQueue(),
@@ -60,3 +60,4 @@ def test_studio_engine_builds_summary():
     assert summary.total_plugins == 2
     assert summary.memory_items == 3
     assert summary.rag_documents == 2
+    assert summary.ai_calls == ["support_bot"]

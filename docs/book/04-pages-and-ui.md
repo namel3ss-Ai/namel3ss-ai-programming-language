@@ -66,7 +66,7 @@ page is "home" at "/":
   section is "main":
     button is "Go to Chat":
       on click:
-        navigate is "/chat"
+        navigate to "/chat"
 
 page is "chat" at "/chat":
   section is "main":
@@ -77,7 +77,7 @@ By page name:
 ```ai
 button is "Go to Chat":
   on click:
-    navigate page is "chat"
+    navigate to page "chat"
 ```
 
 Legacy forms without `is` are also valid:

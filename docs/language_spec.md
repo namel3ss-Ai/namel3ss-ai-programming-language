@@ -59,6 +59,24 @@ Each block kind has required and optional fields aligned with the current IR:
   - children: ordered `step`s with `kind` in `{ai, agent, tool}` and a `target`.
   - statements: `let/set` inside script steps for local variables and state updates.
   - references: `ai`/`agent` targets must exist; tool targets must be registered/builtin.
+- **Streaming metadata (AI steps)**
+  - Example:
+    ```
+    step is "answer":
+      kind is "ai"
+      target is "support_bot"
+      streaming is true
+      stream_channel is "chat"
+      stream_role is "assistant"
+      stream_label is "Support Bot"
+      stream_mode is "tokens"
+    ```
+  - Fields:
+    - `streaming` enables streaming for the AI step.
+    - `stream_channel` hints where to surface the stream (`chat`, `preview`, `logs`, etc.).
+    - `stream_role` / `stream_label` describe the speaker (assistant/system/tool).
+    - `stream_mode` controls granularity: `tokens` (default), `sentences`, `full`.
+  - These properties are part of the language/IR and flow into runtime StreamEvent objects; the HTTP/SSE API is just one transport.
 
 - **memory**
   - required: `name`, `memory_type` (one of `conversation`, `user`, `global`)
@@ -120,7 +138,141 @@ Each block kind has required and optional fields aligned with the current IR:
   - Functional: `any(list, where: predicate)`, `all(list, where: predicate)`
   - Diagnostics: `N3-4200` any/all requires list, `N3-4201` predicate must be boolean.
 - Time/random helpers: `current timestamp`, `current date`, `random uuid` and their functional forms. Passing arguments raises `N3-4300`.
+
+## AI Conversation Memory & Stores
+
+AI blocks can now compose multiple memory kinds and declare how each one is recalled:
+
+```
+ai is "support_bot":
+  model is "gpt-4.1-mini"
+  system is "You are a helpful support assistant."
+  memory:
+    kinds:
+      short_term:
+        window is 12
+      long_term:
+        store is "chat_long"
+      profile:
+        store is "user_profile"
+        extract_facts is true
+    recall:
+      - source is "short_term"
+        count is 10
+      - source is "long_term"
+        top_k is 5
+      - source is "profile"
+        include is true
+```
+
+- `short_term` keeps the rolling conversation buffer (`window` defaults to 20 messages, stored in `default_memory` unless overridden).
+- `long_term` points at a configured memory store (e.g., sqlite-backed log or vector DB). The runtime retrieves the last/top-k items and prepends them to the model context.
+- `profile` holds durable user facts. When `extract_facts` is true, the runtime appends the user's latest message to this store (future phases will extract structured facts).
+- `recall` defines how these sources are merged into the prompt. `source` must match one of the declared kinds; additional settings (`count`, `top_k`, `include`) control how much context is pulled in. Referencing a source without a matching kind raises `N3L-1202`.
+
+Memory stores are configured project-wide:
+
+```
+[memory_stores.default_memory]
+kind = "in_memory"
+
+[memory_stores.chat_long]
+kind = "sqlite"
+url = "sqlite:///memory.db"
+
+[memory_stores.user_profile]
+kind = "sqlite"
+url = "sqlite:///profiles.db"
+```
+
+If no stores are configured, Namel3ss injects an in-memory `default_memory` for development. Unsupported store kinds or missing backend fields (e.g., omitting `url` for a `sqlite` store) raise `N3L-1204` during startup.
+
+Legacy form:
+
+```
+memory:
+  kind is "conversation"
+  window is 20
+  store is "chat_long"
+```
+
+is automatically normalized to `short_term` + a default recall rule, so existing apps keep working.
+
+### Memory Pipelines
+
+Long-term and profile memories can also define post-processing pipelines that run after every AI turn:
+
+```
+ai is "support_bot":
+  model is "gpt-4.1-mini"
+  memory:
+    kinds:
+      long_term:
+        store is "chat_long"
+        pipeline:
+          - step is "summarize_session"
+            type is "llm_summarizer"
+            max_tokens is 512
+      profile:
+        store is "user_profile"
+        pipeline:
+          - step is "extract_facts"
+            type is "llm_fact_extractor"
+    recall:
+      - source is "short_term"
+        count is 10
+      - source is "long_term"
+        top_k is 5
+      - source is "profile"
+        include is true
+```
+
+- `llm_summarizer` compresses the recent conversation (short-term history plus the latest exchange) and appends summaries into the long-term store.
+- `llm_fact_extractor` pulls durable user facts from the interaction and appends them to the profile store.
+- Pipelines run in the order declared; each entry must provide `step` (a friendly name) and `type`. Unknown pipeline types raise `N3L-1203`. `max_tokens` is optional and only applies to `llm_summarizer`.
+- The resulting summaries/facts are available to recall rules (e.g., `long_term` `top_k` or `profile` `include`) on subsequent turns, completing the short/long/profile memory loop.
 - Canonical DSL: The English-style surface is the primary, modern syntax. Legacy symbolic/colon forms remain supported via automatic transformation, but lint will suggest migrating to the English forms. All examples in this spec use the modern syntax.
+
+### Memory Privacy, Retention & Scope
+
+Each memory kind can now declare retention, PII policies, and scope, giving you fine-grained control over how long data lives, how it is scrubbed, and who shares it:
+
+`
+ai is "support_bot":
+  model is "gpt-4.1-mini"
+  memory:
+    kinds:
+      short_term:
+        window is 20
+        retention_days is 7
+        scope is "per_session"
+      long_term:
+        store is "chat_long"
+        retention_days is 365
+        pii_policy is "strip-email-ip"
+        scope is "per_user"
+      profile:
+        store is "user_profile"
+        retention_days is 365
+        pii_policy is "strip-email-ip"
+        scope is "per_user"
+    recall:
+      - source is "short_term"
+        count is 12
+      - source is "long_term"
+        top_k is 5
+      - source is "profile"
+        include is true
+`
+
+- 
+etention_days: maximum age of entries for that kind. Anything older is filtered out automatically and periodically cleaned from the backend.
+- pii_policy: "
+one" (default) or "strip-email-ip". When set, stored summaries/facts have emails/IP addresses replaced with placeholders.
+- scope: "per_session", "per_user", or "shared". Short-term defaults to per-session; long-term/profile default to per-user when a user id is present, otherwise per-session. If a per-user scope is requested but no user id is available, the runtime falls back to per-session and surfaces a diagnostic note in Studio.
+
+Studio's Memory Inspector shows these policies (scope, retention, PII handling, and any fallbacks) for each kind so you can verify how data is governed at runtime.
+
 - Pattern matching:
   - `match <expr>:` with `when <pattern>:` branches and optional `otherwise:`.
   - Patterns may be literals, comparisons, or success/error bindings (`when success as value:` / `when error as err:`).
@@ -172,15 +324,41 @@ Each block kind has required and optional fields aligned with the current IR:
 - UI pages & layout:
   - `page "name" at "/route":` defines a UI page. Layout elements: `section`, `heading`, `text`, `image`, `use form`, `state`, `input`, `button`, `when ... show ... otherwise ...`.
   - Styling directives inside pages/sections/elements: `color is <token|string>`, `background color is ...`, `align is left|center|right`, `align vertically is top|middle|bottom`, `layout is row|column|two columns|three columns`, `padding|margin|gap is small|medium|large`.
+  - Class/inline styling on components: every layout element may declare `class is "<classes>"` and a `style:` map of string key/value pairs. Example:
+    ```
+    text is "title":
+      value is "Welcome"
+      class is "hero-title"
+      style:
+        color: "#ffffff"
+        background: "#1a73e8"
+    button is "cta":
+      label is "Get Started"
+      class is "primary-cta"
+      style:
+        padding: "12px 24px"
+        border_radius: "8px"
+      on click:
+        navigate to "/start"
+    ```
+    - `class` is a string literal (may include multiple class tokens).
+    - `style:` holds string literal pairs for inline styling; the manifest surfaces these as `className` and `style` for Studio rendering.
   - Reusable UI components: `component "Name": [takes params] render: <layout>`, invoked inside pages as `<Name> <expr>:` with optional named argument blocks matching declared parameters.
 - UI rendering & manifest:
   - UI manifest v1 captures pages, routes, layout trees, styles, state, components, and theme tokens for frontend rendering.
   - Backend bridge exposes `/api/ui/manifest` and `/api/ui/flow/execute` to let the frontend render pages and call flows with state/form data.
 
 ## Loops
-- For-each loops: `repeat for each <name> in <expr>:` followed by a block of statements. The iterable must evaluate to a list (`N3-3400`).
+- Flow-level for-each loops: `for each is <var> in <expr>:` (or `for each <var> in <expr>:`) inside a `flow` block. The indented body contains normal flow steps and runs once per element in the iterable. Iterables resolving to `None` are treated as empty; non-list/array-like values raise a flow error (“loop iterable must be a list/array-like”). The loop variable is available inside the body (including `when` conditions) and is not guaranteed to exist outside the loop.
+- Script for-each loops: `repeat for each <name> in <expr>:` followed by a block of statements. The iterable must evaluate to a list (`N3-3400`).
 - Bounded loops: `repeat up to <expr> times:`; the count must be numeric and non-negative (`N3-3401` / `N3-3402`).
 - Loops execute inside flow/agent script blocks and share the current variable environment.
+
+## Real-Time State Updates
+- `set state.<field> be <expr>` mutates flow state. The runtime emits a `state_change` stream event with the `path`, `old_value`, and `new_value` whenever state changes.
+- The reference server exposes `/api/ui/state/stream` (JSON lines) that carries these `state_change` events for live UI previews.
+- `/api/ui/flow/stream` also includes `state_change` events for the associated flow run; the Studio preview combines this with `state/stream` for continuous synchronization.
+- UI components bound to `state.*` update immediately when a corresponding `state_change` event arrives—no manual refresh needed.
 
 ## Diagnostics Philosophy
 - Categories: `syntax`, `semantic`, `lang-spec`, `performance`, `security`.

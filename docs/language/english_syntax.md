@@ -74,6 +74,36 @@ ai "bot":
 
 Only one `system` line is allowed per block, and it must appear inside `ai`/`agent` blocks.
 
+## AI tools
+
+Grant an AI access to specific tools/functions by listing them in the block:
+
+```ai
+ai "support_bot":
+  model "gpt-4.1-mini"
+  system "You are a helpful support assistant."
+  tools:
+    - "weather_api"
+    - tool is "create_ticket"
+      as is "open_ticket"
+```
+
+- Each entry must reference a declared tool. Missing tools trigger `N3L-1410`.
+- Use `as is "alias"` to expose a friendlier function name to the model without renaming the underlying tool. Duplicate aliases raise `N3L-1411`.
+- When the model asks to call a tool, the runtime executes the HTTP/JSON definition, feeds the JSON result back to the model, and finally returns the natural-language answer.
+- If the provider asks for an alias that does not map to any tool, the runtime raises `N3F-972`.
+
+Flows can override tool usage per step:
+
+```ai
+step "answer":
+  kind "ai"
+  target "support_bot"
+  tools is "none"   # disable tools for this step (default is "auto")
+```
+
+Streaming steps do not support tools yet—using `tools is "none"` (or disabling streaming) is required for tool-enabled AIs when streaming (`N3F-975`).
+
 ## Local variables (let)
 
 Inside flow steps you can bind locals with either operator:
@@ -212,6 +242,68 @@ step "remove":
 ```
 
 `frame_update` requires a non-empty `set` block. `frame_delete` requires a `where` block in this phase to prevent deleting all rows accidentally. Outputs from update/delete steps are the number of affected rows.
+
+## Record models & CRUD steps
+
+Build typed models on top of frames and use first-class CRUD steps:
+
+```ai
+frame "documents":
+  backend "memory"
+  table "documents"
+
+record "Document":
+  frame "documents"
+  fields:
+    id:
+      type "uuid"
+      primary_key true
+    project_id:
+      type "uuid"
+      required true
+    title:
+      type "string"
+      required true
+    created_at:
+      type "datetime"
+      default "now"
+
+flow "manage_document":
+  step "create":
+    kind "db_create"
+    record "Document"
+    values:
+      id: state.doc_id
+      project_id: state.project_id
+      title: state.title
+
+  step "load":
+    kind "db_get"
+    record "Document"
+    by id:
+      id: state.doc_id
+
+  step "rename":
+    kind "db_update"
+    record "Document"
+    by id:
+      id: state.doc_id
+    set:
+      title: state.new_title
+
+  step "remove":
+    kind "db_delete"
+    record "Document"
+    by id:
+      id: state.doc_id
+```
+
+- `record` declarations tie a typed schema to an existing frame. Field types supported in this phase: `string`, `text`, `int`, `float`, `bool`, `uuid`, and `datetime`. One field must be marked `primary_key`.
+- `db_create` requires a `values` block. Required (or primary-key) fields must be present unless a default is defined. Defaults can be literals or `"now"` for datetime columns.
+- `db_get` returns either a single record when `by id:` is provided, or a list when using `where:` filters. Add `limit is 10` to slice the list.
+- `db_update` and `db_delete` operate on a single record via the `by id:` block. `db_update` returns the updated record; `db_delete` reports `{ ok: true, deleted: 1 }` when a row was removed.
+
+These steps reuse the existing frame backend, so records automatically persist wherever the frame points (memory, sqlite, postgres). Future phases will add migrations, relations, and richer querying.
 
 ## Backward Compatibility
 
@@ -588,7 +680,7 @@ page "hello" at "/hello":
       text "Enter your name to continue."
 ```
 
-Controls must live inside pages/sections. Supported input types: `text`, `number`, `email`, `secret`, `long_text`, `date`. Buttons require an `on click` handler that can `do flow ...` or `go to page ...`. Conditionals switch layout reactively based on expressions.
+Controls must live inside pages/sections. Supported input types: `text`, `number`, `email`, `secret`, `long_text`, `date`. Buttons require an `on click` handler that can `do flow ...` or `navigate to page ...`. Conditionals switch layout reactively based on expressions.
 
 ## UI Styling & Theming (Phase UI-3)
 
@@ -642,7 +734,7 @@ Use components inside pages:
 page "welcome" at "/":
   PrimaryButton "Get Started":
     action:
-      go to page "signup"
+      navigate to page "signup"
 ```
 
 ## UI Rendering & Fullstack Integration (Phase UI-4)
@@ -651,7 +743,7 @@ page "welcome" at "/":
 - Backend bridge endpoints:
   - `POST /api/ui/manifest` with `{ code }` → manifest JSON (versioned).
   - `POST /api/ui/flow/execute` with `{ source, flow, args }` → runs a flow with arguments collected from UI state/forms.
-- Frontend consumes the manifest to render pages, bind state to inputs, dispatch click events, and navigate via `go to page`.
+- Frontend consumes the manifest to render pages, bind state to inputs, dispatch click events, and navigate via `navigate to page`.
 - Conditionals (`when ... show ... otherwise ...`) are evaluated reactively against UI state; styling maps to theme tokens and layout (row/column/two/three columns, spacing, alignment).
 
 ## Studio CLI (Phase 1)
@@ -714,7 +806,7 @@ The UI tab now renders a live preview of your pages:
 ## Studio Phase 8 — Navigation & Routing
 
 - Pages expose routes from the manifest; preview now maintains a local router with back/forward controls and route display.
-- Buttons with `go to page "name"` navigate between pages in Preview Mode; Inspector Mode prevents navigation.
+- Buttons with `navigate to page "name"` navigate between pages in Preview Mode; Inspector Mode prevents navigation.
 - Route selection respects page routes, and history stacks allow quick multi-page simulation without touching the browser URL.
 
 ## Studio Phase 9 — Editable Inspector Properties

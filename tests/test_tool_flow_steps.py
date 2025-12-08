@@ -14,13 +14,15 @@ def test_parse_flow_tool_step_with_args():
         tool is "get_weather":
           kind is "http_json"
           method is "GET"
-          url_template is "https://api.example.com/weather?city={city}"
+          url is "https://api.example.com/weather"
+          query:
+            city: input.city
 
         flow is "check_weather":
           step is "call_tool":
             kind is "tool"
-            target is "get_weather"
-            args:
+            tool is "get_weather"
+            input:
               city: state.city
         '''
     )
@@ -29,8 +31,8 @@ def test_parse_flow_tool_step_with_args():
     step = flow.steps[0]
     assert step.kind == "tool"
     assert step.target == "get_weather"
-    assert "args" in step.params
-    assert "city" in step.params["args"]
+    assert "input" in step.params
+    assert "city" in step.params["input"]
 
 
 def test_missing_tool_target_errors():
@@ -52,11 +54,11 @@ def test_unknown_tool_reference_errors():
         flow "f":
           step "call":
             kind "tool"
-            target "not_declared"
+            tool "not_declared"
         '''
     )
     module = Parser(Lexer(code).tokenize()).parse_module()
     with pytest.raises(IRError) as exc:
         ast_to_ir(module)
-    assert "N3L-964" in str(exc.value)
+    assert "N3L-1400" in str(exc.value)
 

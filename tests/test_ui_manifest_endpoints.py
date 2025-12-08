@@ -23,11 +23,11 @@ def test_ui_manifest_endpoint():
 def test_ui_flow_execute_endpoint():
     client = TestClient(create_app())
     src = (
-        'flow "echo":\n'
-        '  step "emit":\n'
-        '    kind "tool"\n'
-        '    target "echo"\n'
-        '    message "hi"\n'
+'flow "echo":\n'
+'  step "emit":\n'
+'    kind "tool"\n'
+'    tool "echo"\n'
+'    message "hi"\n'
     )
     resp = client.post("/api/ui/flow/execute", headers={"X-API-Key": "dev-key"}, json={"source": src, "flow": "echo", "args": {"value": 1}})
     assert resp.status_code == 200

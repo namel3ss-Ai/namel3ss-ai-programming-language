@@ -24,6 +24,11 @@ def _make_engine(ir_prog: IRProgram):
             self.calls.append(self.name)
             return {"tool": self.name, "args": kwargs}
 
+        def __call__(self, payload):
+            if isinstance(payload, dict):
+                return self.run(**payload)
+            return self.run()
+
     class DummyToolRegistry:
         def __init__(self):
             self.calls: list[str] = []
@@ -72,10 +77,10 @@ def test_runtime_redirect_runs_target_flow():
         'flow "start":\n'
         '  step "jump":\n'
         '    go to flow "end"\n'
-        'flow "end":\n'
-        '  step "done":\n'
-        '    kind "tool"\n'
-        '    target "echo"\n'
+'flow "end":\n'
+'  step "done":\n'
+'    kind "tool"\n'
+'    tool "echo"\n'
     )
     module = parse_source(source)
     ir_prog = ast_to_ir(module)
@@ -99,14 +104,14 @@ def test_conditional_redirect_branch_selection():
         '      go to flow "billing_flow"\n'
         '    otherwise:\n'
         '      go to flow "fallback_flow"\n'
-        'flow "billing_flow":\n'
-        '  step "bill":\n'
-        '    kind "tool"\n'
-        '    target "echo"\n'
-        'flow "fallback_flow":\n'
-        '  step "fb":\n'
-        '    kind "tool"\n'
-        '    target "echo"\n'
+'flow "billing_flow":\n'
+'  step "bill":\n'
+'    kind "tool"\n'
+'    tool "echo"\n'
+'flow "fallback_flow":\n'
+'  step "fb":\n'
+'    kind "tool"\n'
+'    tool "echo"\n'
     )
     module = parse_source(source)
     ir_prog = ast_to_ir(module)

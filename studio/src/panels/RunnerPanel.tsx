@@ -1,5 +1,5 @@
-import React, { useState } from "react";
-import { ApiClient } from "../api/client";
+import React, { useEffect, useMemo, useState } from "react";
+import { ApiClient, StreamEvent } from "../api/client";
 
 interface Props {
   code: string;
@@ -11,6 +11,38 @@ const RunnerPanel: React.FC<Props> = ({ code, client }) => {
   const [result, setResult] = useState<any | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
+  const [previewState, setPreviewState] = useState<Record<string, any>>({});
+
+  const applyStateChange = useMemo(
+    () => (state: Record<string, any>, path: string, value: any) => {
+      if (!path) return state;
+      const parts = path.split(".");
+      const next = { ...state };
+      let cursor: any = next;
+      for (let i = 0; i < parts.length - 1; i += 1) {
+        const key = parts[i];
+        const existing = cursor[key];
+        cursor[key] = typeof existing === "object" && existing !== null ? { ...existing } : {};
+        cursor = cursor[key];
+      }
+      cursor[parts[parts.length - 1]] = value;
+      return next;
+    },
+    []
+  );
+
+  useEffect(() => {
+    if (!client.subscribeStateStream) return;
+    const stop = client.subscribeStateStream((evt: StreamEvent) => {
+      if (evt.event !== "state_change" || !("path" in evt)) return;
+      setPreviewState((prev) => applyStateChange(prev, (evt as any).path as string, (evt as any).new_value));
+    });
+    return () => {
+      if (typeof stop === "function") {
+        stop();
+      }
+    };
+  }, [applyStateChange, client]);
 
   const run = async () => {
     setLoading(true);
@@ -48,6 +80,10 @@ const RunnerPanel: React.FC<Props> = ({ code, client }) => {
           <pre>{JSON.stringify(result.graph, null, 2)}</pre>
         </div>
       )}
+      <div style={{ marginTop: 16 }}>
+        <h4>Live State (from /api/ui/state/stream)</h4>
+        <pre>{JSON.stringify(previewState, null, 2)}</pre>
+      </div>
     </div>
   );
 };
