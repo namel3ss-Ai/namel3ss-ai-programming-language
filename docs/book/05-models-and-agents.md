@@ -1,52 +1,37 @@
-# 5. Models, AI, and Agents
+# Chapter 5 — Flows: Logic, Conditions, and Error Handling
 
-## Configuring models and providers
-- Set `OPENAI_API_KEY` (or the relevant env var) to enable the built-in default provider.
-- Or declare providers in `namel3ss.config.json`:
-  ```json
-  {
-    "providers": {
-      "openai_default": {
-        "type": "openai",
-        "api_key_env": "OPENAI_API_KEY",
-        "model_default": "gpt-4.1-mini"
-      }
-    },
-    "default": "openai_default"
-  }
-  ```
-- Missing keys surface as `N3P-1801`; unauthorized keys (401/403) surface as `N3P-1802`.
+- **Syntax:** `flow is "name":` with ordered `step` blocks.
+- **Kinds:** `ai`, `set`, `db_create/get/update/delete`, `vector_index_frame`, `vector_query`, `tool`, `auth_register/login/logout`, and control constructs.
+- **Conditions:** `when <expr>` on a step.
+- **Loops:** `for each item in <expr>:` containing nested steps.
+- **Errors:** `on error:` with fallback steps.
 
-Model binding stays simple:
+Example:
 ```ai
-model "default":
-  provider "openai_default"
+flow is "process_ticket":
+  step is "load_user":
+    kind is "db_get"
+    record is "User"
+    where:
+      id: user.id
+
+  step is "maybe_assign":
+    kind is "set"
+    set:
+      state.assignee be "support" if step.load_user.output.tier == "premium" else "triage"
+
+  step is "notify":
+    kind is "tool"
+    target is "notify_slack"
+    input:
+      message: "New ticket from " + user.id
+    when state.assignee == "support"
+
+  on error:
+    step is "fallback":
+      kind is "set"
+      set:
+        state.error be "Ticket handling failed."
 ```
-You can also use Gemini and other supported providers. Streaming and JSON mode are available where implemented.
 
-## AI calls
-```ai
-ai "summarize":
-  model "default"
-  # optionally override the provider per call
-  provider "openai_default"
-  input from "user_input"
-```
-AI steps can run inside flows or agents.
-
-## Agents
-```ai
-agent "support_agent":
-  goal "Provide support answers"
-  personality "patient and concise"
-```
-Agents can call tools, AI, and leverage memory where configured.
-
-## Tooling hints
-- Use `n3 diagnostics --lint` to spot style issues.
-- For JSON-mode responses, configure provider/model accordingly; invalid JSON raises clear errors.
-
-## Exercises
-1. Define a model and an AI call that rewrites user input.
-2. Create an agent that routes to a different agent based on a variable.
-3. Add a tool step (e.g., `echo`) after an AI step in a flow.
+Cross-reference: parser flow/step/when/for/on error in `src/namel3ss/parser.py`; execution in `src/namel3ss/flows/engine.py`; tests `tests/test_flow_engine_v3.py`, `tests/test_flow_step_when.py`, `tests/test_flow_for_each.py`, `tests/test_flow_error_handler.py`, `tests/test_flow_try_catch.py`.

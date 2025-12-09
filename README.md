@@ -5,142 +5,79 @@
 ![Python 3.11+](https://img.shields.io/badge/Python-3.11%2B-blue)
 ![Build](https://github.com/namel3ss-Ai/namel3ss-programming-language/actions/workflows/tests.yml/badge.svg)
 ![PyPI](https://img.shields.io/pypi/v/namel3ss)
-![Downloads](https://img.shields.io/badge/Downloads-pypi/month-green)
 
-![AI-Native](https://img.shields.io/badge/AI--Native-Language-black)
-![Studio](https://img.shields.io/badge/Open_in-Namel3ss_Studio-black)
+**The AI-native language that reads like intent.**  
+One English-ish DSL, one runtime, one Studio: flows, UI, AI, memory, RAG, tools, records/CRUD, auth, and providers in a single `.ai` file.
 
-**The AI-native language that feels crafted, not constructed.**  
-Built for people who want software to feel intuitive — even poetic.
-
-Write what you mean. Ship what you imagine.  
-One DSL. One runtime. One Studio. A straight line from idea to experience.
-
----
-
-**Start Here**  
-[🚀 Quickstart](#quickstart) · [📘 Docs](#resources) · [📚 Book](#resources) · [🧩 Examples](#examples-gallery) · [🎨 Studio](#resources) · [🚀 Deployment](#resources)
-
-**Jump to** Language · Features · Quickstart · Examples · Docs · Community
-
-```
-Intent → English DSL → Canonical AST → Runtime + Studio → Cloud / Desktop / Mobile
+Install:
+```bash
+pip install namel3ss
 ```
 
-A straight line.  
-From thought, to code, to creation.
+---
+
+## What is Namel3ss?
+- An English-ish DSL (`is`/`be`) for AI-native apps.
+- A runtime that executes flows, AI calls, tools, vector/RAG, CRUD, auth, and UI.
+- Studio for preview, flow execution, memory inspection, and provider status.
+
+Cross-reference the source of truth:
+- Parser: `src/namel3ss/parser.py`
+- Runtime: `src/namel3ss/flows/engine.py`, `src/namel3ss/runtime/context.py`
+- UI: `src/namel3ss/ui/manifest.py`
+- Memory: `src/namel3ss/memory/*`
+- Tools: `src/namel3ss/tools/registry.py`
+- Auth: `src/namel3ss/runtime/auth.py`
 
 ---
 
-## Why Namel3ss?
-We believe AI-native software should feel like intent made real. Namel3ss exists to remove the plumbing: no glue code, no scattered configs. One DSL captures what you mean; one runtime and Studio bring it to life. Calm, direct, and human.
-
-## What Makes Namel3ss Different
-- English-style syntax that reads like you think  
-- AI-native runtime with models, agents, and tools built in  
-- Integrated Studio for UI, preview, and inspection  
-- Canonical AST for stability and predictable execution  
-- Deterministic builds for predictable shipping  
-- One-command deploy to server, worker, cloud, desktop, and mobile  
-
-## Guiding Principles
-- Simplicity over complexity  
-- Design before features  
-- Consistency everywhere  
-- The language should disappear behind your ideas  
-- Tools should feel calm, not noisy  
-- AI should feel native, never bolted on  
-
----
-
-## A glimpse of the language
+## A glimpse of the language (modern `is`/`be`)
 ```ai
-app "hello":
-  entry_page "home"
+app is "hello-app":
+  entry_page is "home"
 
-page "home" at "/":
-  section "hero":
-    heading "Hello, Namel3ss"
-    text "Design AI experiences with English-style clarity."
+model is "default-model":
+  provider is "openai_default"
 
-model "default":
-  provider "openai:gpt-4.1-mini"
+ai is "greeter":
+  model is "default-model"
+  system is "Be a concise greeter."
+  input from user_input
 
-ai "summarize":
-  model "default"
-  input from "user_input"
+flow is "welcome":
+  step is "say":
+    kind is "ai"
+    target is "greeter"
 
-flow "welcome":
-  step "say":
-    kind "ai"
-    target "summarize"
+page is "home" at "/":
+  section is "hero":
+    heading is "Hello Namel3ss"
+    input is "user_input":
+      bind is state.user_input
+    button is "Run":
+      on click:
+        do flow "welcome"
+    text is step.say.output
 ```
-
-It reads the way you think.  
-Because building shouldn’t feel like translating.
-
----
-
-## Designed like a product. Built like a platform.
-
-✨ **English-Style Syntax**  
-Simple. Natural. Human. You write intent — not boilerplate.
-
-⚡ **AI-Native Runtime**  
-Models, agents, tools, streaming, JSON mode. Not plugged in — built in.
-
-🧩 **Flows & Agents**  
-Real orchestration. Match, retry, schedule, listen, react. Every step traceable. Every decision explainable.
-
-🎨 **UI & Studio**  
-Pages, sections, inputs, buttons, components. A visual Studio crafted to disappear — so your ideas don’t.
-
-🚀 **Deploy Everywhere**  
-Cloud. Worker. Docker. Lambda. Cloudflare. Desktop. Mobile. One command: `n3 build`.
-
-🛡 **Production Foundations**  
-Canonical AST. Precise diagnostics. Strong linting. Tracing. Metrics. Logs. The invisible things that make software feel trustworthy.
----
-
-## Architecture Overview
-You describe intent in `.ai` files with the English-style DSL. A canonical AST normalizes that intent. The runtime executes flows, agents, tools, and models against the AST. Studio edits UI and logic with preview and inspection. The build system targets server, worker, cloud (AWS Lambda and Cloudflare), desktop, and mobile from one source of truth.
-
-## Ecosystem Overview
-- Language & runtime for flows, agents, UI, and deployment  
-- Studio for visual editing, preview, and inspection  
-- CLI for parse, lint, run, build, and deploy  
-- Templates & examples to start quickly  
-- Documentation & the Learn Namel3ss book for depth  
-- Future: Namel3ss Cloud, plugins, and deeper integrations  
 
 ---
 
 ## Quickstart
-A few minutes and you’re building.
-
 ```bash
 pip install namel3ss
 
 n3 parse examples/hello_world/hello_world.ai
-n3 run hello-world --file examples/hello_world/hello_world.ai
+n3 run welcome --file examples/hello_world/hello_world.ai --input "Hello there!"
 
-n3 studio   # open namel3ss.local/studio or 127.0.0.1:4173/studio
+n3 studio   # open the printed URL for UI preview and flow execution
 n3 diagnostics --lint examples/hello_world/hello_world.ai
-
-n3 build desktop
-n3 build serverless-cloudflare app.ai --output-dir build/cloudflare
 ```
 
----
-
-## Configure providers & API keys
-Namel3ss now uses a single provider config. The fastest path:
-
+Provider config (fast path):
 ```bash
 export OPENAI_API_KEY=sk-...
 ```
-
-Or create `namel3ss.config.json`:
+Or `namel3ss.config.json`:
 ```json
 {
   "providers": {
@@ -154,142 +91,70 @@ Or create `namel3ss.config.json`:
 }
 ```
 
-- If an AI block omits `provider`, the default provider is used.
-- Missing keys surface as friendly diagnostics (`N3P-1801`) instead of vague errors; unauthorized keys map to `N3P-1802`.
-- See the Providers & API Keys guide in Docs for more details.
+---
+
+## Core concepts
+- **Flows:** Ordered steps (`ai`, `set`, `db_*`, `vector_*`, `tool`, `auth_*`) with `when`, `for each`, `on error`, `let`, `set state.*`, `step.<name>.output`.
+- **AI:** `ai` blocks with `model`, `system`, optional `tools` and `memory`; steps can stream.
+- **Memory:** `short_term`, `long_term`, `profile` kinds; `recall`, `scope`, `retention_days`, `pii_policy`.
+- **Data & RAG:** `frame`, `vector_store`, `vector_index_frame`, `vector_query`.
+- **Records & CRUD:** `record` + `db_create/get/update/delete`.
+- **Tools:** `tool` (kind `http_json`), flow `kind is "tool"`, AI tool-calling via `tools: [...]`.
+- **Auth:** `auth` config; `auth_register/login/logout`; `user.*` expressions.
+- **UI & Navigation:** `page`/`section` with `heading`, `text`, `input`, `textarea`, `button`; `on click` can `do flow` or `navigate to page "/..."`.
 
 ---
 
-## 10-Minute Tutorial
-1) **Create `app.ai`**  
-   ```ai
-   app "hello":
-     entry_page "home"
+## Examples
+- 🤖 Support Bot (memory + chat): `examples/support_bot/support_bot.ai`
+- 🧠 RAG Q&A: `examples/rag_qa/rag_qa.ai`
+- 🗂 CRUD + Auth: `examples/crud_app/crud_app.ai`
+- 🔧 Tools + AI tool-calling: `examples/tools_and_ai/tools_and_ai.ai`
 
-   page "home" at "/":
-     section "hero":
-       heading "Hello"
-   ```
-2) **Add UI**  
-   ```ai
-   page "home" at "/":
-     section "hero":
-       heading "Hello"
-       input "Your question" as question
-       button "Ask":
-         on click:
-           do flow "answer"
-   ```
-3) **Add a model and AI block**  
-   ```ai
-   model "default":
-     provider "openai:gpt-4.1-mini"
-
-   ai "qa":
-     model "default"
-     input from question
-   ```
-4) **Wire a flow**  
-   ```ai
-   flow "answer":
-     step "reply":
-       kind "ai"
-       target "qa"
-   ```
-5) **Run**  
-   ```bash
-   n3 run hello --file app.ai
-   ```
-6) **Open Studio**  
-   ```bash
-   n3 studio
-   # open the printed URL to preview and inspect
-   ```
+Run: `n3 example list` then `n3 example run <id>`.
 
 ---
 
-## Examples Gallery
-Each one is crafted to teach you something real.  
-Open it. Read it. Modify it. Ship it.
+## Learn Namel3ss — Book
+Each chapter is a focused Markdown file under `docs/book/`:
+- Preface: `docs/book/00-preface.md`
+- Introduction: `docs/book/01-introduction.md`
+- Getting Started: `docs/book/02-getting-started.md`
+- Core Concepts: `docs/book/03-language-basics.md`
+- Variables & Scope: `docs/book/04-pages-and-ui.md`
+- Flows: `docs/book/05-models-and-agents.md`
+- AI Blocks: `docs/book/06-flows-and-automation.md`
+- Memory: `docs/book/07-rag-memory-data.md`
+- Data & RAG: `docs/book/08-deployment.md`
+- Records & CRUD: `docs/book/09-tooling.md`
+- Tools: `docs/book/10-examples-walkthroughs.md`
+- Providers: `docs/book/11-providers.md`
+- Auth: `docs/book/11-advanced-topics.md`
+- UI & Navigation: `docs/book/12-phase1-capabilities.md`
+- Studio: `docs/book/14-studio.md`
+- End-to-End App: `docs/book/13-putting-it-together.md`
+- Syntax Reference: `docs/book/14-appendix.md`
 
-🧠 RAG Q&A — [examples/rag_qa](examples/rag_qa)  
-🤖 Support Bot — [examples/support_bot](examples/support_bot)  
-🎨 UI & Pages — [examples/ui](examples/ui)  
-🧩 Templates — [templates/](templates/)
-🧪 Phase 1 Showcase — [examples/flows/phase1_showcase.ai](examples/flows/phase1_showcase.ai)
-
-They’re not demos. They’re starting points.
-
----
-
-## Resources
-📘 **Documentation Hub**  
-Full Docs → [docs/index.md](docs/index.md)  
-Language Spec → [docs/language_spec.md](docs/language_spec.md)  
-CLI → [docs/api-surface.md](docs/api-surface.md)  
-Deployment → [docs/reference/deployment.md](docs/reference/deployment.md)  
-Studio → [docs/book/04-pages-and-ui.md](docs/book/04-pages-and-ui.md)
-Configuration → [docs/reference/configuration.md](docs/reference/configuration.md)
-Providers & API Keys → [docs/concepts/providers-api-keys.md](docs/concepts/providers-api-keys.md)
-
-📚 **Learn Namel3ss — The Official Book**  
-A calm, thoughtful, step-by-step guide to mastering the language.  
-[docs/book/](docs/book/)
-
-🛠 **Developer Tools**  
-Studio → `n3 studio`  
-VS Code Extension → [vscode-extension/README.md](vscode-extension/README.md)  
-CLI → `n3 --help`
-Media assets (images/videos for this README) → `assets/readme/`
+Prefer the single-file edition? See `docs/book/learn-namel3ss.md`.
 
 ---
 
-## Roadmap Highlights
-- We’re building multi-agent orchestration with shared memory and debugging tools.  
-- We’re exploring Studio collaboration, blueprints, and AI-assisted refactors.  
-- We’re preparing a Namel3ss Cloud deploy console for one-click shipping.  
-- We’re designing a plugin and package marketplace for flows, agents, and UI components.  
-- We’re advancing memory, evaluation, and safety guardrails across agents and flows.  
-- We’re strengthening deployment targets with clearer observability out of the box.  
+## Studio
+- Preview pages/sections/components with live bindings to `state.*`.
+- Execute flows from buttons; inspect step outputs and errors.
+- View Memory Inspector (short/long/profile, recall snapshot).
+- Check provider status when AI calls fail.
 
-## Security & Privacy
-Namel3ss does not collect or store your code by default. Everything runs locally unless you configure remote deployment or cloud targets. Security, safe AI usage, and guardrails remain core pillars of the roadmap.
-
----
-
-## Community & Roadmap
-Quietly ambitious. Deliberately bold.  
-If you believe programming can feel better — you belong here.
-
-Issues · Discussions · Roadmap → [GitHub](https://github.com/namel3ss/namel3ss-ai-programming-language)  
-Contributions → See [CONTRIBUTING](CONTRIBUTING)
+Start Studio:
+```bash
+n3 studio
+```
 
 ---
 
-## Frequently Asked Questions
-**Is Namel3ss a language or a framework?**  
-It’s an AI-native language with an integrated runtime and tools.
+## Community & Contributing
+- Issues/Discussions/Roadmap: GitHub
+- Contributing: see `CONTRIBUTING`
+- License: MIT (`LICENSE`)
 
-**Is it open source? Which license?**  
-Yes. MIT licensed.
-
-**Can I use it commercially?**  
-Yes, the MIT license permits commercial use.
-
-**Does it replace Python/JavaScript or work alongside them?**  
-It works alongside them; use Namel3ss for orchestration and UI while calling out to other stacks when needed.
-
-**How does deployment work in simple terms?**  
-Write once, then `n3 build <target>` for server, worker, Docker, AWS Lambda, Cloudflare, desktop, or mobile.
-
-**Is Studio required, or can I use only the CLI?**  
-Studio is optional. You can use only the CLI if you prefer.
-
----
-
-## License
-MIT License  
-Copyright (c) 2025 Namel3ss Contributors  
-See [LICENSE](LICENSE) for the full text.
-
-<!-- README Phase RE++ implemented — premium text sections added. -->
+Build calm, capable AI-native apps. The DSL stays readable; the runtime and Studio do the heavy lifting.

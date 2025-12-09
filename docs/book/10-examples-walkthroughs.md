@@ -1,35 +1,34 @@
-# 10. Example Walkthroughs
+# Chapter 10 — Tools & Function Calling: Connecting to External APIs
 
-## Hello World
-Path: `examples/hello_world/hello_world.ai`
-Run:
-```bash
-n3 run hello-world --file examples/hello_world/hello_world.ai
+- **Tool declaration:** `tool is "name": kind is "http_json"; method/url/query/headers/body`.
+- **Flow call:** `kind is "tool"` step with `input`.
+- **AI tool-calling:** Add `tools:` list to an `ai` block; provider executes tools requested by the model.
+
+Example:
+```ai
+tool is "get_weather":
+  kind is "http_json"
+  method is "GET"
+  url is "https://api.example.com/weather"
+  query:
+    city: input.city
+
+flow is "weather_now":
+  step is "fetch":
+    kind is "tool"
+    target is "get_weather"
+    input:
+      city: state.city
+
+ai is "assistant_with_tools":
+  model is "support-llm"
+  tools:
+    - "get_weather"
+
+flow is "chat_with_tools":
+  step is "respond":
+    kind is "ai"
+    target is "assistant_with_tools"
 ```
-Shows a simple page with heading/text using modern syntax.
 
-## Support Bot (flows + agents + memory)
-Path: `examples/support_bot/support_bot.ai`
-Run:
-```bash
-n3 run support_flow --file examples/support_bot/support_bot.ai
-```
-Inspect traces in Studio to see AI classification, agent response, and logging.
-
-## Expressions & Data Pipelines
-Path: `examples/expressions.ai` and `examples/gallery/data_processing.ai`
-Demonstrates expressions, list built-ins, helpers, and logging.
-
-## RAG and Frames (lightweight)
-Path: `examples/rag_qa/rag_qa.ai`
-Uses a simple retrieval flow skeleton. Treat as a template; configure your own data/models.
-Note: RAG/memory features beyond this skeleton may be experimental; check diagnostics/lint for guidance.
-
-## UI patterns
-Paths under `examples/ui/` and `examples/getting_started/app.ai`
-Show forms, layout, styling, and components with the modern page syntax.
-
-## Exercises
-1. Clone an example into a new file and rename the app/page.
-2. Add a button to an existing page that calls a flow.
-3. Add logging to a flow step and view it in Studio traces.
+Cross-reference: parser tool blocks and AI `tools` list `src/namel3ss/parser.py`; runtime tool registry/execution `src/namel3ss/tools/registry.py`, flow tool steps `src/namel3ss/flows/engine.py`, AI tool loop `src/namel3ss/runtime/context.py`; tests `tests/test_tool_decl_parse.py`, `tests/test_tool_flow_runtime.py`, `tests/test_ai_tool_runtime_loop.py`, `tests/test_ai_tools_list.py`; example `examples/tools_and_ai/tools_and_ai.ai`.

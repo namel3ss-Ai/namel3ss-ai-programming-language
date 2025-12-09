@@ -1,56 +1,26 @@
-# Phase 1 — Core Flow & AI Semantics
+# Chapter 13 — Building UIs & Navigation
 
-Phase 1 brings Namel3ss from simple flows to a programmable, AI-native runtime. The constructs below work together in a single, predictable execution model.
+- **Components:** `heading`, `text`, `image`, `input`, `textarea`, `button`, layout (rows/columns/cards where present), badges/chat elements.
+- **Bindings:** `bind is state.field`.
+- **Actions:** In `on click`, use `do flow "name"` (optionally `with` arguments if supported) or navigation: `navigate to page "target"` or `navigate to "/route"`.
+- **Conditionals/visibility:** Use `when`/`show` where supported on UI elements.
 
-## What’s included
-- **system** prompts in `ai` (and agent) blocks
-- **let** locals with `=` or `be`
-- **set state.<field>** with `=` or `be`
-- **if / else** conditionals
-- **try / catch** error handling
-- **for each** loops
-
-## Execution model
-- Flows run **top-down**.
-- `let` introduces locals; they must be defined before use.
-- `set state.<field>` mutates the flow-scoped state dictionary.
-- `if` branches evaluate conditions at runtime; `else` is optional.
-- `for each` evaluates its iterable once, then runs the body per element in order.
-- `try / catch` intercepts errors; the catch identifier holds an error object with `kind` and `message`.
-- AI calls include the system prompt as a system-role message when provided.
-
-## Integrated example
-
+Example multi-page UI:
 ```ai
-ai "support_bot":
-  model "gpt-4.1-mini"
-  system "You are a helpful support assistant."
+page is "home" at "/":
+  section is "hero":
+    heading is "Dashboard"
+    button is "Go to projects":
+      on click:
+        navigate to page "projects"
 
-flow "handle_tickets":
-  set state.handled_count = 0
-  set state.errors = []
-
-  for each ticket in state.tickets:
-    try:
-      step "answer":
-        kind "ai"
-        target "support_bot"
-
-      let response be step "answer" output
-
-      if response.urgent:
-        set state.last_urgent be ticket
-      else:
-        set state.last_regular be ticket
-
-      set state.handled_count be state.handled_count + 1
-    catch err:
-      set state.last_error be err.message
-
-  if state.handled_count > 0:
-    set state.status be "ok"
-  else:
-    set state.status be "empty"
+page is "projects" at "/projects":
+  section is "list":
+    heading is "Projects"
+    button is "Create":
+      on click:
+        do flow "create_project"
+    text is "Owner: " + user.id
 ```
 
-This flow exercises every Phase 1 construct: system prompt, locals, state mutation, conditionals, loops, and error handling.
+Cross-reference: parser UI/layout/navigation rules `src/namel3ss/parser.py`; UI manifest `src/namel3ss/ui/manifest.py`, runtime `src/namel3ss/ui/runtime.py`; Studio/backend `src/namel3ss/server.py`; tests `tests/test_ui_pages.py`, `tests/test_ui_button_navigate_parse.py`, `tests/test_ui_manifest_navigate.py`, `tests/test_ui_flow_execute.py`; examples `examples/support_bot/support_bot.ai`, `examples/crud_app/crud_app.ai`.

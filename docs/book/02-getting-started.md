@@ -1,63 +1,41 @@
-# 2. Getting Started
+# Chapter 2 — Getting Started: A First Namel3ss App
 
-## Install the CLI
-Requirements: Python 3.11+
-```bash
-pip install namel3ss
-```
-For contributing to this repo, use `pip install -e .[dev]` instead.
+A minimal app with UI, a flow, and an AI call:
 
-## First program: Hello World
-Create `hello.ai`:
 ```ai
-app "hello":
-  entry_page "home"
+app is "hello-app":
+  entry_page is "home"
 
-page "home" at "/":
-  section "hero":
-    heading "Hello Namel3ss"
-    text "You just wrote your first Namel3ss page."
+model is "default-model":
+  provider is "openai_default"
+
+ai is "greeter":
+  model is "default-model"
+  system is "Be a concise greeter."
+  input from user_input
+
+flow is "welcome":
+  step is "say":
+    kind is "ai"
+    target is "greeter"
+
+page is "home" at "/":
+  section is "hero":
+    heading is "Hello Namel3ss"
+    text is "Type a greeting and click Run."
+    input is "user_input":
+      bind is state.user_input
+    button is "Run":
+      on click:
+        do flow "welcome"
+    text is "Result:"
+    text is step.say.output
 ```
 
-Run and inspect:
+Run via CLI:
 ```bash
-n3 parse hello.ai
-n3 run hello --file hello.ai
+n3 run welcome --file hello.ai --input "Hello there!"
 ```
+Open in Studio to preview the page, click the button, and watch the flow execute.
 
-## Configure a provider quickly
-Set an API key in your shell:
-```bash
-export OPENAI_API_KEY=sk-...
-```
-Or add a project config file:
-```json
-{
-  "providers": {
-    "openai_default": {
-      "type": "openai",
-      "api_key_env": "OPENAI_API_KEY",
-      "model_default": "gpt-4.1-mini"
-    }
-  },
-  "default": "openai_default"
-}
-```
-If you forget a key, runtime diagnostics surface `N3P-1801` (missing key) instead of cryptic failures.
-
-## Diagnostics and lint
-- **Diagnostics**: `n3 diagnostics hello.ai` shows parse/semantic issues.
-- **Lint**: `n3 lint hello.ai` warns about style (unused vars, legacy syntax, etc.).
-Lint does not block execution by default.
-
-## Studio quick peek
-Start backend + Studio shell:
-```bash
-n3 studio --no-open-browser   # or just n3 studio
-```
-Then open `http://127.0.0.1:4173/studio` (or the friendly URL printed).
-
-## Exercises
-1. Change the heading text and rerun `n3 parse`.
-2. Add another section with a second heading.
-3. Run `n3 lint hello.ai` and confirm it reports no warnings.
+Cross-reference: parser (app/page/ai/flow/UI) in `src/namel3ss/parser.py`; runtime flow execution in `src/namel3ss/flows/engine.py`; UI manifest in `src/namel3ss/ui/manifest.py`; tests `tests/test_parser_flow.py`, `tests/test_ui_pages.py`, `tests/test_flow_engine.py`; example seed `examples/getting_started/app.ai`.

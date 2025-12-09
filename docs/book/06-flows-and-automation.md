@@ -1,105 +1,26 @@
-# 6. Flows and Automation
+# Chapter 6 — AI Blocks: Models, System Prompts, and Memory Hooks
 
-## Defining flows
+- **Models:** `model is "name": provider is "openai_default"`.
+- **AI blocks:** `ai is "name": model is "..."; system is "..."; input from <expr>; tools list optional.`
+- **Streaming:** `streaming is true` plus stream metadata on steps.
+- **Memory hooks:** attach `memory:` to an AI (details in Chapter 7).
+
+Example:
 ```ai
-flow "process_ticket":
-  description "Classify and respond."
-  step "classify":
-    kind "ai"
-    target "classify_issue"
-  step "respond":
-    kind "agent"
-    target "support_agent"
+model is "support-llm":
+  provider is "openai_default"
+
+ai is "triage_ai":
+  model is "support-llm"
+  system is "Classify requests into Billing, Shipping, or Auth."
+  input from state.question
+
+flow is "triage":
+  step is "answer":
+    kind is "ai"
+    target is "triage_ai"
+    streaming is true
+    stream_channel is "chat"
 ```
 
-## Control flow
-- `match` inside flows for branching.
-- `retry up to 3 times:` for unstable steps.
-- Loops: `repeat for each item in xs:` to iterate lists.
-- Conditional steps with `when` guards:
-  ```ai
-  flow is "register_user":
-    step is "approve":
-      when is state.age >= 18
-      kind is "set"
-      target is state.status
-      value is "approved"
-
-    step is "reject":
-      when is state.age < 18
-      kind is "set"
-      target is state.status
-      value is "rejected"
-  ```
-  If `when` evaluates to false, the step is skipped. Combine opposing conditions to model simple if/else without extra syntax.
-- Error handling with `on error`:
-  ```ai
-  flow is "answer_user":
-    step is "call_ai":
-      kind is "ai"
-      target is "support_bot"
-      input:
-        question: state.question
-
-    on error:
-      step is "fallback":
-        kind is "set"
-        target is state.answer
-        value is "Sorry, something went wrong. Please try again later."
-  ```
-  When a step fails, normal execution stops and the `on error` steps run. Use `error.message` inside the handler to inspect what went wrong.
-
-## Triggers
-- Schedule, HTTP, agent-signal, and file triggers are supported.
-- File trigger example:
-  ```ai
-  trigger "import_new_files":
-    kind "file"
-    path "uploads/"
-    pattern "*.csv"
-    flow "process_csv_file"
-  ```
-
-## Logging & observability
-- `log info "message" with { key: value }`
-- `note "Message"` and `checkpoint "label"` for trace navigation.
-
-## Tools & external HTTP APIs
-
-Declare HTTP JSON tools once, then call them from flows with structured inputs.
-
-```ai
-tool is "get_weather":
-  kind is "http_json"
-  method is "GET"
-  url is "https://api.example.com/weather"
-  headers:
-    x-api-key: config.weather_api_key
-  query:
-    city: input.city
-
-flow is "check_weather":
-  step is "call_tool":
-    kind is "tool"
-    tool is "get_weather"
-    input:
-      city: state.city
-
-  step is "store":
-    kind is "set"
-    target is state.weather
-    value is step.call_tool.output.data
-```
-
-Notes and diagnostics:
-
-- Tools in this phase must use `kind is "http_json"`; define `method`, `url`, and optional `query`, `headers`, or `body` mappings.
-- Tool declaration diagnostics: N3L-960 (kind), N3L-961 (method), N3L-962 (missing URL), N3L-1400 (step references an undeclared tool).
-- Runtime diagnostics: N3F-963 (network/HTTP failure) and N3F-965 (missing required `input.*` values or unresolved URL parts).
-- Every tool step exposes `step.<name>.output` with `{ ok, status, data, headers, error? }`.
-- AI-to-tool composition arrives in a later phase.
-
-## Exercises
-1. Add a retry block around an AI step to handle transient failures.
-2. Create a match that routes to three different flows.
-3. Write a file trigger that filters on `*.txt` and calls a parsing flow.
+Cross-reference: AI/model parsing in `src/namel3ss/parser.py`; runtime routing in `src/namel3ss/ai/registry.py`, `src/namel3ss/ai/router.py`, `src/namel3ss/runtime/context.py`; tests `tests/test_ai_system_prompt.py`, `tests/test_ai_streaming_flag.py`, `tests/test_flow_streaming_runtime.py`; examples `examples/support_bot/support_bot.ai`.

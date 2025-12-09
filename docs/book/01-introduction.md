@@ -1,29 +1,8 @@
-# 1. Introduction
+# Chapter 1 — Introduction
 
-## What is Namel3ss?
-Namel3ss is an AI-native programming language and runtime. It gives you English-style syntax for apps, pages, flows, agents, tools, memory/RAG, and deployment—plus a consistent compiler, lint engine, and CLI/Studio workflow.
+Namel3ss is an AI-native language where you write concise intent and get UI, backend flows, AI orchestration, memory, RAG, tools, records/CRUD, and auth in one place. Flows orchestrate work; AI blocks define models and prompts; memory tracks conversation; frames and vector stores power retrieval; records map to tables; tools connect to external APIs; auth brings user context. Studio visualizes everything: UI preview, flow execution, traces, memory inspector, and provider status.
 
-## Why an AI-focused DSL?
-- **English-style clarity**: `let total be base plus bonus` is easy to read and audit.
-- **Built-in AI/agents**: Models, streaming, JSON mode, and agents are first-class.
-- **Automation & UI**: Flows, triggers, pages, and UI previews work together.
-- **Deployment ready**: Build to server, worker, Docker, serverless (AWS/Cloudflare), desktop, and mobile targets from the same source.
-
-## Core concepts at a glance
-- **Bindings**: `let`, `set`, expressions, collections (with negative indices).
-- **Flows & agents**: Steps calling AI, tools, or agents; control flow with match/retry.
-- **UI pages**: `app` + `page` with sections, headings, text, inputs, buttons, and state.
-- **Observability**: Logs, notes, checkpoints, diagnostics, lint.
-- **Deployment**: `n3 build <target>` for desktop, mobile, serverless-aws, serverless-cloudflare, server, worker, docker.
-
-## How to run examples
-Examples live under `examples/`. Try:
-```bash
-n3 parse examples/hello_world/hello_world.ai
-n3 run hello-world --file examples/hello_world/hello_world.ai
-```
-Open Studio with `n3 studio` to browse and edit them visually.
-
-Where to go next:
-- Chapter 2 (Getting Started) to set up your environment.
-- Chapter 10 (Examples Walkthroughs) to explore working apps.
+Cross-reference:
+- Parser: `src/namel3ss/parser.py` for the authoritative surface.
+- Runtime: `src/namel3ss/flows/engine.py`, `src/namel3ss/runtime/context.py`, `src/namel3ss/ui/manifest.py`.
+- Examples: `examples/support_bot/support_bot.ai`, `examples/rag_qa/rag_qa.ai`, `examples/tools_and_ai/tools_and_ai.ai`, `examples/crud_app/crud_app.ai`.

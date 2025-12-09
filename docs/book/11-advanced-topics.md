@@ -1,23 +1,53 @@
-# 11. Advanced Topics
+# Chapter 12 — Authentication & User Context
 
-## Plugins and extension points
-- Plugins live under `plugins/` with `plugin.toml` manifests.
-- Use the registry to load custom behaviors; keep within the stable API surface.
+- **Auth config:** `auth:` with `user_record`, `id_field`, `identifier_field`, `password_hash_field`.
+- **Steps:** `auth_register`, `auth_login`, `auth_logout`.
+- **User root:** Access `user.id`, `user.email`, etc., inside flows and UI.
 
-## Optimizer
-- Provides evaluations and suggestions; managed via CLI/Studio panels.
-- Suggestions require explicit accept/reject decisions.
+Example:
+```ai
+frame is "users":
+  backend is "memory"
+  table is "users"
 
-## Experimental features
-- Some advanced chat/UI/memory patterns may be marked experimental.
-- Lint can warn with experimental-feature messages; treat these as caution signals.
-- Behavior may change—consult release notes and diagnostics.
+record is "User":
+  frame is "users"
+  fields:
+    id:
+      type is "uuid"
+      primary_key is true
+      required is true
+    email:
+      type is "string"
+      required is true
+    password_hash:
+      type is "string"
+      required is true
 
-## Future-facing notes
-- Keep an eye on release notes (`CHANGELOG.md`) for new capabilities.
-- When in doubt, trust the canonical language spec and lint/diagnostics for the source of truth.
+auth:
+  backend is "default_auth"
+  user_record is "User"
+  id_field is "id"
+  identifier_field is "email"
+  password_hash_field is "password_hash"
 
-## Exercises
-1. Explore `plugins/` and identify where manifests live.
-2. Add a harmless log statement to a flow and observe it in traces.
-3. Turn on lint and note any experimental warnings in your project.
+flow is "register_user":
+  step is "register":
+    kind is "auth_register"
+    input:
+      email: state.email
+      password: state.password
+
+flow is "login_user":
+  step is "login":
+    kind is "auth_login"
+    input:
+      email: state.email
+      password: state.password
+
+flow is "logout_user":
+  step is "logout":
+    kind is "auth_logout"
+```
+
+Cross-reference: parser auth rules `src/namel3ss/parser.py`; runtime `src/namel3ss/runtime/auth.py`, context wiring `src/namel3ss/runtime/context.py`; tests `tests/test_auth.py`; example `examples/crud_app/crud_app.ai`.
