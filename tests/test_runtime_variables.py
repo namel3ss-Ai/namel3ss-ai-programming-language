@@ -56,9 +56,9 @@ def _make_engine(ir_prog: IRProgram):
 
 def test_let_set_flow_execution():
     source = (
-        'flow "calc":\n'
-        '  step "compute":\n'
-        '    let base = 2\n'
+        'flow is "calc":\n'
+        '  step is "compute":\n'
+        '    let base be 2\n'
         '    set base to base * 3\n'
         '    if base > 5:\n'
         '      do tool "echo"\n'
@@ -74,10 +74,10 @@ def test_let_set_flow_execution():
 
 def test_variable_across_steps():
     source = (
-        'flow "use_var":\n'
-        '  step "define":\n'
-        '    let a = 2\n'
-        '  step "check":\n'
+        'flow is "use_var":\n'
+        '  step is "define":\n'
+        '    let a be 2\n'
+        '  step is "check":\n'
         '    if a >= 2:\n'
         '      do tool "echo"\n'
     )
@@ -91,10 +91,10 @@ def test_variable_across_steps():
 
 def test_duplicate_variable_errors():
     source = (
-        'flow "dup":\n'
-        '  step "s":\n'
-        '    let x = 1\n'
-        '    let x = 2\n'
+        'flow is "dup":\n'
+        '  step is "s":\n'
+        '    let x be 1\n'
+        '    let x be 2\n'
     )
     module = parse_source(source)
     ir_prog = ast_to_ir(module)
@@ -107,8 +107,8 @@ def test_duplicate_variable_errors():
 
 def test_set_undefined_errors():
     source = (
-        'flow "undef":\n'
-        '  step "s":\n'
+        'flow is "undef":\n'
+        '  step is "s":\n'
         '    set x to 1\n'
     )
     module = parse_source(source)
@@ -122,9 +122,9 @@ def test_set_undefined_errors():
 
 def test_type_mismatch_errors():
     source = (
-        'flow "bad":\n'
-        '  step "s":\n'
-        '    let x = "hi"\n'
+        'flow is "bad":\n'
+        '  step is "s":\n'
+        '    let x be "hi"\n'
         '    set x to x + 1\n'
     )
     module = parse_source(source)
@@ -138,9 +138,9 @@ def test_type_mismatch_errors():
 
 def test_divide_by_zero_errors():
     source = (
-        'flow "div":\n'
-        '  step "s":\n'
-        '    let x = 1\n'
+        'flow is "div":\n'
+        '  step is "s":\n'
+        '    let x be 1\n'
         '    set x to x / 0\n'
     )
     module = parse_source(source)
@@ -154,9 +154,9 @@ def test_divide_by_zero_errors():
 
 def test_boolean_logic_and_parentheses():
     source = (
-        'flow "logic":\n'
-        '  step "s":\n'
-        '    let a = 1\n'
+        'flow is "logic":\n'
+        '  step is "s":\n'
+        '    let a be 1\n'
         '    if a > 0 and not false:\n'
         '      do tool "echo"\n'
     )

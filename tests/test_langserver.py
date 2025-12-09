@@ -27,9 +27,9 @@ def test_initialize_capabilities():
 def test_did_open_and_diagnostics_clean():
     server = LanguageServer(output=io.BytesIO())
     doc = (
-        'app "hello":\n'
-        '  entry_page "home"\n\n'
-        'page "home":\n'
+        'app is "hello":\n'
+        '  entry_page is "home"\n\n'
+        'page is "home":\n'
         '  route "/"\n'
         '  section "hero":\n'
         '    component "text":\n'
@@ -70,10 +70,10 @@ def test_diagnostics_on_invalid_source():
 def test_formatting_returns_full_document_edit_and_idempotent():
     server = LanguageServer(output=io.BytesIO())
     ugly = (
-        'app "foo":\n'
-        '  entry_page "home"\n'
+        'app is "foo":\n'
+        '  entry_page is "home"\n'
         "\n"
-        'page "home":\n'
+        'page is "home":\n'
         '  route "/"  \n'
     )
     server.handle_request(

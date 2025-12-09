@@ -6,31 +6,31 @@ ENGLISH_PROGRAM = '''
 remember conversation as "support_history"
 use model "support-llm" provided by "openai"
 
-ai "classify_issue":
+ai is \"classify_issue":
   when called:
     use model "support-llm"
     input comes from user_input
     describe task as "Classify the user's support request."
 
-agent "support_agent":
+agent is \"support_agent":
   the goal is "Provide a clear, helpful support answer."
   the personality is "patient, concise, calm"
 
-flow "support_flow":
+flow is "support_flow":
   this flow will:
-    first step "classify request":
+    first step is "classify request":
       do ai "classify_issue"
-    then step "respond to user":
+    then step is "respond to user":
       do agent "support_agent"
-    finally step "log interaction":
+    finally step is "log interaction":
       do tool "echo" with message:
         "User request was processed and logged."
 
-app "support_bot_app":
-  starts at page "support_home"
+app is "support_bot_app":
+  starts at page is "support_home"
   description "A simple support assistant with memory and classification."
 
-page "support_home":
+page is "support_home":
   found at route "/support"
   titled "Support Assistant"
   section "introduction":

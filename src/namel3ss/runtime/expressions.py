@@ -19,26 +19,41 @@ UNDEFINED = object()
 class VariableEnvironment:
     """Per-run variable environment."""
 
-    def __init__(self, backing: dict[str, Any] | None = None) -> None:
+    def __init__(self, backing: dict[str, Any] | None = None, *, constants: set[str] | None = None) -> None:
         self.values: dict[str, Any] = backing if backing is not None else {}
         self._declared: set[str] = set(self.values.keys())
+        self._constants: set[str] = set(constants or [])
+        self._expired_loop_vars: set[str] = set()
 
     def has(self, name: str) -> bool:
         return name in self._declared
 
-    def declare(self, name: str, value: Any) -> None:
+    def declare(self, name: str, value: Any, *, is_constant: bool = False) -> None:
         if name in self._declared:
+            if name in self._constants or is_constant:
+                raise EvaluationError(
+                    f"{name} was declared as a constant and cannot be changed. If you need a mutable variable, remove 'constant' from its declaration."
+                )
             raise EvaluationError(f"Variable '{name}' is already defined")
+        self._expired_loop_vars.discard(name)
         self._declared.add(name)
         self.values[name] = value
+        if is_constant:
+            self._constants.add(name)
 
     def assign(self, name: str, value: Any) -> None:
         if name not in self._declared:
             raise EvaluationError(f"Variable '{name}' is not defined")
+        if name in self._constants:
+            raise EvaluationError(
+                f"{name} was declared as a constant and cannot be changed. If you need a mutable variable, remove 'constant' from its declaration."
+            )
+        self._expired_loop_vars.discard(name)
         self.values[name] = value
 
     def remove(self, name: str) -> None:
         self._declared.discard(name)
+        self._constants.discard(name)
         self.values.pop(name, None)
 
     def resolve(self, name: str) -> Any:
@@ -47,7 +62,16 @@ class VariableEnvironment:
         raise EvaluationError(f"Variable '{name}' is not defined")
 
     def clone(self) -> "VariableEnvironment":
-        return VariableEnvironment(dict(self.values))
+        clone = VariableEnvironment(dict(self.values), constants=set(self._constants))
+        clone._expired_loop_vars = set(self._expired_loop_vars)
+        return clone
+
+    def mark_loop_var_exited(self, name: str) -> None:
+        self._expired_loop_vars.add(name)
+
+    @property
+    def expired_loop_vars(self) -> set[str]:
+        return self._expired_loop_vars
 
 
 class ExpressionEvaluator:
@@ -65,6 +89,13 @@ class ExpressionEvaluator:
         self.rulegroup_resolver = rulegroup_resolver
         self.helper_resolver = helper_resolver
 
+    def _unknown_identifier(self, name: str) -> None:
+        if name in getattr(self.env, "expired_loop_vars", set()):
+            raise EvaluationError(f"{name} exists only inside this loop. If you need it later, store it in state or another local.")
+        raise EvaluationError(
+            f"I don't know what {name} is here. Declare it with 'let {name} be ...' or use state.{name} / user.{name} / step.<name>.output if you meant those."
+        )
+
     def evaluate(self, expr: ast_nodes.Expr) -> Any:
         if isinstance(expr, ast_nodes.Literal):
             return expr.value
@@ -77,12 +108,22 @@ class ExpressionEvaluator:
                 # Prefer exact env hit on root if present (locals/loop vars stored bare)
                 if self.env.has(expr.root) and not expr.path:
                     return self.env.resolve(expr.root)
+                if self.env.has(expr.root) and expr.path:
+                    value: Any = self.env.resolve(expr.root)
+                    for part in expr.path:
+                        if isinstance(value, dict) and part in value:
+                            value = value.get(part)
+                        elif hasattr(value, part):
+                            value = getattr(value, part)
+                        else:
+                            raise EvaluationError("N3-3300: unknown record field")
+                    return value
             except Exception:
                 pass
             found, value = self.resolver(dotted)
             if found:
                 return value
-            raise EvaluationError(f"Variable '{dotted}' is not defined")
+            self._unknown_identifier(expr.root if not expr.path else dotted)
         if isinstance(expr, ast_nodes.Identifier):
             if self.env.has(expr.name):
                 return self.env.resolve(expr.name)
@@ -102,7 +143,7 @@ class ExpressionEvaluator:
             # Support dotted lookups via resolver
             found, value = self.resolver(expr.name)
             if not found:
-                raise EvaluationError(f"Variable '{expr.name}' is not defined")
+                self._unknown_identifier(expr.name if "." not in expr.name else expr.name.split(".")[0])
             return value
         if isinstance(expr, ast_nodes.RecordFieldAccess):
             target = self.evaluate(expr.target) if expr.target else None

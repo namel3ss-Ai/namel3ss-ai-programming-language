@@ -5,12 +5,12 @@ from namel3ss.diagnostics.engine import DiagnosticEngine
 
 def test_diagnostics_warnings_and_errors():
     source = (
-        'page "home":\n'
+        'page is "home":\n'
         '  title "Home"\n'
-        'flow "pipeline":\n'
+        'flow is "pipeline":\n'
         'plugin "stripe":\n'
         '  description "payments"\n'
-        'agent "helper":\n'
+        'agent is "helper":\n'
         '  goal "Assist"\n'
     )
     module = parse_source(source)

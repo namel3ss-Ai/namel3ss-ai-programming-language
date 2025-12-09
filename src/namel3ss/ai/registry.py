@@ -11,7 +11,7 @@ from typing import Dict, Optional
 from ..config import ProviderConfig, ProvidersConfig, load_config
 from ..errors import Namel3ssError
 from ..errors import ProviderAuthError, ProviderConfigError
-from ..secrets.manager import SecretsManager
+from ..secrets.manager import SecretsManager, get_default_secrets_manager
 from .providers import DummyProvider, ModelProvider
 from .providers.anthropic import AnthropicProvider
 from .providers.gemini import GeminiProvider
@@ -42,7 +42,7 @@ class ModelRegistry:
     def __init__(self, secrets: Optional[SecretsManager] = None, providers_config: ProvidersConfig | None = None) -> None:
         self.providers: Dict[str, ModelProvider] = {}  # keyed by model name
         self.model_configs: Dict[str, ModelConfig] = {}
-        self.secrets = secrets or SecretsManager()
+        self.secrets = secrets or get_default_secrets_manager()
         cfg = providers_config or load_config().providers_config
         self.providers_config: ProvidersConfig = cfg or ProvidersConfig()
         self._provider_cache: Dict[str, ModelProvider] = {}
@@ -69,17 +69,28 @@ class ModelRegistry:
         self.model_configs[model_name] = model_config
         self.providers[model_name] = self._create_provider(model_config)
 
+    def register_provider_config(self, name: str, provider_config: ProviderConfig, *, set_default: bool = False) -> None:
+        """
+        Register or override a provider configuration at runtime.
+        """
+
+        self.providers_config.providers[name] = provider_config
+        if set_default:
+            self.providers_config.default = name
+        # Clear cached provider so it can be recreated with new config.
+        self._provider_cache.pop(name, None)
+
     def _resolve_api_key(self, provider_name: str, cfg: ProviderConfig) -> str | None:
         if cfg.api_key:
             return cfg.api_key
         if cfg.api_key_env:
-            return self.secrets.get(cfg.api_key_env)
+            return self.secrets.get_secret(cfg.api_key_env)
         if cfg.type == "openai":
-            return self.secrets.get("N3_OPENAI_API_KEY") or self.secrets.get("OPENAI_API_KEY")
+            return self.secrets.get_secret("N3_OPENAI_API_KEY") or self.secrets.get_secret("OPENAI_API_KEY")
         if cfg.type == "gemini":
-            return self.secrets.get("N3_GEMINI_API_KEY") or self.secrets.get("GEMINI_API_KEY")
+            return self.secrets.get_secret("N3_GEMINI_API_KEY") or self.secrets.get_secret("GEMINI_API_KEY")
         if cfg.type == "anthropic":
-            return self.secrets.get("N3_ANTHROPIC_API_KEY") or self.secrets.get("ANTHROPIC_API_KEY")
+            return self.secrets.get_secret("N3_ANTHROPIC_API_KEY") or self.secrets.get_secret("ANTHROPIC_API_KEY")
         return None
 
     def _create_provider(self, cfg: ModelConfig) -> ModelProvider:

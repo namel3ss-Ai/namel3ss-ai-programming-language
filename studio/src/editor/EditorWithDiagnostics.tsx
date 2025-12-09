@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useState } from "react";
 import { CodeEditor } from "./CodeEditor";
 import { DiagnosticsOverlay } from "./DiagnosticsOverlay";
-import { postDiagnostics, postFmtPreview } from "../api/client";
+import { postDiagnostics, postFmtPreview, postMigrateNamingStandard } from "../api/client";
 import type { Diagnostic } from "../api/types";
 import { CommandPalette, CommandPaletteItem } from "../components/CommandPalette";
 import { TemplateWizard } from "../components/TemplateWizard";
@@ -26,6 +26,9 @@ export const EditorWithDiagnostics: React.FC<EditorWithDiagnosticsProps> = ({
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [isFormatting, setIsFormatting] = useState(false);
   const [formatMessage, setFormatMessage] = useState<string | null>(null);
+  const [isMigrating, setIsMigrating] = useState(false);
+  const [migrateMessage, setMigrateMessage] = useState<string | null>(null);
+  const [fixNames, setFixNames] = useState(true);
   const [isPaletteOpen, setIsPaletteOpen] = useState(false);
   const [isTemplateWizardOpen, setIsTemplateWizardOpen] = useState(false);
   const [lastDiagnosticsRequestId, setLastDiagnosticsRequestId] = useState<number>(0);
@@ -79,6 +82,38 @@ export const EditorWithDiagnostics: React.FC<EditorWithDiagnosticsProps> = ({
       setIsFormatting(false);
     }
   }, [onSourceChange, source]);
+
+  const handleMigrate = useCallback(async () => {
+    if (!source.trim()) {
+      setMigrateMessage("Nothing to migrate");
+      return;
+    }
+    setIsMigrating(true);
+    setMigrateMessage(null);
+    setErrorMessage(null);
+    try {
+      const res = await postMigrateNamingStandard(source, fixNames);
+      setSource(res.source);
+      if (onSourceChange) {
+        onSourceChange(res.source);
+      }
+      const summary = res.changes_summary;
+      const renameCount = summary?.names_renamed?.length ?? 0;
+      const parts = [
+        `${summary.headers_rewritten} header(s)`,
+        `${summary.let_rewritten} let`,
+        `${summary.set_rewritten} set`,
+      ];
+      if (renameCount) {
+        parts.push(`${renameCount} rename(s)`);
+      }
+      setMigrateMessage(`Migrated: ${parts.join(", ")}`);
+    } catch (err) {
+      setErrorMessage("Migration failed");
+    } finally {
+      setIsMigrating(false);
+    }
+  }, [fixNames, onSourceChange, source]);
 
   const handleApplyTemplate = useCallback(
     (template: Template) => {
@@ -158,11 +193,19 @@ export const EditorWithDiagnostics: React.FC<EditorWithDiagnosticsProps> = ({
         <button type="button" onClick={handleFormat} disabled={isFormatting}>
           {isFormatting ? "Formatting..." : "Format"}
         </button>
+        <button type="button" onClick={handleMigrate} disabled={isMigrating}>
+          {isMigrating ? "Migrating..." : "Migrate to English naming"}
+        </button>
+        <label className="n3-editor-checkbox">
+          <input type="checkbox" checked={fixNames} onChange={(e) => setFixNames(e.target.checked)} />
+          <span>Also fix camelCase locals</span>
+        </label>
         <button type="button" onClick={() => setIsTemplateWizardOpen(true)}>
           Templates
         </button>
         {errorMessage && <span className="n3-editor-error">{errorMessage}</span>}
         {formatMessage && <span className="n3-editor-format-message">{formatMessage}</span>}
+        {migrateMessage && <span className="n3-editor-format-message">{migrateMessage}</span>}
       </div>
       <div className="n3-editor-main">
         <CodeEditor value={source} onChange={handleSourceChange} />

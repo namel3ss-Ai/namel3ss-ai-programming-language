@@ -4,13 +4,13 @@ from namel3ss.lang.validator import validate_module
 
 
 VALID_SOURCE = (
-    'app "support":\n'
-    '  entry_page "home"\n'
-    'page "home":\n'
+    'app is "support":\n'
+    '  entry_page is "home"\n'
+    'page is "home":\n'
     '  route "/"\n'
     'model "default":\n'
     '  provider "openai:gpt-4.1-mini"\n'
-    'ai "summarise":\n'
+    'ai is "summarise":\n'
     '  model "default"\n'
     '  input from user_message\n'
 )
@@ -24,12 +24,12 @@ def test_validator_accepts_valid_program():
 
 def test_validator_catches_missing_fields_and_refs():
     invalid_source = (
-        'app "support":\n'
-        '  entry_page "home"\n'
-        'page "home":\n'
+        'app is "support":\n'
+        '  entry_page is "home"\n'
+        'page is "home":\n'
         '  title "Home"\n'
-        'flow "pipeline":\n'
-        'ai "summarise":\n'
+        'flow is "pipeline":\n'
+        'ai is "summarise":\n'
         '  input from user_message\n'
     )
     program = ir.ast_to_ir(parse_source(invalid_source))

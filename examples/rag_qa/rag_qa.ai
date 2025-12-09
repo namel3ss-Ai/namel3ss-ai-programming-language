@@ -1,38 +1,38 @@
 model "retriever":
   provider "openai"
 
-ai "rewrite_question":
+ai is \"rewrite_question":
   model "retriever"
   input from "user_input"
   description "Rewrite the question to be concise and retrieval-friendly."
 
-ai "lookup_context":
+ai is \"lookup_context":
   model "retriever"
   input from "user_input"
   description "Locate the most relevant context for the rewritten question."
 
-ai "compose_answer":
+ai is \"compose_answer":
   model "retriever"
   input from "user_input"
   description "Compose a short answer grounded in the retrieved context."
 
-flow "qa_flow":
+flow is "qa_flow":
   description "Rewrite the question, fetch context, and compose an answer."
-  step "rewrite":
+  step is "rewrite":
     kind "ai"
     target "rewrite_question"
-  step "fetch":
+  step is "fetch":
     kind "ai"
     target "lookup_context"
-  step "answer":
+  step is "answer":
     kind "ai"
     target "compose_answer"
 
-app "rag_qa_app":
-  entry_page "qa_home"
+app is "rag_qa_app":
+  entry_page is "qa_home"
   description "RAG-style Q&A over a small built-in knowledge note."
 
-page "qa_home" at "/rag-qa":
+page is "qa_home" at "/rag-qa":
   section "prompt":
     heading "RAG Q&A"
     text "Ask a question about Namel3ss capabilities and run the qa_flow."

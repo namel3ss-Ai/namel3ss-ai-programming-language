@@ -36,7 +36,7 @@ def test_example_list_outputs_names(capsys):
 
 def test_example_run_success(tmp_path: Path, capsys):
     example_file = tmp_path / "demo.ai"
-    example_file.write_text('app "demo":\n  entry_page "home"\npage "home":\n  route "/"', encoding="utf-8")
+    example_file.write_text('app is "demo":\n  entry_page is "home"\npage is "home":\n  route "/"', encoding="utf-8")
     payload = {"result": {"app": {"message": "ok"}, "trace": {"id": "trace-123"}}}
 
     def _fake_urlopen(req):

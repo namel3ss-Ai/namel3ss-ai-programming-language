@@ -20,8 +20,8 @@ def _client(tmp_path: Path) -> TestClient:
 def test_studio_files_tree(monkeypatch, tmp_path: Path):
     (tmp_path / "pages").mkdir()
     (tmp_path / "flows").mkdir()
-    (tmp_path / "pages" / "home.ai").write_text('page "home":\n  heading "Hi"\n', encoding="utf-8")
-    (tmp_path / "flows" / "run.ai").write_text('flow "run":\n  step "s":\n    log info "ok"\n', encoding="utf-8")
+    (tmp_path / "pages" / "home.ai").write_text('page is "home":\n  heading "Hi"\n', encoding="utf-8")
+    (tmp_path / "flows" / "run.ai").write_text('flow is "run":\n  step is "s":\n    log info "ok"\n', encoding="utf-8")
     (tmp_path / ".git").mkdir()
     (tmp_path / ".git" / "ignore.ai").write_text("", encoding="utf-8")
 
@@ -41,7 +41,7 @@ def test_studio_files_tree(monkeypatch, tmp_path: Path):
 
 
 def test_studio_file_path_traversal(tmp_path: Path):
-    (tmp_path / "main.ai").write_text('flow "x":\n  step "s":\n    log info "ok"\n', encoding="utf-8")
+    (tmp_path / "main.ai").write_text('flow is "x":\n  step is "s":\n    log info "ok"\n', encoding="utf-8")
     client = _client(tmp_path)
     resp = client.get("/api/studio/file", params={"path": "../outside.ai"}, headers={"X-API-Key": "dev-key"})
     assert resp.status_code == 400

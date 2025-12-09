@@ -43,8 +43,8 @@ def _make_engine(ir_prog):
 
 def test_parse_pattern_in_condition():
     module = parse_source(
-        'flow "f":\n'
-        '  step "route":\n'
+        'flow is "f":\n'
+        '  step is "route":\n'
         '    if result matches { category: "billing", priority: high } as cat:\n'
         '      do agent "billing_handler"\n'
     )
@@ -58,11 +58,11 @@ def test_parse_pattern_in_condition():
 
 def test_pattern_runtime_match_and_binding_flow():
     source = (
-        'agent "billing_handler":\n'
+        'agent is "billing_handler":\n'
         '  the goal is "g"\n'
         '  the personality is "p"\n'
-        'flow "f":\n'
-        '  step "route":\n'
+        'flow is "f":\n'
+        '  step is "route":\n'
         '    if result matches { category: "billing", priority: "high" } as cat:\n'
         '      do agent "billing_handler"\n'
     )
@@ -79,11 +79,11 @@ def test_pattern_runtime_match_and_binding_flow():
 
 def test_pattern_runtime_no_match_skips():
     source = (
-        'agent "handler":\n'
+        'agent is "handler":\n'
         '  the goal is "g"\n'
         '  the personality is "p"\n'
-        'flow "f":\n'
-        '  step "route":\n'
+        'flow is "f":\n'
+        '  step is "route":\n'
         '    if result matches { category: "billing" } as cat:\n'
         '      do agent "handler"\n'
     )
@@ -97,7 +97,7 @@ def test_pattern_runtime_no_match_skips():
 
 def test_pattern_agent_runtime_and_trace():
     source = (
-        'agent "triage":\n'
+        'agent is "triage":\n'
         '  if user matches { status: "vip", score: score >= threshold } as prof:\n'
         '    do tool "send_alert" with message:\n'
         '      "vip"\n'
@@ -143,8 +143,8 @@ def test_pattern_agent_runtime_and_trace():
 def test_pattern_invalid_nested_errors():
     with pytest.raises(Exception):
         parse_source(
-            'flow "f":\n'
-            '  step "s":\n'
+            'flow is "f":\n'
+            '  step is "s":\n'
             '    if result matches { nested: { x: 1 } }:\n'
             '      do agent "a"\n'
         )

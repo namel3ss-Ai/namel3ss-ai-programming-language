@@ -93,6 +93,15 @@ Or `namel3ss.config.json`:
 
 ---
 
+## Deployment & scaling
+- Container: see `docs/deploy/docker.md` for the multi-stage Dockerfile, build/run examples, and env-driven secrets.
+- Concurrency: tune `N3_MAX_PARALLEL_TASKS` per instance; guidance in `docs/deploy/scaling.md`.
+- Load testing: `scripts/load_test_flows.py` described in `docs/deploy/load-testing.md` to benchmark flows under concurrency.
+- Provider caching (in-memory): enable with `N3_PROVIDER_CACHE_ENABLED=true` (TTL via `N3_PROVIDER_CACHE_TTL_SECONDS`, default 300s).
+- Security: see `docs/security/auth-model.md`, `docs/security/secrets.md`, `docs/security/logging-and-privacy.md`, `docs/security/hardening.md` for auth boundaries, secrets guidance, and logging redaction defaults.
+
+---
+
 ## Core concepts
 - **Flows:** Ordered steps (`ai`, `set`, `db_*`, `vector_*`, `tool`, `auth_*`) with `when`, `for each`, `on error`, `let`, `set state.*`, `step.<name>.output`.
 - **AI:** `ai` blocks with `model`, `system`, optional `tools` and `memory`; steps can stream.

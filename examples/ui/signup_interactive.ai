@@ -1,4 +1,4 @@
-page "signup" at "/signup":
+page is "signup" at "/signup":
   state name is ""
 
   heading "Create your account"

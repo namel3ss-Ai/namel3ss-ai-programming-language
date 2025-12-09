@@ -5,6 +5,7 @@ Parser for the minimal Namel3ss V3 language slice.
 from __future__ import annotations
 
 from typing import List, Set
+from difflib import get_close_matches
 
 from . import ast_nodes
 from .errors import ParseError
@@ -15,6 +16,18 @@ class Parser:
     def __init__(self, tokens: List[Token]) -> None:
         self.tokens = tokens
         self.position = 0
+        self._ai_field_candidates = {
+            "model",
+            "provider",
+            "system",
+            "system_prompt",
+            "input",
+            "when",
+            "describe",
+            "description",
+            "memory",
+            "tools",
+        }
 
     @classmethod
     def from_source(cls, source: str) -> "Parser":
@@ -25,6 +38,16 @@ class Parser:
         while not self.check("EOF"):
             if self.match("NEWLINE"):
                 continue
+            if (
+                self.position > 0
+                and self.tokens[self.position - 1].type == "STRING"
+                and self.tokens[self.position - 1].line == self.peek().line
+                and self.peek().type == "KEYWORD"
+            ):
+                raise self.error(
+                    f"N3L-PARSE-NEWLINE: Top-level blocks must start on a new line. Did you forget a newline before '{self.peek().value}'?",
+                    self.peek(),
+                )
             module.declarations.append(self.parse_declaration())
         return module
 
@@ -239,7 +262,13 @@ class Parser:
 
     def parse_app(self) -> ast_nodes.AppDecl:
         start = self.consume("KEYWORD", "app")
-        name = self.consume("STRING")
+        if self.match_value("KEYWORD", "is"):
+            name = self.consume("STRING")
+        else:
+            tok = self.peek()
+            if tok.type == "STRING":
+                raise self.error(f'app "{tok.value}": is not supported. Use app is "{tok.value}": instead.', tok)
+            raise self.error("Expected 'is' after 'app'", tok)
         self.consume("COLON")
         self.consume("NEWLINE")
         self.consume("INDENT")
@@ -286,7 +315,10 @@ class Parser:
         if self.match_value("KEYWORD", "is"):
             name = self.consume("STRING")
         else:
-            name = self.consume("STRING")
+            tok = self.peek()
+            if tok.type == "STRING":
+                raise self.error(f'page "{tok.value}": is not supported. Use page is "{tok.value}": instead.', tok)
+            raise self.error("Expected 'is' after 'page'", tok)
         # English-style: page "name" at "/route":
         if self.peek().value == "at":
             self.consume("KEYWORD", "at")
@@ -460,7 +492,10 @@ class Parser:
         if self.match_value("KEYWORD", "is"):
             name = self.consume("STRING")
         else:
-            name = self.consume("STRING")
+            tok = self.peek()
+            if tok.type == "STRING":
+                raise self.error(f'ai "{tok.value}": is not supported. Use ai is "{tok.value}": instead.', tok)
+            raise self.error("Expected 'is' after 'ai'", tok)
         self.consume("COLON")
         self.consume("NEWLINE")
         self.consume("INDENT")
@@ -494,6 +529,19 @@ class Parser:
                 provider_name = provider_tok.value
                 self.optional_newline()
             elif field_token.value == "system":
+                if system_prompt is not None:
+                    raise self.error(
+                        "N3L-201: System prompt may only appear once inside an ai block.",
+                        field_token,
+                    )
+                self.advance()
+                if self.match_value("KEYWORD", "is"):
+                    system_tok = self.consume_any({"STRING", "IDENT", "KEYWORD"})
+                else:
+                    system_tok = self.consume("STRING")
+                system_prompt = system_tok.value
+                self.optional_newline()
+            elif field_token.value == "system_prompt":
                 if system_prompt is not None:
                     raise self.error(
                         "N3L-201: System prompt may only appear once inside an ai block.",
@@ -559,9 +607,14 @@ class Parser:
                 self.advance()
                 tool_bindings.extend(self._parse_ai_tools_block())
             else:
-                self.consume("KEYWORD")  # raise if unexpected
+                self.advance()
+                hint = ""
+                matches = get_close_matches(field_token.value or "", list(self._ai_field_candidates), n=1, cutoff=0.6)
+                if matches:
+                    hint = f" Did you mean '{matches[0]}'?"
                 raise self.error(
-                    f"Unexpected field '{field_token.value}' in ai block", field_token
+                    f"N3L-PARSE-UNKNOWN-FIELD: Unexpected field '{field_token.value}' in ai block.{hint}",
+                    field_token,
                 )
         self.consume("DEDENT")
         self.optional_newline()
@@ -1080,7 +1133,7 @@ class Parser:
         system_prompt = None
         conditional_branches: list[ast_nodes.ConditionalBranch] | None = None
         memory_name = None
-        allowed_fields: Set[str] = {"goal", "personality", "system", "memory"}
+        allowed_fields: Set[str] = {"goal", "personality", "system", "system_prompt", "memory"}
         while not self.check("DEDENT"):
             if self.match("NEWLINE"):
                 continue
@@ -1107,11 +1160,13 @@ class Parser:
                 continue
             field_token = self.consume("KEYWORD")
             if field_token.value not in allowed_fields:
+                suggestion = get_close_matches(field_token.value or "", list(allowed_fields), n=1, cutoff=0.6)
+                hint = f" Did you mean '{suggestion[0]}'?" if suggestion else ""
                 raise self.error(
-                    f"Unexpected field '{field_token.value}' in agent block",
+                    f"N3L-PARSE-UNKNOWN-FIELD: Unexpected field '{field_token.value}' in agent block.{hint}",
                     field_token,
                 )
-            if field_token.value == "system":
+            if field_token.value in {"system", "system_prompt"}:
                 if system_prompt is not None:
                     raise self.error(
                         "N3L-201: System prompt may only appear once inside an agent block.",
@@ -1351,7 +1406,10 @@ class Parser:
         if self.match_value("KEYWORD", "is"):
             name_tok = self.consume("STRING")
         else:
-            name_tok = self.consume("STRING")
+            tok = self.peek()
+            if tok.type == "STRING":
+                raise self.error(f'vector_store "{tok.value}": is not supported. Use vector_store is "{tok.value}": instead.', tok)
+            raise self.error("Expected 'is' after 'vector_store'", tok)
         self.consume("COLON")
         self.consume("NEWLINE")
 
@@ -1441,7 +1499,10 @@ class Parser:
         if self.match_value("KEYWORD", "is"):
             name_tok = self.consume_any({"STRING", "IDENT"})
         else:
-            name_tok = self.consume_any({"STRING", "IDENT"})
+            tok = self.peek()
+            if tok.type in {"STRING", "IDENT"}:
+                raise self.error(f'tool "{tok.value}": is not supported. Use tool is "{tok.value}": instead.', tok)
+            raise self.error("Expected 'is' after 'tool'", tok)
         name = name_tok.value or ""
         kind = None
         method = None
@@ -1568,7 +1629,10 @@ class Parser:
         if self.match_value("KEYWORD", "is"):
             name_tok = self.consume("STRING")
         else:
-            name_tok = self.consume("STRING")
+            tok = self.peek()
+            if tok.type == "STRING":
+                raise self.error(f'frame "{tok.value}": is not supported. Use frame is "{tok.value}": instead.', tok)
+            raise self.error("Expected 'is' after 'frame'", tok)
         self.consume("COLON")
         self.consume("NEWLINE")
 
@@ -2807,7 +2871,10 @@ class Parser:
         if self.match_value("KEYWORD", "is"):
             name = self.consume("STRING")
         else:
-            name = self.consume("STRING")
+            tok = self.peek()
+            if tok.type == "STRING":
+                raise self.error(f'flow "{tok.value}": is not supported. Use flow is "{tok.value}": instead.', tok)
+            raise self.error("Expected 'is' after 'flow'", tok)
         self.consume("COLON")
         self.consume("NEWLINE")
         description = None
@@ -3077,7 +3144,14 @@ class Parser:
         if self.match_value("KEYWORD", "is"):
             step_name_token = self.consume("STRING")
         else:
-            step_name_token = self.consume("STRING")
+            tok = self.peek()
+            if tok.type == "STRING":
+                raise self.error(f'step "{tok.value}": is not supported. Use step is "{tok.value}": instead.', tok)
+            raise self.error("Expected 'is' after 'step'", tok)
+        alias: str | None = None
+        if self.match_value("KEYWORD", "as"):
+            alias_tok = self.consume_any({"IDENT", "KEYWORD"})
+            alias = alias_tok.value or ""
         self.consume("COLON")
         self.consume("NEWLINE")
         self.consume("INDENT")
@@ -3095,6 +3169,7 @@ class Parser:
         self.optional_newline()
         return self._build_flow_step_decl(
             step_name_token,
+            alias,
             kind,
             target,
             message,
@@ -3178,6 +3253,7 @@ class Parser:
         self.optional_newline()
         return self._build_flow_step_decl(
             step_name_token,
+            None,
             kind,
             target,
             message,
@@ -3289,6 +3365,11 @@ class Parser:
                 script_mode = True
                 statements.append(self.parse_statement_or_action())
                 continue
+            if token.value == "when":
+                raise self.error(
+                    "when is only supported inside a match block. Use if for standalone conditions.",
+                    token,
+                )
             if token.value in {"if", "otherwise", "unless", "else"} or (
                 token.value == "when" and not allow_fields
             ):
@@ -3307,15 +3388,27 @@ class Parser:
                 )
             field_token = self.consume_any({"KEYWORD", "IDENT"})
             if field_token.value not in allowed_fields:
+                if field_token.value == "navigate":
+                    raise self.error(
+                        "N3L-PARSE-NAVIGATE: 'navigate' is only supported in UI click handlers; in flows use 'go to page \"...\"' or 'go to flow \"...\"'.",
+                        field_token,
+                    )
+                if field_token.value == "output":
+                    raise self.error(
+                        "N3L-PARSE-OUTPUT: 'output to' is not part of the language yet; use let/set and step.<name>.output to route outputs.",
+                        field_token,
+                    )
                 raise self.error(
                     f"Unexpected field '{field_token.value}' in step block",
                     field_token,
                 )
             if field_token.value == "kind":
-                if self.match_value("KEYWORD", "is"):
-                    kind_token = self.consume_any({"STRING", "IDENT", "KEYWORD"})
-                else:
-                    kind_token = self.consume_string_value(field_token, "kind")
+                if not self.match_value("KEYWORD", "is"):
+                    raise self.error(
+                        'kind "ai" is not supported. Write kind is "ai" instead.',
+                        field_token,
+                    )
+                kind_token = self.consume_any({"STRING", "IDENT", "KEYWORD"})
                 kind = kind_token.value
                 if kind_token.value == "script":
                     script_mode = True
@@ -3506,6 +3599,7 @@ class Parser:
     def _build_flow_step_decl(
         self,
         step_name_token,
+        alias,
         kind,
         target,
         message,
@@ -3550,6 +3644,7 @@ class Parser:
                 action = statements[0]
                 return ast_nodes.FlowStepDecl(
                     name=step_name_token.value or "",
+                    alias=alias,
                     kind=action.kind,
                     target=action.target,
                     message=action.message,
@@ -3562,6 +3657,7 @@ class Parser:
                 )
             return ast_nodes.FlowStepDecl(
                 name=step_name_token.value or "",
+                alias=alias,
                 kind="script",
                 target=target or "",
                 message=message,
@@ -3575,6 +3671,7 @@ class Parser:
         if conditional_branches:
             return ast_nodes.FlowStepDecl(
                 name=step_name_token.value or "",
+                alias=alias,
                 kind="condition",
                 target=step_name_token.value or "",
                 params=extra_params or {},
@@ -3587,6 +3684,7 @@ class Parser:
         if goto_action:
             return ast_nodes.FlowStepDecl(
                 name=step_name_token.value or "",
+                alias=alias,
                 kind="goto_flow",
                 target=goto_action.target,
                 when_expr=when_expr,
@@ -3602,6 +3700,7 @@ class Parser:
             raise self.error("Missing 'target' in step", step_name_token)
         return ast_nodes.FlowStepDecl(
             name=step_name_token.value or "",
+            alias=alias,
             kind=kind,
             target=target,
             message=message,
@@ -3642,6 +3741,16 @@ class Parser:
             return self._parse_do_action()
         if token.value == "go":
             return self.parse_goto_action()
+        if token.value == "navigate":
+            raise self.error(
+                "N3L-PARSE-NAVIGATE: 'navigate' is only supported in UI click handlers; in flows use 'go to page \"...\"' or 'go to flow \"...\"'.",
+                token,
+            )
+        if token.value == "output":
+            raise self.error(
+                "N3L-PARSE-OUTPUT: 'output to' is not part of the language yet; use let/set and step.<name>.output to route outputs.",
+                token,
+            )
         if token.value in {"if", "when", "otherwise", "unless", "else"}:
             return self.parse_if_statement()
         if token.value == "let":
@@ -3738,21 +3847,24 @@ class Parser:
             pattern: ast_nodes.Expr | ast_nodes.SuccessPattern | ast_nodes.ErrorPattern | None
             binding: str | None = None
             if pat_token.value == "success":
-                self.consume("KEYWORD", "success")
-                if self.peek().value == "as":
-                    self.consume("KEYWORD", "as")
-                    bind_tok = self.consume_any({"IDENT", "KEYWORD"})
-                    binding = bind_tok.value
-                pattern = ast_nodes.SuccessPattern(binding=binding)
+                raise self.error(
+                    "This match pattern form is not supported in Control Flow v1. Use literal patterns or rewrite this as an if / otherwise if / else chain.",
+                    pat_token,
+                )
             elif pat_token.value == "error":
-                self.consume("KEYWORD", "error")
-                if self.peek().value == "as":
-                    self.consume("KEYWORD", "as")
-                    bind_tok = self.consume_any({"IDENT", "KEYWORD"})
-                    binding = bind_tok.value
-                pattern = ast_nodes.ErrorPattern(binding=binding)
+                raise self.error(
+                    "This match pattern form is not supported in Control Flow v1. Use literal patterns or rewrite this as an if / otherwise if / else chain.",
+                    pat_token,
+                )
             else:
                 pattern = self.parse_expression()
+                if not isinstance(pattern, ast_nodes.Literal) or not isinstance(
+                    pattern.value, (str, int, float, bool, type(None))
+                ):
+                    raise self.error(
+                        "This match pattern form is not supported in Control Flow v1. Use literal patterns or rewrite this as an if / otherwise if / else chain.",
+                        pat_token,
+                    )
             self.consume("COLON")
             self.consume("NEWLINE")
             self.consume("INDENT")
@@ -3793,16 +3905,62 @@ class Parser:
 
     def parse_let_statement(self) -> ast_nodes.LetStatement:
         start = self.consume("KEYWORD", "let")
-        name_tok = self.consume_any({"IDENT", "KEYWORD"})
-        uses_equals = False
+        is_constant = False
+        if self.peek().value == "constant":
+            self.advance()
+            is_constant = True
+        pattern: ast_nodes.DestructuringPattern | None = None
+        name_tok = None
+        if self.match("LBRACE"):
+            fields: list[ast_nodes.DestructuringField] = []
+            while not self.check("RBRACE"):
+                field_tok = self.consume_any({"IDENT", "KEYWORD"})
+                alias = None
+                if self.match_value("KEYWORD", "as"):
+                    alias_tok = self.consume_any({"IDENT", "KEYWORD"})
+                    alias = alias_tok.value or None
+                fields.append(ast_nodes.DestructuringField(name=field_tok.value or "", alias=alias))
+                if self.match("COMMA"):
+                    continue
+                if self.check("RBRACE"):
+                    break
+                raise self.error("Expected ',' or '}' in destructuring pattern", self.peek())
+            self.consume("RBRACE")
+            pattern = ast_nodes.DestructuringPattern(kind="record", fields=fields)
+        elif self.match("LBRACKET"):
+            elements: list[str] = []
+            while not self.check("RBRACKET"):
+                elt_tok = self.consume_any({"IDENT", "KEYWORD"})
+                elements.append(elt_tok.value or "")
+                if self.match("COMMA"):
+                    continue
+                if self.check("RBRACKET"):
+                    break
+                raise self.error("Expected ',' or ']' in list destructuring pattern", self.peek())
+            self.consume("RBRACKET")
+            pattern = ast_nodes.DestructuringPattern(kind="list", fields=elements)
+        else:
+            name_tok = self.consume_any({"IDENT", "KEYWORD"})
         if self.match_value("KEYWORD", "be"):
             expr = self.parse_expression()
-        elif self.match_value("OP", "="):
-            uses_equals = True
-            expr = self.parse_expression()
+        elif self.peek().type == "OP" and self.peek().value == "=":
+            tok = self.peek()
+            raise self.error("let x = ... is not supported. Write let x be ... instead.", tok)
         else:
-            raise self.error("Expected 'be' or '=' after variable name", self.peek())
-        return ast_nodes.LetStatement(name=name_tok.value or "", expr=expr, uses_equals=uses_equals, span=self._span(start))
+            raise self.error("Expected 'be' after variable name", self.peek())
+        if self.match_value("KEYWORD", "if"):
+            raise self.error(
+                "Inline conditional expressions like value if condition else other are not supported. Use an if / otherwise if / else block instead.",
+                self.peek(),
+            )
+        return ast_nodes.LetStatement(
+            name=name_tok.value if name_tok else "",
+            expr=expr,
+            uses_equals=False,
+            is_constant=is_constant,
+            pattern=pattern,
+            span=self._span(start),
+        )
 
     def parse_set_statement(self) -> ast_nodes.SetStatement:
         start = self.consume("KEYWORD", "set")
@@ -3811,10 +3969,18 @@ class Parser:
         if self.match_value("OP", "."):
             field_tok = self.consume_any({"IDENT", "KEYWORD"})
             full_name = f"{name_tok.value}.{field_tok.value}"
-        if self.match_value("KEYWORD", "be") or self.match_value("OP", "=") or self.match_value("KEYWORD", "to"):
+        if self.match_value("KEYWORD", "be") or self.match_value("KEYWORD", "to"):
             expr = self.parse_expression()
+        elif self.peek().type == "OP" and self.peek().value == "=":
+            tok = self.peek()
+            raise self.error("set state.x = ... is not supported. Write set state.x be ... instead.", tok)
         else:
-            raise self.error("Expected 'be', 'to', or '=' after target in set statement", self.peek())
+            raise self.error("Expected 'be' or 'to' after target in set statement", self.peek())
+        if self.match_value("KEYWORD", "if"):
+            raise self.error(
+                "Inline conditional expressions like value if condition else other are not supported. Use an if / otherwise if / else block instead.",
+                self.peek(),
+            )
         return ast_nodes.SetStatement(name=full_name, expr=expr, span=self._span(start))
 
     def parse_repeat_statement(self) -> ast_nodes.Statement:

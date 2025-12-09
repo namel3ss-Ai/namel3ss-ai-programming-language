@@ -30,6 +30,10 @@
       {
         "command": "namel3ss.restartServer",
         "title": "Namel3ss: Restart Language Server"
+      },
+      {
+        "command": "namel3ss.runLint",
+        "title": "Namel3ss: Lint File"
       }
     ],
     "configuration": {
@@ -54,6 +58,24 @@
           "enum": ["off", "messages", "verbose"],
           "default": "off",
           "description": "Language server trace level."
+        },
+        "namel3ss.lint.onSave": {
+          "type": "boolean",
+          "default": true,
+          "description": "Run `n3 lint --json` on save for Namel3ss files."
+        },
+        "namel3ss.lint.command": {
+          "type": "string",
+          "default": "n3",
+          "description": "Command used to run linting (defaults to the LSP command)."
+        },
+        "namel3ss.lint.args": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": ["lint", "--json"],
+          "description": "Arguments passed to the lint command."
         }
       }
     }

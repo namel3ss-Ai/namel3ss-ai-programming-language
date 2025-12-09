@@ -19,7 +19,7 @@ def _client(tmp_path: Path) -> TestClient:
 def test_ui_flow_execute_success(tmp_path: Path):
     (tmp_path / "flows").mkdir()
     (tmp_path / "flows" / "hello.ai").write_text(
-        'flow "hello":\n  step "s":\n    log info "hi"\n', encoding="utf-8"
+        'flow is "hello":\n  step is "s":\n    log info "hi"\n', encoding="utf-8"
     )
     client = _client(tmp_path)
     resp = client.post(

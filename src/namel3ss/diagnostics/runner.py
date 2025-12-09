@@ -6,7 +6,7 @@ from typing import Iterable, List, Tuple
 
 from .. import ir, lexer, parser, linting
 from ..errors import Namel3ssError
-from . import Diagnostic, create_diagnostic, legacy_to_structured
+from . import Diagnostic, create_diagnostic, legacy_to_structured, get_definition
 from .pipeline import run_diagnostics
 
 
@@ -26,7 +26,7 @@ def apply_strict_mode(diagnostics: Iterable[Diagnostic], strict: bool) -> Tuple[
         return diags, summary_counts(diags)
     upgraded: list[Diagnostic] = []
     for diag in diagnostics:
-        if diag.severity == "warning" and diag.category in {"lang-spec", "semantic"}:
+        if diag.severity == "warning" and diag.category in {"lang-spec", "semantic", "lint"}:
             upgraded.append(replace(diag, severity="error"))
         else:
             upgraded.append(diag)
@@ -40,6 +40,34 @@ def summary_counts(diags: Iterable[Diagnostic]) -> dict[str, int]:
         "warnings": sum(1 for d in diags_list if d.severity == "warning"),
         "infos": sum(1 for d in diags_list if d.severity == "info"),
     }
+
+
+def _diagnostic_from_error(err: Namel3ssError, path: Path) -> Diagnostic:
+    msg = err.message or ""
+    detail = msg
+    hint = None
+    if ":" in msg:
+        prefix, remainder = msg.split(":", 1)
+        prefix = prefix.strip()
+        detail = remainder.strip() or msg
+        if "Did you mean" in detail:
+            hint = detail[detail.index("Did you mean") :].strip()
+        if prefix.startswith("N3L-") and get_definition(prefix):
+            return create_diagnostic(
+                prefix,
+                message_kwargs={"detail": detail},
+                file=str(path),
+                line=err.line,
+                column=err.column,
+                hint=hint,
+            )
+    return create_diagnostic(
+        "N3-0001",
+        message_kwargs={"detail": msg},
+        file=str(path),
+        line=err.line,
+        column=err.column,
+    )
 
 
 def _parse_file(path: Path) -> tuple[list[Diagnostic], object | None]:
@@ -57,14 +85,7 @@ def _parse_file(path: Path) -> tuple[list[Diagnostic], object | None]:
             return [diag], None
         return [], module
     except Namel3ssError as err:
-        diag = create_diagnostic(
-            "N3-0001",
-            message_kwargs={"detail": err.message},
-            file=str(path),
-            line=err.line,
-            column=err.column,
-        )
-        return [diag], None
+        return [_diagnostic_from_error(err, path)], None
 
 
 def _compile_to_ir(path: Path, module) -> tuple[list[Diagnostic], object | None]:

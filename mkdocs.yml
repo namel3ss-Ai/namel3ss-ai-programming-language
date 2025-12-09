@@ -15,14 +15,17 @@ nav:
       - RAG & Memory: docs/quickstart/rag-and-memory.md
   - Reference:
       - CLI: docs/reference/cli.md
+      - CLI Lint & Doctor: docs/reference/cli-lint-doctor.md
       - HTTP API: docs/reference/http-api.md
       - Plugins: docs/reference/plugins.md
       - Deployment: docs/reference/deployment.md
       - Optimizer: docs/reference/optimizer.md
       - VS Code: docs/reference/vscode-extension.md
+      - Errors: docs/reference/errors.md
       - English Conditions: docs/language/conditions.md
       - English Syntax: docs/language/english_syntax.md
-      - Variables & Scope: docs/language/variables-scope.md
+      - Variables & Scope: docs/book/variables_and_scope.md
+      - Migrating to English Syntax: docs/language/migrating_to_english_syntax.md
       - Examples: docs/reference/examples.md
   - Concepts:
       - AI: docs/concepts/ai.md

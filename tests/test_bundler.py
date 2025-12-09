@@ -11,10 +11,10 @@ from namel3ss.deploy.docker import generate_dockerfile
 
 
 EXAMPLE_APP = """\
-app "hello":
-  entry_page "home"
+app is "hello":
+  entry_page is "home"
 
-page "home":
+page is "home":
   route "/"
   section "hero":
     component "text":

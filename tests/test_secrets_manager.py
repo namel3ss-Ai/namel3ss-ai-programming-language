@@ -1,10 +1,17 @@
-from namel3ss.secrets.manager import SecretsManager
+from namel3ss.secrets.manager import EnvSecretsManager
+import pytest
 
 
-def test_secrets_manager_get_and_list():
-    env = {"API_KEY": "123", "OTHER": "456"}
-    mgr = SecretsManager(env)
-    assert mgr.get("API_KEY") == "123"
-    all_secrets = mgr.list()
-    names = {s.name for s in all_secrets}
-    assert "API_KEY" in names and "OTHER" in names
+def test_env_secrets_manager_reads_env(monkeypatch):
+    monkeypatch.setenv("N3_TEST_SECRET", "value123")
+    mgr = EnvSecretsManager()
+    assert mgr.get_secret("N3_TEST_SECRET") == "value123"
+    assert mgr.is_enabled("N3_TEST_SECRET") is True
+
+
+def test_env_secrets_manager_require_secret(monkeypatch):
+    mgr = EnvSecretsManager(env={"FOO": "bar"})
+    assert mgr.require_secret("FOO") == "bar"
+    with pytest.raises(Exception):
+        mgr.require_secret("MISSING")
+

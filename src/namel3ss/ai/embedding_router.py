@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import Dict, Optional, Sequence
 
 from ..errors import Namel3ssError
-from ..secrets.manager import SecretsManager
+from ..secrets.manager import SecretsManager, get_default_secrets_manager
 from .embeddings import EmbeddingBatchResult, EmbeddingProvider, DeterministicEmbeddingProvider
 from .embeddings.http_generic import HTTPEmbeddingProvider
 from .embeddings.openai import OpenAIEmbeddingProvider
@@ -13,7 +13,7 @@ from .embeddings.openai import OpenAIEmbeddingProvider
 
 class EmbeddingRouter:
     def __init__(self, secrets: Optional[SecretsManager] = None) -> None:
-        self.secrets = secrets or SecretsManager()
+        self.secrets = secrets or get_default_secrets_manager()
         self._cache: Dict[str, EmbeddingProvider] = {}
 
     def _provider_from_prefix(self, prefix: str, model: Optional[str]) -> EmbeddingProvider:

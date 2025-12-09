@@ -46,8 +46,8 @@ def test_helper_call_with_return():
         "  let result be x * 2\n"
         "  return result\n"
         '\n'
-        'flow "f":\n'
-        '  step "s":\n'
+        'flow is "f":\n'
+        '  step is "s":\n'
         "    let val be double(3)\n"
         '    do agent "done"\n'
     )
@@ -65,8 +65,8 @@ def test_helper_return_none():
         'define helper "noop":\n'
         "  return\n"
         '\n'
-        'flow "f":\n'
-        '  step "s":\n'
+        'flow is "f":\n'
+        '  step is "s":\n'
         "    let val be noop()\n"
         '    do agent "done"\n'
     )
@@ -81,8 +81,8 @@ def test_helper_return_none():
 
 def test_return_outside_helper_errors():
     source = (
-        'flow "f":\n'
-        '  step "s":\n'
+        'flow is "f":\n'
+        '  step is "s":\n'
         "    return 5\n"
     )
     ir_prog = ast_to_ir(parse_source(source))
@@ -94,8 +94,8 @@ def test_return_outside_helper_errors():
 
 def test_unknown_helper_call_errors():
     source = (
-        'flow "f":\n'
-        '  step "s":\n'
+        'flow is "f":\n'
+        '  step is "s":\n'
         "    let val be missing_helper(1)\n"
     )
     ir_prog = ast_to_ir(parse_source(source))

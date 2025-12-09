@@ -10,7 +10,7 @@ component "PrimaryButton":
       on click:
         do action
 
-page "home" at "/":
+page is "home" at "/":
   layout is column
   padding is medium
 

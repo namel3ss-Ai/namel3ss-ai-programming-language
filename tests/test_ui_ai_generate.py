@@ -18,7 +18,7 @@ def _client(tmp_path: Path) -> TestClient:
 
 def test_ai_generate_ui_inserts_content(tmp_path: Path):
     (tmp_path / "pages").mkdir()
-    (tmp_path / "pages" / "home.ai").write_text('page "home" at "/":\n  heading "Welcome"\n', encoding="utf-8")
+    (tmp_path / "pages" / "home.ai").write_text('page is "home" at "/":\n  heading "Welcome"\n', encoding="utf-8")
     client = _client(tmp_path)
     resp = client.post(
         "/api/studio/ui/generate",

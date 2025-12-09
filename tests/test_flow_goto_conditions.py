@@ -62,8 +62,8 @@ def _make_engine(ir_prog: IRProgram):
 
 def test_parse_goto_flow_in_step():
     module = parse_source(
-        'flow "start":\n'
-        '  step "jump":\n'
+        'flow is "start":\n'
+        '  step is "jump":\n'
         '    go to flow "end"\n'
     )
     flow = next(d for d in module.declarations if getattr(d, "name", "") == "start")
@@ -74,11 +74,11 @@ def test_parse_goto_flow_in_step():
 
 def test_runtime_redirect_runs_target_flow():
     source = (
-        'flow "start":\n'
-        '  step "jump":\n'
+        'flow is "start":\n'
+        '  step is "jump":\n'
         '    go to flow "end"\n'
-'flow "end":\n'
-'  step "done":\n'
+'flow is "end":\n'
+'  step is "done":\n'
 '    kind "tool"\n'
 '    tool "echo"\n'
     )
@@ -98,18 +98,18 @@ def test_runtime_redirect_runs_target_flow():
 
 def test_conditional_redirect_branch_selection():
     source = (
-        'flow "router":\n'
-        '  step "route":\n'
+        'flow is "router":\n'
+        '  step is "route":\n'
         '    if result.category is "billing":\n'
         '      go to flow "billing_flow"\n'
         '    otherwise:\n'
         '      go to flow "fallback_flow"\n'
-'flow "billing_flow":\n'
-'  step "bill":\n'
+'flow is "billing_flow":\n'
+'  step is "bill":\n'
 '    kind "tool"\n'
 '    tool "echo"\n'
-'flow "fallback_flow":\n'
-'  step "fb":\n'
+'flow is "fallback_flow":\n'
+'  step is "fb":\n'
 '    kind "tool"\n'
 '    tool "echo"\n'
     )
@@ -130,7 +130,7 @@ def test_conditional_redirect_branch_selection():
 def test_goto_requires_string_literal():
     with pytest.raises(ParseError):
         parse_source(
-            'flow "start":\n'
-            '  step "jump":\n'
+            'flow is "start":\n'
+            '  step is "jump":\n'
             '    go to flow end\n'
         )

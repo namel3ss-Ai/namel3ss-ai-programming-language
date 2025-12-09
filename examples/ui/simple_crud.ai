@@ -1,10 +1,10 @@
-flow "list_items":
-  step "fetch" kind "tool" target "echo" message "list"
+flow is "list_items":
+  step is "fetch" kind "tool" target "echo" message "list"
 
-flow "create_item":
-  step "create" kind "tool" target "echo" message "create"
+flow is "create_item":
+  step is "create" kind "tool" target "echo" message "create"
 
-page "items" at "/items":
+page is "items" at "/items":
   heading "Items"
   text "A simple CRUD surface"
 
@@ -16,6 +16,6 @@ page "items" at "/items":
     show:
       text "Listing items..."
 
-page "item_detail" at "/items/:id":
+page is "item_detail" at "/items/:id":
   heading "Detail"
   text "Details will go here."

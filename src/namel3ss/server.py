@@ -16,7 +16,7 @@ import uuid
 from fastapi import Depends, FastAPI, HTTPException, UploadFile, File, Form, Query
 from fastapi.responses import HTMLResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ConfigDict
 
 from . import ir, lexer, parser
 from .ai.registry import ModelRegistry
@@ -56,7 +56,7 @@ from .studio.engine import StudioEngine
 from .diagnostics.runner import collect_diagnostics, collect_lint, iter_ai_files
 from . import linting
 from .packaging.bundler import Bundler, make_server_bundle, make_worker_bundle
-from .secrets.manager import SecretsManager
+from .secrets.manager import SecretsManager, get_default_secrets_manager
 from .plugins.registry import PluginRegistry
 from .plugins.versioning import CORE_VERSION
 from .optimizer.storage import OptimizerStorage
@@ -66,6 +66,7 @@ from .optimizer.apply import SuggestionApplier
 from .examples.manager import resolve_example_path, get_examples_root
 from .ui.manifest import build_ui_manifest
 from .flows.models import StreamEvent
+from .migration.naming import migrate_source_to_naming_standard
 
 BASE_DIR = Path(__file__).resolve().parents[2]
 STUDIO_STATIC_DIR = BASE_DIR / "studio" / "static"
@@ -255,6 +256,31 @@ class MemoryClearRequest(BaseModel):
     kinds: List[str] | None = None
 
 
+class NamingMigrationChange(BaseModel):
+    from_name: str = Field(..., alias="from")
+    to_name: str = Field(..., alias="to")
+    model_config = ConfigDict(populate_by_name=True)
+
+
+class NamingMigrationSummary(BaseModel):
+    headers_rewritten: int = 0
+    let_rewritten: int = 0
+    set_rewritten: int = 0
+    names_renamed: list[NamingMigrationChange] = []
+    suggested_names: list[NamingMigrationChange] = []
+    changed: bool = False
+
+
+class NamingMigrationRequest(BaseModel):
+    source: str
+    fix_names: bool = False
+
+
+class NamingMigrationResponse(BaseModel):
+    source: str
+    changes_summary: NamingMigrationSummary
+
+
 def _parse_source_to_ast(source: str) -> Dict[str, Any]:
     tokens = lexer.Lexer(source).tokenize()
     module = parser.Parser(tokens).parse_module()
@@ -282,14 +308,18 @@ def create_app() -> FastAPI:
     recent_traces: List[Dict[str, Any]] = []
     recent_agent_traces: List[Dict[str, Any]] = []
     metrics_tracker = MetricsTracker()
-    plugin_registry = PluginRegistry(Path(SecretsManager().get("N3_PLUGINS_DIR") or "plugins"), core_version=CORE_VERSION, tracer=Tracer())
+    plugin_registry = PluginRegistry(
+        Path(get_default_secrets_manager().get("N3_PLUGINS_DIR") or "plugins"),
+        core_version=CORE_VERSION,
+        tracer=Tracer(),
+    )
     trigger_manager = TriggerManager(
-        job_queue=global_job_queue, secrets=SecretsManager(), tracer=Tracer(), metrics=metrics_tracker, project_root=project_root
+        job_queue=global_job_queue, secrets=get_default_secrets_manager(), tracer=Tracer(), metrics=metrics_tracker, project_root=project_root
     )
     file_watcher = FileWatcher(trigger_manager, project_root)
     trigger_manager.file_watcher = file_watcher
-    optimizer_storage = OptimizerStorage(Path(SecretsManager().get("N3_OPTIMIZER_DB") or "optimizer.db"))
-    overlay_store = OverlayStore(Path(SecretsManager().get("N3_OPTIMIZER_OVERLAYS") or "optimizer_overlays.json"))
+    optimizer_storage = OptimizerStorage(Path(get_default_secrets_manager().get("N3_OPTIMIZER_DB") or "optimizer.db"))
+    overlay_store = OverlayStore(Path(get_default_secrets_manager().get("N3_OPTIMIZER_OVERLAYS") or "optimizer_overlays.json"))
     state_subscribers: list[asyncio.Queue] = []
 
     async def _broadcast_state_event(evt: dict[str, Any]) -> None:
@@ -565,6 +595,28 @@ def create_app() -> FastAPI:
         except ParseError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         return FmtPreviewResponse(formatted=formatted, changes_made=formatted != payload.source)
+
+    @app.post("/api/migrate/naming-standard", response_model=NamingMigrationResponse)
+    def api_migrate_naming_standard(payload: NamingMigrationRequest) -> NamingMigrationResponse:
+        try:
+            migrated, result, summary = migrate_source_to_naming_standard(
+                payload.source, apply_name_fixes=payload.fix_names
+            )
+        except Exception as exc:  # pragma: no cover - FastAPI handles tracebacks
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        renamed = summary.get("names_renamed") or []
+        suggested = summary.get("suggested_names") or []
+        return NamingMigrationResponse(
+            source=migrated,
+            changes_summary=NamingMigrationSummary(
+                headers_rewritten=summary.get("headers_rewritten", 0),
+                let_rewritten=summary.get("let_rewritten", 0),
+                set_rewritten=summary.get("set_rewritten", 0),
+                names_renamed=[{"from": entry["from"], "to": entry["to"]} for entry in renamed],
+                suggested_names=[{"from": entry["from"], "to": entry["to"]} for entry in suggested],
+                changed=summary.get("changed", False),
+            ),
+        )
 
     @app.get("/api/studio/files")
     def api_studio_files(principal: Principal = Depends(get_principal)) -> Dict[str, Any]:
@@ -1798,7 +1850,7 @@ def create_app() -> FastAPI:
             memory_engine=None,
             tracer=Tracer(),
             router=None,
-            secrets=SecretsManager(),
+            secrets=get_default_secrets_manager(),
         )
         suggestions = engine.scan()
         return {"created": [s.id for s in suggestions]}

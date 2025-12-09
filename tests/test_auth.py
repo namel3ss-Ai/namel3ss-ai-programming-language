@@ -51,12 +51,12 @@ def _engine_and_context(program: IRProgram):
 
 def test_parse_auth_config():
     module = parse_source(
-        'frame "users":\n'
+        'frame is "users":\n'
         '  backend "memory"\n'
         '  table "users"\n'
         "\n"
         'record "User":\n'
-        '  frame "users"\n'
+        '  frame is "users"\n'
         "  fields:\n"
         '    id:\n'
         '      type "uuid"\n'

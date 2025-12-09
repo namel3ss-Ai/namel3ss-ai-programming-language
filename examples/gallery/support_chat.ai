@@ -11,13 +11,13 @@ define helper "route_intent":
     otherwise:
       return "fallback_agent"
 
-flow "support_chat":
-  step "classify":
+flow is "support_chat":
+  step is "classify":
     ask user for "Issue" as issue
     log info "classifying issue"
     let intent be issue
 
-  step "route":
+  step is "route":
     let target be route_intent(intent)
     match target:
       when "billing_agent":

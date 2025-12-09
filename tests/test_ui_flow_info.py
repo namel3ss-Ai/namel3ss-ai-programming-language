@@ -18,7 +18,7 @@ def _client(tmp_path: Path) -> TestClient:
 
 def test_ui_flow_info(tmp_path: Path):
     (tmp_path / "flows").mkdir()
-    (tmp_path / "flows" / "demo.ai").write_text('flow "demo":\n  step "s":\n    log info "ok"\n', encoding="utf-8")
+    (tmp_path / "flows" / "demo.ai").write_text('flow is "demo":\n  step is "s":\n    log info "ok"\n', encoding="utf-8")
     client = _client(tmp_path)
     resp = client.get("/api/ui/flow/info", params={"name": "demo"}, headers={"X-API-Key": "dev-key"})
     assert resp.status_code == 200

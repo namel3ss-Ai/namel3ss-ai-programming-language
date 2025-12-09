@@ -5,11 +5,17 @@ Agent execution engine with reflection, planning, and retries.
 from __future__ import annotations
 
 import time
+import urllib.error
 from typing import Any, Optional
 
 from .. import ast_nodes
 from ..ai.registry import ModelRegistry
-from ..errors import Namel3ssError
+from ..errors import (
+    Namel3ssError,
+    ProviderCircuitOpenError,
+    ProviderRetryError,
+    ProviderTimeoutError,
+)
 from ..ir import (
     IRAction,
     IRAskUser,
@@ -35,6 +41,8 @@ from ..observability.tracing import default_tracer
 from ..runtime.context import ExecutionContext, execute_ai_call_with_registry
 from ..runtime.expressions import EvaluationError, ExpressionEvaluator, VariableEnvironment
 from ..runtime.frames import FrameRegistry
+from ..runtime.retries import get_default_retry_config, run_with_retries_and_timeout
+from ..runtime.circuit_breaker import default_circuit_breaker
 from ..tools.registry import ToolRegistry
 from .evaluation import AgentEvaluation, AgentEvaluator
 from .evaluators import AgentStepEvaluator, DeterministicEvaluator, OpenAIEvaluator
@@ -67,6 +75,31 @@ class AgentRunner:
         self._planner = AgentPlanner(router=self.router, agent_config=self.config)
         self._evaluator = AgentEvaluator(router=self.router)
         self.frame_registry = FrameRegistry(program.frames if program else {})
+
+    def _apply_destructuring(self, pattern, value, env, context, *, is_constant: bool = False) -> None:
+        if pattern.kind == "record":
+            if not isinstance(value, dict):
+                raise Namel3ssError("Cannot destructure record; expected an object with fields.")
+            for field in pattern.fields:
+                target_name = field.alias or field.name
+                if field.name not in value:
+                    raise Namel3ssError(f"Cannot destructure field {field.name}; this value has no {field.name} field.")
+                env.declare(target_name, value.get(field.name), is_constant=is_constant)
+                context.metadata[target_name] = value.get(field.name)
+            return
+        if pattern.kind == "list":
+            if not isinstance(value, (list, tuple)):
+                raise Namel3ssError("Cannot destructure list; expected a list/sequence.")
+            fields = pattern.fields
+            if len(value) < len(fields):
+                raise Namel3ssError(
+                    f"Cannot destructure list into [{', '.join(fields)}]; it has only {len(value)} elements."
+                )
+            for idx, name in enumerate(fields):
+                env.declare(name, value[idx] if idx < len(value) else None, is_constant=is_constant)
+                context.metadata[name] = value[idx] if idx < len(value) else None
+            return
+        raise Namel3ssError("Unsupported destructuring pattern.")
 
     def build_plan(self, agent: IRAgent, page_ai_fallback: Optional[str] = None) -> AgentExecutionPlan:
         steps: list[AgentStep] = []
@@ -358,7 +391,47 @@ class AgentRunner:
             if step.target not in self.program.ai_calls:
                 raise Namel3ssError(f"AI call '{step.target}' not found")
             ai_call = self.program.ai_calls[step.target]
-            return execute_ai_call_with_registry(ai_call, self.model_registry, self.router, context)
+            provider, provider_model, provider_name = self.model_registry.resolve_provider_for_ai(ai_call)
+            provider_model = provider_model or ai_call.model_name or provider_name
+            provider_key = f"model:{provider_name}:{provider_model}"
+            retries = 0
+            status = "success"
+            retry_config = get_default_retry_config()
+
+            def _on_error(exc: BaseException, attempt: int) -> None:
+                nonlocal retries
+                retries = max(retries, attempt + 1)
+
+            start_time = time.monotonic()
+            try:
+                return run_with_retries_and_timeout(
+                    lambda: execute_ai_call_with_registry(ai_call, self.model_registry, self.router, context),
+                    config=retry_config,
+                    error_types=(ProviderTimeoutError, urllib.error.URLError, ConnectionError, TimeoutError),
+                    on_error=_on_error,
+                    circuit_breaker=default_circuit_breaker,
+                    provider_key=provider_key,
+                )
+            except ProviderCircuitOpenError:
+                status = "circuit_open"
+                raise
+            except ProviderTimeoutError:
+                status = "timeout"
+                raise
+            except ProviderRetryError:
+                status = "failure"
+                raise
+            except Exception:
+                status = "failure"
+                raise
+            finally:
+                duration = time.monotonic() - start_time
+                try:
+                    default_metrics.record_provider_call(provider_name, provider_model, status, duration)
+                    if status == "circuit_open":
+                        default_metrics.record_circuit_open(provider_name)
+                except Exception:
+                    pass
         if step.kind == "subagent":
             if step.target not in self.program.agents:
                 raise Namel3ssError(f"Sub-agent '{step.target}' not found")
@@ -446,8 +519,11 @@ class AgentRunner:
             for stmt in helper.body:
                 if isinstance(stmt, IRLet):
                     val = evaluator.evaluate(stmt.expr) if stmt.expr is not None else None
-                    env.declare(stmt.name, val)
-                    context.metadata[stmt.name] = val
+                    if stmt.pattern:
+                        self._apply_destructuring(stmt.pattern, val, env, context, is_constant=stmt.is_constant)
+                    else:
+                        env.declare(stmt.name, val)
+                        context.metadata[stmt.name] = val
                     context.variables = env.values
                 elif isinstance(stmt, IRSet):
                     if not env.has(stmt.name):
@@ -676,7 +752,29 @@ class AgentRunner:
                 return False, None
         return True, subject
 
-    def _eval_condition_with_binding(self, expr: ast_nodes.Expr | None, context: ExecutionContext) -> tuple[bool, Any]:
+    def _format_condition_value(self, value: Any) -> str:
+        try:
+            rendered = repr(value)
+        except Exception:
+            rendered = f"<{value.__class__.__name__}>"
+        if len(rendered) > 120:
+            rendered = f"{rendered[:117]}..."
+        return rendered
+
+    def _condition_descriptor(self, context_label: str | None) -> str:
+        if not context_label or context_label == "condition":
+            return "condition"
+        if context_label.endswith("condition"):
+            return context_label
+        return f"{context_label} condition"
+
+    def _eval_condition_with_binding(
+        self,
+        expr: ast_nodes.Expr | None,
+        context: ExecutionContext,
+        *,
+        context_label: str = "condition",
+    ) -> tuple[bool, Any]:
         if expr is None:
             return True, None
         if isinstance(expr, ast_nodes.PatternExpr):
@@ -689,14 +787,20 @@ class AgentRunner:
         except EvaluationError as exc:
             raise Namel3ssError(str(exc))
         if not isinstance(value, bool):
-            raise Namel3ssError("Condition must evaluate to a boolean")
+            descriptor = self._condition_descriptor(context_label)
+            raise Namel3ssError(
+                "This "
+                + descriptor
+                + " did not evaluate to a boolean value.\n"
+                + f"I got {self._format_condition_value(value)} instead. Make sure the condition returns true or false."
+            )
         return bool(value), value
 
     def _execute_ir_if(self, stmt: IRIf, context: ExecutionContext) -> None:
         env = getattr(context, "_env", None) or VariableEnvironment(context.variables)
         context._env = env
         for idx, br in enumerate(stmt.branches):
-            result, candidate_binding = self._eval_condition_with_binding(br.condition, context)
+            result, candidate_binding = self._eval_condition_with_binding(br.condition, context, context_label="if")
             label = br.label or f"branch-{idx}"
             if br.label == "unless":
                 result = not result
@@ -730,9 +834,12 @@ class AgentRunner:
         evaluator = self._build_evaluator(context)
         if isinstance(stmt, IRLet):
             value = evaluator.evaluate(stmt.expr) if stmt.expr is not None else None
-            env.declare(stmt.name, value)
+            if stmt.pattern:
+                self._apply_destructuring(stmt.pattern, value, env, context, is_constant=stmt.is_constant)
+            else:
+                env.declare(stmt.name, value)
+                context.metadata[stmt.name] = value
             context.variables = env.values
-            context.metadata[stmt.name] = value
             context.metadata["last_output"] = value
             return value
         if isinstance(stmt, IRSet):

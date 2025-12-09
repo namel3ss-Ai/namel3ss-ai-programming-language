@@ -4,33 +4,33 @@ memory "support_history":
 model "support-llm":
   provider "openai"
 
-ai "classify_issue":
+ai is \"classify_issue":
   model "support-llm"
   input from "user_input"
   description "Classify the user's support request."
 
-agent "support_agent":
+agent is \"support_agent":
   goal "Provide helpful support answers using the classification and history."
   personality "patient and pragmatic"
 
-flow "support_flow":
+flow is "support_flow":
   description "Classify the request, respond, and log the interaction."
-  step "classify":
+  step is "classify":
     kind "ai"
     target "classify_issue"
-  step "respond":
+  step is "respond":
     kind "agent"
     target "support_agent"
-  step "log":
+  step is "log":
     kind "tool"
     target "echo"
     message "User request was processed and logged."
 
-app "support_bot_app":
-  entry_page "support_home"
+app is "support_bot_app":
+  entry_page is "support_home"
   description "Support assistant with memory and a simple logging tool."
 
-page "support_home" at "/support":
+page is "support_home" at "/support":
   section "intro":
     heading "Support Bot"
     text "Describe an issue; the flow classifies it, routes to an agent, and logs the result."

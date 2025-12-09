@@ -12,6 +12,7 @@ from . import ast_nodes
 from .config import load_config
 from .errors import IRError
 from .tools.builtin import BUILTIN_TOOL_NAMES
+from .version import IR_VERSION
 
 
 DEFAULT_SHORT_TERM_WINDOW = 20
@@ -19,6 +20,8 @@ DEFAULT_SHORT_TERM_WINDOW = 20
 
 @dataclass
 class IRApp:
+    """Application definition with entry page information."""
+
     name: str
     description: str | None = None
     entry_page: str | None = None
@@ -26,6 +29,8 @@ class IRApp:
 
 @dataclass
 class IRPage:
+    """Page definition including layout, sections, and associated AI/agent calls."""
+
     name: str
     title: str | None = None
     route: str | None = None
@@ -44,12 +49,16 @@ class IRPage:
 
 @dataclass
 class IRModel:
+    """Logical model mapping to a provider."""
+
     name: str
     provider: str | None = None
 
 
 @dataclass
 class IRAiCall:
+    """AI call definition used by flows and pages."""
+
     name: str
     model_name: str | None = None
     provider: str | None = None
@@ -182,6 +191,7 @@ class IRSettings:
 @dataclass
 class IRFlowStep:
     name: str
+    alias: str | None = field(default=None, kw_only=True)
     kind: Literal[
         "ai",
         "agent",
@@ -219,6 +229,8 @@ class IRFlowStep:
 
 @dataclass
 class IRFlow:
+    """Flow definition consisting of ordered steps and optional error handler steps."""
+
     name: str
     description: str | None
     steps: List[Union["IRFlowStep", "IRFlowLoop"]] = field(default_factory=list)
@@ -261,6 +273,8 @@ class IRAction:
 class IRLet:
     name: str
     expr: ast_nodes.Expr | None = None
+    is_constant: bool = False
+    pattern: ast_nodes.DestructuringPattern | None = None
 
 
 @dataclass
@@ -609,6 +623,9 @@ class IRAuth:
 
 @dataclass
 class IRProgram:
+    """Top-level IR container for a Namel3ss program."""
+
+    version: str = IR_VERSION
     apps: Dict[str, IRApp] = field(default_factory=dict)
     pages: Dict[str, IRPage] = field(default_factory=dict)
     models: Dict[str, IRModel] = field(default_factory=dict)
@@ -882,6 +899,7 @@ def _evaluate_record_default(
 
 def ast_to_ir(module: ast_nodes.Module) -> IRProgram:
     program = IRProgram()
+    program.version = IR_VERSION
     page_names = {decl.name for decl in module.declarations if isinstance(decl, ast_nodes.PageDecl)}
     allowed_memory_types = {"conversation", "user", "global"}
     macro_defs: dict[str, ast_nodes.Expr] = {}
@@ -905,6 +923,7 @@ def ast_to_ir(module: ast_nodes.Module) -> IRProgram:
             ir_statements = [lower_statement(stmt) for stmt in step.statements]
             return IRFlowStep(
                 name=step.name,
+                alias=getattr(step, "alias", None),
                 kind="script",
                 target=step.target or step.name,
                 message=getattr(step, "message", None),
@@ -922,6 +941,7 @@ def ast_to_ir(module: ast_nodes.Module) -> IRProgram:
             branches: list[IRConditionalBranch] = [lower_branch(br) for br in step.conditional_branches]
             return IRFlowStep(
                 name=step.name,
+                alias=getattr(step, "alias", None),
                 kind="condition",
                 target=step.name,
                 conditional_branches=branches,
@@ -976,6 +996,7 @@ def ast_to_ir(module: ast_nodes.Module) -> IRProgram:
                 raise IRError("N3L-941: vector_query step must define 'query_text'.", step.span and step.span.line)
         return IRFlowStep(
             name=step.name,
+            alias=getattr(step, "alias", None),
             kind=step.kind,
             target=step.target,
             message=getattr(step, "message", None),
@@ -1071,7 +1092,7 @@ def ast_to_ir(module: ast_nodes.Module) -> IRProgram:
         if isinstance(stmt, ast_nodes.FlowAction):
             return IRAction(kind=stmt.kind, target=stmt.target, message=stmt.message, args=stmt.args)
         if isinstance(stmt, ast_nodes.LetStatement):
-            return IRLet(name=stmt.name, expr=stmt.expr)
+            return IRLet(name=stmt.name, expr=stmt.expr, is_constant=stmt.is_constant, pattern=stmt.pattern)
         if isinstance(stmt, ast_nodes.SetStatement):
             return IRSet(name=stmt.name, expr=stmt.expr)
         if isinstance(stmt, ast_nodes.TryCatchStatement):

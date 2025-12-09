@@ -4,19 +4,19 @@ from namel3ss.cli import main
 
 
 PROGRAM_TEXT = (
-    'app "support_portal":\n'
+    'app is "support_portal":\n'
     '  description "Support portal for customer questions"\n'
-    '  entry_page "home"\n'
-    'page "home":\n'
+    '  entry_page is "home"\n'
+    'page is "home":\n'
     '  title "Home"\n'
     '  route "/"\n'
     '  agent "helper"\n'
     'model "default":\n'
     '  provider "openai:gpt-4.1-mini"\n'
-    'ai "summarise_message":\n'
+    'ai is "summarise_message":\n'
     '  model "default"\n'
     '  input from user_message\n'
-    'agent "helper":\n'
+    'agent is "helper":\n'
     '  goal "Assist"\n'
 )
 
@@ -65,13 +65,13 @@ def test_cli_run_agent(tmp_path, capsys):
 
 def test_cli_run_flow(tmp_path, capsys):
     flow_program = (
-        'flow "pipeline":\n'
-        '  step "call":\n'
+        'flow is "pipeline":\n'
+        '  step is "call":\n'
         '    kind "ai"\n'
         '    target "summarise_message"\n'
         'model "default":\n'
         '  provider "openai:gpt-4.1-mini"\n'
-        'ai "summarise_message":\n'
+        'ai is "summarise_message":\n'
         '  model "default"\n'
     )
     program_file = tmp_path / "flow.ai"
@@ -100,7 +100,7 @@ def test_cli_bundle_and_diagnostics_not_run_yet(tmp_path, capsys):
 
 def test_cli_lint_command(tmp_path, capsys):
     program_file = tmp_path / "lint.ai"
-    program_file.write_text('flow "demo":\n  step "s":\n    let temp = 1\n', encoding="utf-8")
+    program_file.write_text('flow is "demo":\n  step is "s":\n    let temp be 1\n', encoding="utf-8")
     main(["lint", str(program_file)])
     out = capsys.readouterr().out
     assert "N3-L001" in out

@@ -1,7 +1,7 @@
-app "rag-search":
-  entry_page "home"
+app is "rag-search":
+  entry_page is "home"
 
-page "home" at "/":
+page is "home" at "/":
   section "upload":
     heading "RAG Search"
     text "This skeleton shows where upload/query UI would go once wired to flows."
@@ -11,14 +11,14 @@ page "home" at "/":
 model "default":
   provider "dummy"
 
-ai "rewrite":
+ai is \"rewrite":
   model "default"
   input from "user_input"
 
-flow "answer":
-  step "rewrite":
+flow is "answer":
+  step is "rewrite":
     kind "ai"
     target "rewrite"
-  step "echo":
+  step is "echo":
     kind "tool"
     target "echo"

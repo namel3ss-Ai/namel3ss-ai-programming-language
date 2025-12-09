@@ -15,13 +15,13 @@ class FakeEmbeddingClient(EmbeddingClient):
 def build_registry():
     mod = parser.parse_source(
         '''
-frame "docs":
+frame is "docs":
   backend "memory"
   table "docs"
 
-vector_store "kb":
+vector_store is "kb":
   backend "memory"
-  frame "docs"
+  frame is "docs"
   text_column "content"
   id_column "id"
   embedding_model "fake"

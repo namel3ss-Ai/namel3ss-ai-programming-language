@@ -54,8 +54,8 @@ def _build_engine(program: IRProgram):
 
 def test_parse_try_catch():
     module = parse_source(
-        'flow "f":\n'
-        '  step "s":\n'
+        'flow is "f":\n'
+        '  step is "s":\n'
         '    kind "script"\n'
         '    try:\n'
         '      set state.a be 1\n'
@@ -72,8 +72,8 @@ def test_parse_try_catch():
 def test_parse_invalid_catch_without_name():
     with pytest.raises(ParseError):
         parse_source(
-            'flow "f":\n'
-            '  step "s":\n'
+            'flow is "f":\n'
+            '  step is "s":\n'
             '    kind "script"\n'
             '    try:\n'
             '      set state.a be 1\n'

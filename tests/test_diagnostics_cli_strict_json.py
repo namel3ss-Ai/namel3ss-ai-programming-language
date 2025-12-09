@@ -12,10 +12,10 @@ def _write(tmp_path, text: str):
 
 
 PROGRAM_WITH_WARN = (
-    'page "home":\n'
+    'page is "home":\n'
     '  title "Home"\n'
     '  route "/"\n'
-    'flow "pipe":\n'
+    'flow is "pipe":\n'
 )
 
 

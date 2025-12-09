@@ -11,9 +11,9 @@ def test_lex_use_line():
 
 def test_lex_app_block_with_indentation():
     source = (
-        'app "x":\n'
+        'app is "x":\n'
         '  description "Demo"\n'
-        '  entry_page "home"\n'
+        '  entry_page is "home"\n'
     )
     tokens = Lexer(source).tokenize()
     types = [t.type for t in tokens]
@@ -39,7 +39,7 @@ def test_lex_model_provider():
 
 def test_lex_agent_and_memory_keywords():
     source = (
-        'agent "helper":\n'
+        'agent is "helper":\n'
         '  goal "Assist users"\n'
         '  personality "friendly"\n'
         'memory "short_term":\n'

@@ -1,19 +1,19 @@
-ai "support_bot":
+ai is \"support_bot":
   model "gpt-4.1-mini"
   system "You are a helpful support assistant."
 
-flow "phase1_showcase":
+flow is "phase1_showcase":
   # Initialize state
-  set state.handled_count = 0
+  set state.handled_count be 0
   set state.has_pass be false
 
   # Imagine state.tickets is provided externally; we loop over it.
   for each ticket in state.tickets:
     try:
-      step "answer":
+      step is "answer":
         kind "script"
 
-      let response be step "answer" output
+      let response be step is "answer" output
 
       if response.urgent:
         set state.last_urgent be ticket

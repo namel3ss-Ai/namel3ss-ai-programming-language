@@ -11,3 +11,4 @@ Key commands (see `n3 --help`):
 - `n3 optimize <scan|list|apply|reject|overlays>`: optimizer CLI.
 - `n3 init <template> [target-dir]`: scaffold from templates (app-basic, app-rag, app-agents).
 - `n3 test-cov [pytest args...]`: run tests with coverage defaults.
+- `n3 lint` / `n3 doctor`: lint language files and run environment health checks (see `docs/reference/cli-lint-doctor.md` for details).

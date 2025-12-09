@@ -1,8 +1,8 @@
-app "hello-world":
+app is "hello-world":
   description "Hello world sample that renders a welcome page."
-  entry_page "home"
+  entry_page is "home"
 
-page "home" at "/":
+page is "home" at "/":
   section "hero":
     heading "Hello from Namel3ss"
     text "Edit this example and rerun to see your changes."

@@ -43,8 +43,8 @@ def _make_engine(ir_prog: IRProgram) -> FlowEngine:
 
 def test_parse_flow_unless_branch():
     module = parse_source(
-        'flow "f":\n'
-        '  step "s":\n'
+        'flow is "f":\n'
+        '  step is "s":\n'
         '    unless result.priority is "low":\n'
         '      do agent "handle"\n'
     )
@@ -59,7 +59,7 @@ def test_parse_flow_unless_branch():
 
 def test_parse_agent_unless_branch():
     module = parse_source(
-        'agent "a":\n'
+        'agent is "a":\n'
         '  unless user.is_new:\n'
         '    do tool "audit"\n'
     )
@@ -71,8 +71,8 @@ def test_parse_agent_unless_branch():
 def test_unless_followed_by_otherwise_raises():
     with pytest.raises(Exception):
         parse_source(
-            'flow "f":\n'
-            '  step "s":\n'
+            'flow is "f":\n'
+            '  step is "s":\n'
             '    unless x is 1:\n'
             '      do agent "a"\n'
             '    otherwise:\n'
@@ -83,8 +83,8 @@ def test_unless_followed_by_otherwise_raises():
 def test_unless_missing_expression_raises():
     with pytest.raises(Exception):
         parse_source(
-            'flow "f":\n'
-            '  step "s":\n'
+            'flow is "f":\n'
+            '  step is "s":\n'
             '    unless:\n'
             '      do agent "a"\n'
         )
@@ -92,11 +92,11 @@ def test_unless_missing_expression_raises():
 
 def test_flow_unless_runtime_and_trace():
     source = (
-        'agent "handle":\n'
+        'agent is "handle":\n'
         '  the goal is "g"\n'
         '  the personality is "p"\n'
-        'flow "f":\n'
-        '  step "s":\n'
+        'flow is "f":\n'
+        '  step is "s":\n'
         '    unless result.priority is "low":\n'
         '      do agent "handle"\n'
     )
@@ -114,11 +114,11 @@ def test_flow_unless_runtime_and_trace():
 
 def test_flow_unless_skips_when_condition_true():
     source = (
-        'agent "handle":\n'
+        'agent is "handle":\n'
         '  the goal is "g"\n'
         '  the personality is "p"\n'
-        'flow "f":\n'
-        '  step "s":\n'
+        'flow is "f":\n'
+        '  step is "s":\n'
         '    unless result.priority is "low":\n'
         '      do agent "handle"\n'
     )
@@ -132,7 +132,7 @@ def test_flow_unless_skips_when_condition_true():
 
 def test_agent_unless_runtime():
     source = (
-        'agent "review_agent":\n'
+        'agent is "review_agent":\n'
         '  unless ticket.status is "closed":\n'
         '    do tool "send_notification"\n'
     )

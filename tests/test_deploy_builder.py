@@ -6,7 +6,7 @@ from namel3ss.deploy.builder import DeployBuilder
 from namel3ss.deploy.models import DeployTargetConfig, DeployTargetKind
 
 
-SOURCE = 'app "demo":\n  entry_page "home"\n'
+SOURCE = 'app is "demo":\n  entry_page is "home"\n'
 
 
 def test_build_server_and_worker():

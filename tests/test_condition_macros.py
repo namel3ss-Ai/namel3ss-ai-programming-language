@@ -59,8 +59,8 @@ def test_parse_macro_declaration_and_use():
     module = parse_source(
         'define condition "is_vip" as:\n'
         '  user.value > 10000\n'
-        'flow "f":\n'
-        '  step "s":\n'
+        'flow is "f":\n'
+        '  step is "s":\n'
         '    if is_vip:\n'
         '      do agent "vip_handler"\n'
     )
@@ -87,11 +87,11 @@ def test_macro_runtime_branch_and_trace():
     source = (
         'define condition "is_billing" as:\n'
         '  result.category is "billing"\n'
-        'agent "billing_agent":\n'
+        'agent is "billing_agent":\n'
         '  the goal is "bill"\n'
         '  the personality is "direct"\n'
-        'flow "router":\n'
-        '  step "route":\n'
+        'flow is "router":\n'
+        '  step is "route":\n'
         '    if is_billing:\n'
         '      do agent "billing_agent"\n'
     )
@@ -110,8 +110,8 @@ def test_macro_not_allowed_in_binding_conflict():
     module = parse_source(
         'define condition "is_vip" as:\n'
         '  user.flag\n'
-        'flow "f":\n'
-        '  step "s":\n'
+        'flow is "f":\n'
+        '  step is "s":\n'
         '    if user.flag as is_vip:\n'
         '      do agent "a"\n'
     )
@@ -123,8 +123,8 @@ def test_macro_in_pattern_value_expands():
     module = parse_source(
         'define condition "is_billing" as:\n'
         '  "billing"\n'
-        'flow "f":\n'
-        '  step "s":\n'
+        'flow is "f":\n'
+        '  step is "s":\n'
         '    when result matches { category: is_billing }:\n'
         '      do tool "echo"\n'
     )
@@ -137,8 +137,8 @@ def test_macro_key_in_pattern_rejected():
     module = parse_source(
         'define condition "c1" as:\n'
         '  user.flag\n'
-        'flow "f":\n'
-        '  step "s":\n'
+        'flow is "f":\n'
+        '  step is "s":\n'
         '    when result matches { c1: "x" }:\n'
         '      do tool "echo"\n'
     )

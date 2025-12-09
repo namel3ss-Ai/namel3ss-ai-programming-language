@@ -105,6 +105,8 @@ class FlowRuntimeContext:
     variables: VariableEnvironment | None = None
     event_logger: Any = None
     stream_callback: Callable[[Any], Any] | None = None
+    provider_cache: Any = None
+    step_aliases: dict[str, str] | None = None
 
 
 def flow_ir_to_graph(flow: IRFlow) -> FlowGraph:

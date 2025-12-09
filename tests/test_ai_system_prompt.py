@@ -11,7 +11,7 @@ from namel3ss.runtime.context import ExecutionContext, execute_ai_call_with_regi
 
 def test_ai_block_with_system_prompt_parses():
     module = parse_source(
-        'ai "bot":\n'
+        'ai is "bot":\n'
         '  model "default"\n'
         '  system "You are helpful."\n'
         '  input from user_question\n'
@@ -23,7 +23,7 @@ def test_ai_block_with_system_prompt_parses():
 def test_system_prompt_invalid_in_page():
     with pytest.raises(ParseError):
         parse_source(
-            'page "home":\n'
+            'page is "home":\n'
             '  system "nope"\n'
         )
 
@@ -31,7 +31,7 @@ def test_system_prompt_invalid_in_page():
 def test_duplicate_system_prompt_rejected():
     with pytest.raises(ParseError):
         parse_source(
-            'ai "bot":\n'
+            'ai is "bot":\n'
             '  model "default"\n'
             '  system "first"\n'
             '  system "second"\n'

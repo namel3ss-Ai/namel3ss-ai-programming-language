@@ -14,7 +14,7 @@ def _make_file(tmp_path: Path, name: str, content: str) -> Path:
 
 def test_http_diagnostics_valid(tmp_path):
     client = TestClient(create_app())
-    good = _make_file(tmp_path, "good.ai", 'app "a":\n  entry_page "home"\npage "home":\n  route "/"\n')
+    good = _make_file(tmp_path, "good.ai", 'app is "a":\n  entry_page is "home"\npage is "home":\n  route "/"\n')
     resp = client.post(
         "/api/diagnostics",
         headers={"X-API-Key": "dev-key"},
@@ -29,7 +29,7 @@ def test_http_diagnostics_valid(tmp_path):
 
 def test_http_diagnostics_invalid_codes(tmp_path):
     client = TestClient(create_app())
-    bad = _make_file(tmp_path, "bad.ai", 'page "p":\n  title "T"\n')
+    bad = _make_file(tmp_path, "bad.ai", 'page is "p":\n  title "T"\n')
     resp = client.post(
         "/api/diagnostics",
         headers={"X-API-Key": "dev-key"},
@@ -45,7 +45,7 @@ def test_http_diagnostics_invalid_codes(tmp_path):
 
 def test_http_diagnostics_strict(tmp_path):
     client = TestClient(create_app())
-    warn_file = _make_file(tmp_path, "warn.ai", 'flow "pipeline":\n')
+    warn_file = _make_file(tmp_path, "warn.ai", 'flow is "pipeline":\n')
     resp = client.post(
         "/api/diagnostics",
         headers={"X-API-Key": "dev-key"},
@@ -66,7 +66,7 @@ def test_http_diagnostics_strict(tmp_path):
 
 def test_http_diagnostics_summary_only(tmp_path):
     client = TestClient(create_app())
-    path = _make_file(tmp_path, "good.ai", 'app "a":\n  entry_page "home"\npage "home":\n  route "/"\n')
+    path = _make_file(tmp_path, "good.ai", 'app is "a":\n  entry_page is "home"\npage is "home":\n  route "/"\n')
     resp = client.post(
         "/api/diagnostics",
         headers={"X-API-Key": "dev-key"},
@@ -79,8 +79,8 @@ def test_http_diagnostics_summary_only(tmp_path):
 
 def test_http_diagnostics_directory(tmp_path):
     client = TestClient(create_app())
-    _make_file(tmp_path, "good.ai", 'app "a":\n  entry_page "home"\npage "home":\n  route "/"\n')
-    _make_file(tmp_path, "bad.ai", 'page "p":\n')
+    _make_file(tmp_path, "good.ai", 'app is "a":\n  entry_page is "home"\npage is "home":\n  route "/"\n')
+    _make_file(tmp_path, "bad.ai", 'page is "p":\n')
     resp = client.post(
         "/api/diagnostics",
         headers={"X-API-Key": "dev-key"},

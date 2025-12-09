@@ -17,7 +17,7 @@ def _resolver_from_env(env: VariableEnvironment):
 
 def test_parse_frame_minimal():
     src = (
-        'frame "sales":\n'
+        'frame is "sales":\n'
         f'  from file "{FIXTURE_PATH}"\n'
     )
     module = parse_source(src)
@@ -31,7 +31,7 @@ def test_parse_frame_minimal():
 
 def test_parse_frame_full_config():
     src = (
-        'frame "sales":\n'
+        'frame is "sales":\n'
         f'  from file "{FIXTURE_PATH}"\n'
         '  with delimiter ","\n'
         "  has headers\n"
@@ -48,7 +48,7 @@ def test_parse_frame_full_config():
 
 def test_frame_loading_and_aggregate_sum():
     src = (
-        'frame "sales_data":\n'
+        'frame is "sales_data":\n'
         f'  from file "{FIXTURE_PATH}"\n'
         "  has headers\n"
         "  select region, revenue, country\n"
@@ -83,8 +83,8 @@ def test_frame_loading_and_aggregate_sum():
 
 def test_all_expression_with_frame_where():
     src = (
-        'flow "f":\n'
-        '  step "s":\n'
+        'flow is "f":\n'
+        '  step is "s":\n'
         '    let filtered be all row from sales_data where row.country is "BE"\n'
     )
     module = parse_source(src)
@@ -92,7 +92,7 @@ def test_all_expression_with_frame_where():
     let_stmt = flow.steps[0].statements[0]
     assert isinstance(let_stmt.expr, (ast_nodes.FilterExpression, ast_nodes.MapExpression))
     program = ast_to_ir(parse_source(
-        'frame "sales_data":\n'
+        'frame is "sales_data":\n'
         f'  from file "{FIXTURE_PATH}"\n'
         "  has headers\n"
     ))
@@ -107,7 +107,7 @@ def test_all_expression_with_frame_where():
 
 def test_unknown_select_column_raises():
     src = (
-        'frame "bad":\n'
+        'frame is "bad":\n'
         f'  from file "{FIXTURE_PATH}"\n'
         "  has headers\n"
         "  select missing\n"
@@ -121,7 +121,7 @@ def test_unknown_select_column_raises():
 
 def test_where_clause_must_be_boolean():
     src = (
-        'frame "bad_where":\n'
+        'frame is "bad_where":\n'
         f'  from file "{FIXTURE_PATH}"\n'
         "  has headers\n"
         "  where revenue plus 1\n"

@@ -7,7 +7,7 @@ from __future__ import annotations
 from typing import List, Optional
 from uuid import uuid4
 
-from ..secrets.manager import SecretsManager
+from ..secrets.manager import SecretsManager, get_default_secrets_manager
 from ..runtime.persistence import InMemoryJobStore, SQLiteJobStore
 from .models import Job
 
@@ -37,7 +37,7 @@ class JobQueue:
 
 
 def _build_default_queue() -> JobQueue:
-    secrets = SecretsManager()
+    secrets = get_default_secrets_manager()
     if secrets.is_enabled("N3_ENABLE_PERSISTENT_JOBS"):
         db_path = secrets.get("N3_JOBS_DB_PATH") or "namel3ss_jobs.db"
         store = SQLiteJobStore(db_path)

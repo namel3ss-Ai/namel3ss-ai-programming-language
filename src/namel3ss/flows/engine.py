@@ -21,13 +21,22 @@ from .. import ast_nodes
 from ..agent.engine import AgentRunner
 from ..ai.registry import ModelRegistry
 from ..ai.router import ModelRouter
-from ..errors import Namel3ssError, ProviderAuthError, ProviderConfigError
+from ..errors import (
+    Namel3ssError,
+    ProviderAuthError,
+    ProviderCircuitOpenError,
+    ProviderConfigError,
+    ProviderRetryError,
+    ProviderTimeoutError,
+)
 from ..runtime.auth import hash_password, verify_password
 from ..ir import (
     IRAction,
     IRAskUser,
     IRCheckpoint,
     IRFlow,
+    IRFlowLoop,
+    IRFlowStep,
     IRForEach,
     IRForm,
     IRIf,
@@ -53,7 +62,14 @@ from ..runtime.context import (
     execute_ai_call_with_registry,
     persist_memory_state,
     run_memory_pipelines,
+    get_user_context,
+    _apply_conversation_summary_if_needed,
+    _build_vector_context_messages,
+    _upsert_vector_memory,
+    get_vector_memory_settings,
 )
+from ..runtime.retries import get_default_retry_config, with_retries_and_timeout
+from ..runtime.circuit_breaker import default_circuit_breaker
 from ..runtime.eventlog import EventLogger
 from ..runtime.expressions import EvaluationError, ExpressionEvaluator, VariableEnvironment
 from ..runtime.frames import FrameRegistry
@@ -88,7 +104,7 @@ class FlowEngine:
         router: ModelRouter,
         metrics: Optional[MetricsTracker] = None,
         secrets: Optional[SecretsManager] = None,
-        max_parallel_tasks: int = 4,
+        max_parallel_tasks: int | None = None,
         global_stream_callback: Any = None,
     ) -> None:
         self.program = program
@@ -98,10 +114,20 @@ class FlowEngine:
         self.router = router
         self.metrics = metrics
         self.secrets = secrets
-        self.max_parallel_tasks = max_parallel_tasks
+        from ..runtime.config import get_max_parallel_tasks
+
+        self.max_parallel_tasks = max_parallel_tasks if max_parallel_tasks is not None else get_max_parallel_tasks()
         self.global_stream_callback = global_stream_callback
         self.frame_registry = FrameRegistry(program.frames if program else {})
         self.vector_registry = VectorStoreRegistry(program, secrets=secrets) if program else None
+        self.retry_config = get_default_retry_config()
+        self.retry_error_types = (
+            ProviderTimeoutError,
+            urllib.error.URLError,
+            ConnectionError,
+            TimeoutError,
+        )
+        self.circuit_breaker = default_circuit_breaker
         # Register program-defined tools into the shared registry
         if program and getattr(program, "tools", None):
             for tool in program.tools.values():
@@ -121,6 +147,31 @@ class FlowEngine:
                         )
                     )
 
+    def _apply_destructuring(self, pattern, value, env, state, *, is_constant: bool = False) -> None:
+        if pattern.kind == "record":
+            if not isinstance(value, dict):
+                raise Namel3ssError("Cannot destructure record; expected an object with fields.")
+            for field in pattern.fields:
+                target_name = field.alias or field.name
+                if field.name not in value:
+                    raise Namel3ssError(f"Cannot destructure field {field.name}; this value has no {field.name} field.")
+                env.declare(target_name, value.get(field.name), is_constant=is_constant)
+                state.set(target_name, value.get(field.name))
+            return
+        if pattern.kind == "list":
+            if not isinstance(value, (list, tuple)):
+                raise Namel3ssError("Cannot destructure list; expected a list/sequence.")
+            fields = pattern.fields
+            if len(value) < len(fields):
+                raise Namel3ssError(
+                    f"Cannot destructure list into [{', '.join(fields)}]; it has only {len(value)} elements."
+                )
+            for idx, name in enumerate(fields):
+                env.declare(name, value[idx] if idx < len(value) else None, is_constant=is_constant)
+                state.set(name, value[idx] if idx < len(value) else None)
+            return
+        raise Namel3ssError("Unsupported destructuring pattern.")
+
     def _build_runtime_context(self, context: ExecutionContext, stream_callback: Any = None) -> FlowRuntimeContext:
         mem_engine = context.memory_engine
         if mem_engine is None and self.program and self.program.memories:
@@ -134,9 +185,13 @@ class FlowEngine:
             ]
             mem_engine = MemoryEngine(spaces=spaces)
         mem_stores = getattr(context, "memory_stores", None)
-        user_context = getattr(context, "user_context", None) or {"id": None, "is_authenticated": False, "record": None}
+        user_context = get_user_context(getattr(context, "user_context", None))
         if getattr(context, "metadata", None) is not None and user_context.get("id") and "user_id" not in context.metadata:
             context.metadata["user_id"] = user_context.get("id")
+        try:
+            context.vectorstores = self.vector_registry
+        except Exception:
+            pass
         return FlowRuntimeContext(
             program=self.program,
             model_registry=self.model_registry,
@@ -163,6 +218,7 @@ class FlowEngine:
                 session_id=context.metadata.get("session_id") if context.metadata else context.request_id,
             ),
             stream_callback=stream_callback or self.global_stream_callback,
+            provider_cache=context.provider_cache or None,
         )
 
     def run_flow(
@@ -178,6 +234,7 @@ class FlowEngine:
         stream_callback: Any = None,
     ) -> FlowRunResult:
         runtime_ctx = self._build_runtime_context(context, stream_callback=stream_callback)
+        runtime_ctx.step_aliases = self._collect_step_aliases(flow.steps)
         env = VariableEnvironment(context.variables)
         runtime_ctx.variables = env
         state = FlowState(
@@ -587,8 +644,13 @@ class FlowEngine:
                         tools_mode=tools_mode,
                     )
                 else:
-                    output = execute_ai_call_with_registry(
-                        ai_call, runtime_ctx.model_registry, runtime_ctx.router, base_context, tools_mode=tools_mode
+                    output = await self._call_ai_step(
+                        ai_call=ai_call,
+                        base_context=base_context,
+                        runtime_ctx=runtime_ctx,
+                        step_name=step_name,
+                        flow_name=state.context.get("flow_name") or "",
+                        tools_mode=tools_mode,
                     )
                 if runtime_ctx.event_logger:
                     try:
@@ -606,7 +668,7 @@ class FlowEngine:
                     except Exception:
                         pass
             elif node.kind == "agent":
-                raw_output = runtime_ctx.agent_runner.run(target, base_context)
+                raw_output = await asyncio.to_thread(runtime_ctx.agent_runner.run, target, base_context)
                 output = asdict(raw_output) if is_dataclass(raw_output) else raw_output
             elif node.kind == "tool":
                 output = await self._execute_tool_call(node, state, runtime_ctx)
@@ -979,6 +1041,116 @@ class FlowEngine:
             redirect_to=state.context.get("__redirect_flow__"),
         )
 
+    async def _call_ai_step(
+        self,
+        ai_call,
+        base_context: ExecutionContext,
+        runtime_ctx: FlowRuntimeContext,
+        step_name: str,
+        flow_name: str,
+        tools_mode: str | None = None,
+    ) -> Any:
+        provider, provider_model, provider_name = runtime_ctx.model_registry.resolve_provider_for_ai(ai_call)
+        provider_model = provider_model or ai_call.model_name or provider_name
+        provider_key = f"model:{provider_name}:{provider_model}"
+        start_time = time.monotonic()
+        retries = 0
+        last_error_type: str | None = None
+        tracer_instance = runtime_ctx.tracer or default_tracer
+        event_logger = runtime_ctx.event_logger
+        if event_logger:
+            try:
+                event_logger.log(
+                    {
+                        "kind": "provider",
+                        "event_type": "provider_call_start",
+                        "flow_name": flow_name,
+                        "step_name": step_name,
+                        "provider": provider_name,
+                        "model": provider_model,
+                        "status": "running",
+                    }
+                )
+            except Exception:
+                pass
+
+        def _on_error(exc: BaseException, attempt: int) -> None:
+            nonlocal retries, last_error_type
+            retries = max(retries, attempt + 1)
+            last_error_type = exc.__class__.__name__
+
+        async def _invoke() -> Any:
+            return await asyncio.to_thread(
+                execute_ai_call_with_registry,
+                ai_call,
+                runtime_ctx.model_registry,
+                runtime_ctx.router,
+                base_context,
+                tools_mode,
+            )
+
+        status = "success"
+        with tracer_instance.span(
+            "provider.call",
+            attributes={
+                "provider": provider_name,
+                "model": provider_model,
+                "flow": flow_name,
+                "step": step_name,
+            },
+        ):
+            try:
+                return await with_retries_and_timeout(
+                    _invoke,
+                    config=self.retry_config,
+                    error_types=self.retry_error_types,
+                    on_error=_on_error,
+                    circuit_breaker=self.circuit_breaker,
+                    provider_key=provider_key,
+                )
+            except ProviderCircuitOpenError as exc:
+                status = "circuit_open"
+                last_error_type = exc.__class__.__name__
+                raise
+            except ProviderTimeoutError as exc:
+                status = "timeout"
+                last_error_type = exc.__class__.__name__
+                raise
+            except ProviderRetryError as exc:
+                status = "failure"
+                last_error_type = exc.__class__.__name__
+                raise
+            except Exception as exc:
+                status = "failure"
+                last_error_type = exc.__class__.__name__
+                raise
+            finally:
+                duration = time.monotonic() - start_time
+                try:
+                    default_metrics.record_provider_call(provider_name, provider_model, status, duration)
+                    if status == "circuit_open":
+                        default_metrics.record_circuit_open(provider_name)
+                except Exception:
+                    pass
+                if event_logger:
+                    try:
+                        event_logger.log(
+                            {
+                                "kind": "provider",
+                                "event_type": "provider_call_end",
+                                "flow_name": flow_name,
+                                "step_name": step_name,
+                                "provider": provider_name,
+                                "model": provider_model,
+                                "status": status,
+                                "duration": duration,
+                                "retries": retries,
+                                "error_type": last_error_type,
+                            }
+                        )
+                    except Exception:
+                        pass
+
     async def _stream_ai_step(
         self,
         ai_call,
@@ -991,6 +1163,59 @@ class FlowEngine:
     ):
         provider, provider_model, provider_name = runtime_ctx.model_registry.resolve_provider_for_ai(ai_call)
         provider_model = provider_model or ai_call.model_name
+        provider_key = f"model:{provider_name}:{provider_model}"
+        tracer_instance = runtime_ctx.tracer or default_tracer
+        event_logger = runtime_ctx.event_logger
+        status = "success"
+        last_error_type: str | None = None
+        start_time = time.monotonic()
+        vector_enabled, vector_store_name, vector_top_k = get_vector_memory_settings()
+        vector_registry = getattr(base_context, "vectorstores", None)
+        if event_logger:
+            try:
+                event_logger.log(
+                    {
+                        "kind": "provider",
+                        "event_type": "provider_call_start",
+                        "flow_name": flow_name,
+                        "step_name": step_name,
+                        "provider": provider_name,
+                        "model": provider_model,
+                        "status": "running",
+                        "streaming": True,
+                    }
+                )
+            except Exception:
+                pass
+        if self.circuit_breaker and not self.circuit_breaker.should_allow_call(provider_key):
+            status = "circuit_open"
+            last_error_type = "ProviderCircuitOpenError"
+            duration = time.monotonic() - start_time
+            try:
+                default_metrics.record_provider_call(provider_name, provider_model, status, duration)
+                default_metrics.record_circuit_open(provider_name)
+            except Exception:
+                pass
+            if event_logger:
+                try:
+                    event_logger.log(
+                        {
+                            "kind": "provider",
+                            "event_type": "provider_call_end",
+                            "flow_name": flow_name,
+                            "step_name": step_name,
+                            "provider": provider_name,
+                            "model": provider_model,
+                            "status": status,
+                            "duration": duration,
+                            "retries": 0,
+                            "error_type": last_error_type,
+                            "streaming": True,
+                        }
+                    )
+                except Exception:
+                    pass
+            raise ProviderCircuitOpenError(f"Circuit open for provider '{provider_key}'.")
         messages: list[dict[str, str]] = []
 
         session_id = base_context.metadata.get("session_id") if base_context.metadata else None
@@ -1016,8 +1241,26 @@ class FlowEngine:
                 )
 
         user_content = ai_call.input_source or (base_context.user_input or "")
+        vector_context_messages: list[dict[str, str]] = []
+        if vector_enabled:
+            if not vector_registry:
+                raise ProviderConfigError("Vector memory is enabled but no vector store registry is configured.")
+            try:
+                vector_context_messages = _build_vector_context_messages(
+                    vector_registry,
+                    user_content,
+                    vector_store_name,
+                    vector_top_k,
+                )
+            except Exception as exc:
+                raise ProviderConfigError(
+                    f"Vector memory store '{vector_store_name}' is unavailable or misconfigured: {exc}"
+                ) from exc
+        if vector_context_messages:
+            messages.extend(vector_context_messages)
         user_message = {"role": "user", "content": user_content}
         messages.append(user_message)
+        messages = _apply_conversation_summary_if_needed(messages, provider, provider_model, provider_name)
 
         if getattr(ai_call, "tools", None):
             requested_mode = (tools_mode or "auto").lower()
@@ -1082,45 +1325,96 @@ class FlowEngine:
                 remaining = ""
             return remaining
 
-        try:
-            for chunk in provider.stream(messages=messages, model=provider_model, tools=tools_payload):
-                delta = ""
-                if isinstance(chunk, dict):
-                    delta = chunk.get("delta") or ""
-                else:
-                    delta = getattr(chunk, "delta", "") or ""
-                if delta:
-                    delta_str = str(delta)
-                    full_text += delta_str
-                    if mode == "tokens":
-                        await emit("chunk", delta=delta_str)
-                    elif mode == "sentences":
-                        sentence_buffer += delta_str
-                        sentence_buffer = await _flush_sentence_chunks(sentence_buffer, force=False)
-                    # mode == "full" defers emission until the end
-            runtime_ctx.model_registry.provider_status[provider_name] = "ok"
-            ModelRegistry.last_status[provider_name] = "ok"
-            if mode == "sentences":
-                sentence_buffer = await _flush_sentence_chunks(sentence_buffer, force=True)
-            await emit("done", full=full_text)
-        except urllib.error.HTTPError as exc:
-            if exc.code in {401, 403}:
-                runtime_ctx.model_registry.provider_status[provider_name] = "unauthorized"
-                ModelRegistry.last_status[provider_name] = "unauthorized"
-                auth_err = ProviderAuthError(
-                    f"Provider '{provider_name}' rejected the API key (unauthorized). Check your key and account permissions.",
-                    code="N3P-1802",
-                )
-                await emit("error", error=str(auth_err), code=auth_err.code)
-                raise auth_err
-            await emit("error", error=str(exc), code=getattr(exc, "code", None))
-            raise
-        except ProviderConfigError as exc:
-            await emit("error", error=str(exc), code=exc.code)
-            raise
-        except Exception as exc:
-            await emit("error", error=str(exc), code=getattr(exc, "code", None))
-            raise
+        with tracer_instance.span(
+            "provider.call",
+            attributes={
+                "provider": provider_name,
+                "model": provider_model,
+                "flow": flow_name,
+                "step": step_name,
+                "streaming": True,
+            },
+        ):
+            try:
+                for chunk in provider.stream(messages=messages, model=provider_model, tools=tools_payload):
+                    delta = ""
+                    if isinstance(chunk, dict):
+                        delta = chunk.get("delta") or ""
+                    else:
+                        delta = getattr(chunk, "delta", "") or ""
+                    if delta:
+                        delta_str = str(delta)
+                        full_text += delta_str
+                        if mode == "tokens":
+                            await emit("chunk", delta=delta_str)
+                        elif mode == "sentences":
+                            sentence_buffer += delta_str
+                            sentence_buffer = await _flush_sentence_chunks(sentence_buffer, force=False)
+                        # mode == "full" defers emission until the end
+                runtime_ctx.model_registry.provider_status[provider_name] = "ok"
+                ModelRegistry.last_status[provider_name] = "ok"
+                if self.circuit_breaker:
+                    self.circuit_breaker.record_success(provider_key)
+                if mode == "sentences":
+                    sentence_buffer = await _flush_sentence_chunks(sentence_buffer, force=True)
+                await emit("done", full=full_text)
+            except urllib.error.HTTPError as exc:
+                status = "failure"
+                last_error_type = exc.__class__.__name__
+                if self.circuit_breaker:
+                    self.circuit_breaker.record_failure(provider_key, exc)
+                if exc.code in {401, 403}:
+                    runtime_ctx.model_registry.provider_status[provider_name] = "unauthorized"
+                    ModelRegistry.last_status[provider_name] = "unauthorized"
+                    auth_err = ProviderAuthError(
+                        f"Provider '{provider_name}' rejected the API key (unauthorized). Check your key and account permissions.",
+                        code="N3P-1802",
+                    )
+                    await emit("error", error=str(auth_err), code=auth_err.code)
+                    raise auth_err
+                await emit("error", error=str(exc), code=getattr(exc, "code", None))
+                raise
+            except ProviderConfigError as exc:
+                status = "failure"
+                last_error_type = exc.__class__.__name__
+                if self.circuit_breaker:
+                    self.circuit_breaker.record_failure(provider_key, exc)
+                await emit("error", error=str(exc), code=exc.code)
+                raise
+            except Exception as exc:
+                status = "failure"
+                last_error_type = exc.__class__.__name__
+                if self.circuit_breaker:
+                    self.circuit_breaker.record_failure(provider_key, exc)
+                await emit("error", error=str(exc), code=getattr(exc, "code", None))
+                raise
+            finally:
+                duration = time.monotonic() - start_time
+                try:
+                    default_metrics.record_provider_call(provider_name, provider_model, status, duration)
+                    if status == "circuit_open":
+                        default_metrics.record_circuit_open(provider_name)
+                except Exception:
+                    pass
+                if event_logger:
+                    try:
+                        event_logger.log(
+                            {
+                                "kind": "provider",
+                                "event_type": "provider_call_end",
+                                "flow_name": flow_name,
+                                "step_name": step_name,
+                                "provider": provider_name,
+                                "model": provider_model,
+                                "status": status,
+                                "duration": duration,
+                                "retries": 0,
+                                "error_type": last_error_type,
+                                "streaming": True,
+                            }
+                        )
+                    except Exception:
+                        pass
 
         if memory_state:
             persist_memory_state(memory_state, ai_call, session_id, user_content, full_text, user_id)
@@ -1146,6 +1440,20 @@ class FlowEngine:
                 )
             except Exception:
                 pass
+        if vector_enabled:
+            if not vector_registry:
+                raise ProviderConfigError("Vector memory is enabled but no vector store registry is configured.")
+            try:
+                _upsert_vector_memory(
+                    vector_registry,
+                    vector_store_name,
+                    [user_message, {"role": "assistant", "content": full_text}],
+                    metadata={"session_id": session_id, "ai": ai_call.name, "user_id": user_id},
+                )
+            except Exception as exc:
+                raise ProviderConfigError(
+                    f"Vector memory store '{vector_store_name}' is unavailable or misconfigured: {exc}"
+                ) from exc
         return full_text
 
     async def _execute_parallel_block(self, node: FlowNode, state: FlowState, runtime_ctx: FlowRuntimeContext):
@@ -1300,7 +1608,9 @@ class FlowEngine:
     async def _execute_ir_if(self, stmt: IRIf, state: FlowState, runtime_ctx: FlowRuntimeContext, prefix: str) -> None:
         env = state.variables or runtime_ctx.variables or VariableEnvironment()
         for idx, br in enumerate(stmt.branches):
-            result, candidate_binding = self._eval_condition_with_binding(br.condition, state, runtime_ctx)
+            result, candidate_binding = self._eval_condition_with_binding(
+                br.condition, state, runtime_ctx, context_label="if"
+            )
             label = br.label or f"branch-{idx}"
             if br.label == "unless":
                 result = not result
@@ -1326,6 +1636,27 @@ class FlowEngine:
                     env.remove(br.binding)
                     state.data.pop(br.binding, None)
             break
+
+    async def _execute_ir_match(self, stmt: IRMatch, state: FlowState, runtime_ctx: FlowRuntimeContext, prefix: str) -> None:
+        evaluator = self._build_evaluator(state, runtime_ctx)
+        try:
+            target_val = evaluator.evaluate(stmt.target) if stmt.target is not None else None
+        except EvaluationError as exc:
+            message = "I couldn't evaluate the value used in this match. Check the expression before match."
+            detail = str(exc).strip()
+            if detail:
+                message = f"{message} {detail}"
+            raise Namel3ssError(message) from exc
+        matched = False
+        for idx, br in enumerate(stmt.branches):
+            if matched:
+                break
+            if self._match_branch(br, target_val, evaluator, state):
+                matched = True
+                for action_idx, action in enumerate(br.actions):
+                    label = br.label or f"branch-{idx}"
+                    await self._execute_statement(action, state, runtime_ctx, f"{prefix}.{label}.{action_idx}")
+        return state.get("last_output")
 
     async def _emit_state_change(
         self,
@@ -1359,7 +1690,11 @@ class FlowEngine:
         evaluator = self._build_evaluator(state, runtime_ctx)
         if isinstance(stmt, IRLet):
             value = evaluator.evaluate(stmt.expr) if stmt.expr is not None else None
-            env.declare(stmt.name, value)
+            if stmt.pattern:
+                self._apply_destructuring(stmt.pattern, value, env, state, is_constant=stmt.is_constant)
+                state.set("last_output", value)
+                return value
+            env.declare(stmt.name, value, is_constant=stmt.is_constant)
             state.set(stmt.name, value)
             state.set("last_output", value)
             return value
@@ -1445,6 +1780,8 @@ class FlowEngine:
                 state.set(stmt.var_name, prev_val)
             else:
                 env.remove(stmt.var_name)
+                if hasattr(env, "mark_loop_var_exited"):
+                    env.mark_loop_var_exited(stmt.var_name)
                 state.data.pop(stmt.var_name, None)
             return state.get("last_output")
         if isinstance(stmt, IRRepeatUpTo):
@@ -1727,41 +2064,70 @@ class FlowEngine:
         env = getattr(state, "variables", None)
         if env and env.has(name):
             return True, env.resolve(name)
-        if name == "user":
-            if runtime_ctx and getattr(runtime_ctx, "user_context", None) is not None:
-                return True, runtime_ctx.user_context
-            return True, state.context.get("user")
-        if name.startswith("user."):
-            user_ctx = (runtime_ctx.user_context if runtime_ctx else None) or state.context.get("user") or {}
-            parts = name.split(".")[1:]
-            value: Any = user_ctx
-            for part in parts:
-                if isinstance(value, dict):
-                    value = value.get(part)
-                else:
-                    value = getattr(value, part, None)
-            return True, value
-        if name == "secret":
-            secrets_mgr = (runtime_ctx.secrets if runtime_ctx else None) or self.secrets
-            return True, secrets_mgr
-        if name.startswith("secret."):
-            secrets_mgr = (runtime_ctx.secrets if runtime_ctx else None) or self.secrets
-            key = name[len("secret.") :]
-            if secrets_mgr:
-                return True, secrets_mgr.get(key)
-            return True, None
-        if name == "state":
-            return True, state.data
-        if name.startswith("state."):
-            field = name[len("state.") :]
-            if field and field in state.data:
-                return True, state.get(field)
-        if name in state.data:
-            return True, state.get(name)
-        if env and "." in name:
+        alias_map = getattr(runtime_ctx, "step_aliases", {}) if runtime_ctx else {}
+        if "." in name:
             parts = name.split(".")
-            if env.has(parts[0]):
-                value: Any = env.resolve(parts[0])
+            base = parts[0]
+            if alias_map and base in alias_map:
+                step_name = alias_map[base]
+                output_key = f"step.{step_name}.output"
+                if output_key not in state.data:
+                    raise EvaluationError(
+                        f"The step alias {base} refers to {step_name}, which hasn't run yet in this flow. Move the code that reads {base}.output after the {step_name} step."
+                    )
+                value: Any = state.get(output_key)
+                remainder = parts[1:]
+                if remainder and remainder[0] == "output":
+                    remainder = remainder[1:]
+                for part in remainder:
+                    if isinstance(value, dict) and part in value:
+                        value = value.get(part)
+                    elif hasattr(value, part):
+                        value = getattr(value, part, None)
+                    else:
+                        raise EvaluationError("N3-3300: unknown record field")
+                return True, value
+            allowed_roots = {"state", "user", "secret", "input", "env", "step"}
+            if base not in allowed_roots:
+                raise EvaluationError(
+                    f"There is no step alias called {base} in this flow. Add 'step is \"{base}\" as {base}:' or use step.{base}.output instead."
+                )
+            if base == "user":
+                user_ctx = (runtime_ctx.user_context if runtime_ctx else None) or state.context.get("user") or {}
+                value: Any = user_ctx
+                for part in parts[1:]:
+                    if isinstance(value, dict):
+                        value = value.get(part)
+                    else:
+                        value = getattr(value, part, None)
+                return True, value
+            if base == "secret":
+                secrets_mgr = (runtime_ctx.secrets if runtime_ctx else None) or self.secrets
+                if len(parts) == 1:
+                    return True, secrets_mgr
+                key = ".".join(parts[1:])
+                if secrets_mgr:
+                    return True, secrets_mgr.get(key)
+                return True, None
+            if base == "state":
+                if len(parts) == 1:
+                    return True, state.data
+                field = parts[1]
+                if field in state.data:
+                    value: Any = state.get(field)
+                    for part in parts[2:]:
+                        if isinstance(value, dict) and part in value:
+                            value = value.get(part)
+                        elif hasattr(value, part):
+                            value = getattr(value, part, None)
+                        else:
+                            raise EvaluationError(f"state.{field} is not defined")
+                    return True, value
+                raise EvaluationError(f"state.{field} is not defined")
+            if base == "input":
+                value = state.context.get("input") if state.context else None
+                if runtime_ctx and getattr(runtime_ctx, "execution_context", None):
+                    value = value or getattr(runtime_ctx.execution_context, "user_input", None)
                 for part in parts[1:]:
                     if isinstance(value, dict) and part in value:
                         value = value.get(part)
@@ -1770,30 +2136,52 @@ class FlowEngine:
                     else:
                         return False, None
                 return True, value
-        parts = name.split(".")
-        value: Any = None
-        found = False
-        if parts[0] in state.data:
-            value = state.get(parts[0])
-            found = True
-        elif parts[0] in state.context:
-            value = state.context.get(parts[0])
-            found = True
-        elif runtime_ctx and runtime_ctx.frames and parts[0] in getattr(runtime_ctx.frames, "frames", {}):
-            value = runtime_ctx.frames.get_rows(parts[0])
-            found = True
-        else:
+            if base == "env":
+                env_obj = state.context.get("env") if state.context else None
+                try:
+                    import os  # locally scoped to avoid global dependency
+                except Exception:  # pragma: no cover
+                    os = None
+                if env_obj is None and os is not None:
+                    env_obj = os.environ
+                value: Any = env_obj
+                for part in parts[1:]:
+                    if isinstance(value, dict) and part in value:
+                        value = value.get(part)
+                    elif hasattr(value, part):
+                        value = getattr(value, part, None)
+                    else:
+                        return False, None
+                return True, value
+            if base == "step":
+                if len(parts) < 2:
+                    return False, None
+                step_name = parts[1]
+                output_key = f"step.{step_name}.output"
+                if output_key not in state.data:
+                    raise EvaluationError(f"The step {step_name} has not produced output yet.")
+                value: Any = state.get(output_key)
+                remainder = parts[2:]
+                if remainder and remainder[0] == "output":
+                    remainder = remainder[1:]
+                for part in remainder:
+                    if isinstance(value, dict) and part in value:
+                        value = value.get(part)
+                    elif hasattr(value, part):
+                        value = getattr(value, part, None)
+                    else:
+                        raise EvaluationError("N3-3300: unknown record field")
+                return True, value
             return False, None
-        for part in parts[1:]:
-            if isinstance(value, dict) and part in value:
-                value = value.get(part)
-                found = True
-            elif hasattr(value, part):
-                value = getattr(value, part, None)
-                found = True
-            else:
-                return False, None
-        return found, value
+        if alias_map and name in alias_map:
+            step_name = alias_map[name]
+            output_key = f"step.{step_name}.output"
+            if output_key not in state.data:
+                raise EvaluationError(
+                    f"The step alias {name} refers to {step_name}, which hasn't run yet in this flow. Move the code that reads {name}.output after the {step_name} step."
+                )
+            return True, state.get(output_key)
+        return False, None
 
     def _call_helper(self, name: str, args: list[Any], state: FlowState, runtime_ctx: FlowRuntimeContext | None) -> Any:
         helper = runtime_ctx.program.helpers.get(name) if runtime_ctx and runtime_ctx.program else None
@@ -1884,7 +2272,7 @@ class FlowEngine:
         except Exception as exc:
             raise Namel3ssError(str(exc))
         if isinstance(pat_val, bool):
-            return bool(pat_val)
+            return isinstance(target_val, bool) and target_val is pat_val
         return target_val == pat_val
 
     def _resolve_provided_input(self, name: str, runtime_ctx: FlowRuntimeContext, state: FlowState) -> Any:
@@ -1953,6 +2341,22 @@ class FlowEngine:
             rulegroup_resolver=lambda expr: self._eval_rulegroup(expr, state, runtime_ctx) if runtime_ctx else (False, None),
             helper_resolver=lambda name, args: self._call_helper(name, args, state, runtime_ctx),
         )
+
+    def _collect_step_aliases(self, items: list[IRFlowStep | IRFlowLoop]) -> dict[str, str]:
+        aliases: dict[str, str] = {}
+
+        def walk(steps: list[IRFlowStep | IRFlowLoop]) -> None:
+            for step in steps:
+                if isinstance(step, IRFlowLoop):
+                    walk(step.body)
+                    continue
+                if step.alias:
+                    if step.alias in aliases:
+                        raise Namel3ssError(f"Step alias '{step.alias}' is already used for step '{aliases[step.alias]}'. Aliases must be unique within a flow.")
+                    aliases[step.alias] = step.name
+
+        walk(items)
+        return aliases
 
     def _http_json_request(
         self, method: str, url: str, headers: dict[str, str], body: bytes | None
@@ -2594,7 +2998,30 @@ class FlowEngine:
     def _pattern_to_repr(self, pattern: ast_nodes.PatternExpr) -> dict:
         return {pair.key: self._expr_to_str(pair.value) for pair in pattern.pairs}
 
-    def _eval_condition_with_binding(self, expr: ast_nodes.Expr | None, state: FlowState, runtime_ctx: FlowRuntimeContext) -> tuple[bool, Any]:
+    def _format_condition_value(self, value: Any) -> str:
+        try:
+            rendered = repr(value)
+        except Exception:
+            rendered = f"<{value.__class__.__name__}>"
+        if len(rendered) > 120:
+            rendered = f"{rendered[:117]}..."
+        return rendered
+
+    def _condition_descriptor(self, context_label: str | None) -> str:
+        if not context_label or context_label == "condition":
+            return "condition"
+        if context_label.endswith("condition"):
+            return context_label
+        return f"{context_label} condition"
+
+    def _eval_condition_with_binding(
+        self,
+        expr: ast_nodes.Expr | None,
+        state: FlowState,
+        runtime_ctx: FlowRuntimeContext,
+        *,
+        context_label: str = "condition",
+    ) -> tuple[bool, Any]:
         if expr is None:
             return True, None
         if isinstance(expr, ast_nodes.PatternExpr):
@@ -2609,7 +3036,13 @@ class FlowEngine:
         except EvaluationError as exc:
             raise Namel3ssError(str(exc))
         if not isinstance(value, bool):
-            raise Namel3ssError("Condition must evaluate to a boolean")
+            descriptor = self._condition_descriptor(context_label)
+            raise Namel3ssError(
+                "This "
+                + descriptor
+                + " did not evaluate to a boolean value.\n"
+                + f"I got {self._format_condition_value(value)} instead. Make sure the condition returns true or false."
+            )
         return bool(value), value
 
     async def _run_condition_node(self, node: FlowNode, state: FlowState, runtime_ctx: FlowRuntimeContext) -> dict:
@@ -2623,10 +3056,7 @@ class FlowEngine:
         for idx, br in enumerate(branches):
             condition_expr = getattr(br, "condition", None)
             is_pattern = isinstance(condition_expr, ast_nodes.PatternExpr)
-            if is_pattern:
-                result, candidate_binding = self._eval_condition_with_binding(condition_expr, state, runtime_ctx)
-            else:
-                result, candidate_binding = self._eval_condition_with_binding(condition_expr, state, runtime_ctx)
+            result, candidate_binding = self._eval_condition_with_binding(condition_expr, state, runtime_ctx)
             expr_display = self._expr_to_str(condition_expr)
             if getattr(br, "label", None) == "unless":
                 result = not result

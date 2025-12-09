@@ -9,10 +9,10 @@ from namel3ss.cli import main
 
 
 EXAMPLE_APP = """\
-app "hello":
-  entry_page "home"
+app is "hello":
+  entry_page is "home"
 
-page "home":
+page is "home":
   route "/"
 """
 

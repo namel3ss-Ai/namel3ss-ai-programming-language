@@ -26,13 +26,13 @@ frame is "documents":
 def test_vector_store_both_syntaxes():
     mod = parse_module(
         '''
-frame "documents":
+frame is "documents":
   backend "memory"
   table "docs"
 
-vector_store "kb":
+vector_store is "kb":
   backend "default_vector"
-  frame "documents"
+  frame is "documents"
   text_column "content"
   id_column "id"
   embedding_model "default_embedding"
@@ -56,12 +56,12 @@ vector_store is "kb2":
 def test_vector_store_missing_backend_errors():
     mod = parse_module(
         '''
-frame "docs":
+frame is "docs":
   backend "memory"
   table "docs"
 
-vector_store "kb":
-  frame "docs"
+vector_store is "kb":
+  frame is "docs"
   text_column "content"
   id_column "id"
   embedding_model "default_embedding"

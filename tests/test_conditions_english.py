@@ -48,8 +48,8 @@ def _make_engine(ir_prog: IRProgram) -> FlowEngine:
 
 def test_parse_flow_with_if_chain():
     module = parse_source(
-        'flow "support_flow":\n'
-        '  step "route":\n'
+        'flow is "support_flow":\n'
+        '  step is "route":\n'
         '    if result.category is "billing":\n'
         '      do agent "billing_agent"\n'
         '    otherwise if result.category is "technical":\n'
@@ -68,14 +68,14 @@ def test_parse_flow_with_if_chain():
 
 def test_runtime_condition_branch_selection_and_trace():
     source = (
-        'agent "billing_agent":\n'
+        'agent is "billing_agent":\n'
         '  the goal is "billing"\n'
         '  the personality is "direct"\n'
-        'agent "general_agent":\n'
+        'agent is "general_agent":\n'
         '  the goal is "general"\n'
         '  the personality is "helpful"\n'
-        'flow "support_flow":\n'
-        '  step "route":\n'
+        'flow is "support_flow":\n'
+        '  step is "route":\n'
         '    if result.category is "billing":\n'
         '      do agent "billing_agent"\n'
         '    otherwise:\n'
@@ -101,11 +101,11 @@ def test_runtime_condition_branch_selection_and_trace():
 
 def test_when_runs_single_branch():
     source = (
-        'agent "vip_agent":\n'
+        'agent is "vip_agent":\n'
         '  the goal is "vip"\n'
         '  the personality is "polite"\n'
-        'flow "vip_flow":\n'
-        '  step "maybe_escalate":\n'
+        'flow is "vip_flow":\n'
+        '  step is "maybe_escalate":\n'
         '    when user.is_vip is "true":\n'
         '      do agent "vip_agent"\n'
     )

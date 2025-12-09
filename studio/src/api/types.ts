@@ -41,6 +41,25 @@ export interface DiagnosticsResponse {
   summary: DiagnosticsSummary;
 }
 
+export interface NamingMigrationChange {
+  from: string;
+  to: string;
+}
+
+export interface NamingMigrationSummary {
+  headers_rewritten: number;
+  let_rewritten: number;
+  set_rewritten: number;
+  names_renamed: NamingMigrationChange[];
+  suggested_names?: NamingMigrationChange[];
+  changed: boolean;
+}
+
+export interface NamingMigrationResponse {
+  source: string;
+  changes_summary: NamingMigrationSummary;
+}
+
 export interface OptimizationSuggestion {
   id: string;
   kind: string;

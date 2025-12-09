@@ -16,7 +16,7 @@ from .reranker import DeterministicReranker, Reranker
 from .embedding_registry import EmbeddingProviderRegistry
 from .store_registry import VectorStoreRegistry
 from .vectorstores.memory import InMemoryVectorStore
-from ..secrets.manager import SecretsManager
+from ..secrets.manager import SecretsManager, get_default_secrets_manager
 from ..metrics.tracker import MetricsTracker
 from ..obs.tracer import Tracer
 from ..memory.engine import MemoryEngine
@@ -32,7 +32,7 @@ class RAGEngine:
         memory_engine: Optional[MemoryEngine] = None,
         embedding_provider=None,
     ) -> None:
-        self.secrets = secrets or SecretsManager()
+        self.secrets = secrets or get_default_secrets_manager()
         self.metrics = metrics
         self.tracer = tracer
         self.memory_engine = memory_engine

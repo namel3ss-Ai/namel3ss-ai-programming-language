@@ -58,3 +58,48 @@ class ProviderAuthError(Namel3ssError):
     def __post_init__(self) -> None:  # pragma: no cover - trivial
         if self.diagnostics is None:
             self.diagnostics = [{"code": self.code, "message": self.message, "severity": "error"}]
+
+
+@dataclass
+class ProviderTimeoutError(Namel3ssError):
+    """Raised when a provider call exceeds the configured timeout."""
+
+    code: str = "N3P-1803"
+    diagnostics: list[dict[str, Any]] | None = None
+
+    def __post_init__(self) -> None:  # pragma: no cover - trivial
+        if self.diagnostics is None:
+            self.diagnostics = [{"code": self.code, "message": self.message, "severity": "error"}]
+
+
+@dataclass
+class ProviderRetryError(Namel3ssError):
+    """Raised when a provider call exhausts retries."""
+
+    attempts: int | None = None
+    last_error: BaseException | None = None
+    code: str = "N3P-1804"
+    diagnostics: list[dict[str, Any]] | None = None
+
+    def __post_init__(self) -> None:  # pragma: no cover - trivial
+        if self.diagnostics is None:
+            detail = f"last_error={self.last_error}" if self.last_error else "no last error"
+            self.diagnostics = [
+                {
+                    "code": self.code,
+                    "message": f"{self.message} ({detail})",
+                    "severity": "error",
+                }
+            ]
+
+
+@dataclass
+class ProviderCircuitOpenError(Namel3ssError):
+    """Raised when the provider circuit breaker is open."""
+
+    code: str = "N3P-1805"
+    diagnostics: list[dict[str, Any]] | None = None
+
+    def __post_init__(self) -> None:  # pragma: no cover - trivial
+        if self.diagnostics is None:
+            self.diagnostics = [{"code": self.code, "message": self.message, "severity": "error"}]

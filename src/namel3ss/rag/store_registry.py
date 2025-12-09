@@ -5,12 +5,12 @@ from typing import Dict, Optional
 from .index_config import RAGIndexConfig
 from .factory import VectorStoreFactory
 from .vectorstores.base import VectorStore
-from ..secrets.manager import SecretsManager
+from ..secrets.manager import SecretsManager, get_default_secrets_manager
 
 
 class VectorStoreRegistry:
     def __init__(self, secrets: Optional[SecretsManager] = None) -> None:
-        self.secrets = secrets or SecretsManager()
+        self.secrets = secrets or get_default_secrets_manager()
         self.factory = VectorStoreFactory(self.secrets)
         self._stores: Dict[str, VectorStore] = {}
 

@@ -2,7 +2,7 @@
 Namel3ss V3 core package.
 """
 
-from .version import __version__  # noqa: F401
+from .version import __version__, IR_VERSION  # noqa: F401
 
 __all__ = [
     "lexer",
@@ -12,4 +12,5 @@ __all__ = [
     "errors",
     "typesys",
     "__version__",
+    "IR_VERSION",
 ]

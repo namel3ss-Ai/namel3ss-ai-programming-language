@@ -91,17 +91,17 @@ def test_tool_flow_runtime_success(monkeypatch):
 def test_tool_flow_runtime_missing_arg_errors(monkeypatch):
     code = dedent(
         '''
-        tool "get_weather":
+        tool is \"get_weather":
           kind "http_json"
           method "GET"
           url "https://api.example.com/weather"
           query:
             city: input.city
 
-        flow "check_weather":
-          step "call_tool":
+        flow is "check_weather":
+          step is "call_tool":
             kind "tool"
-            tool "get_weather"
+            tool is \"get_weather"
         '''
     )
     ir = ast_to_ir(parser.parse_source(code))
@@ -115,17 +115,17 @@ def test_tool_flow_runtime_missing_arg_errors(monkeypatch):
 def test_tool_flow_runtime_http_error(monkeypatch):
     code = dedent(
         '''
-        tool "get_weather":
+        tool is \"get_weather":
           kind "http_json"
           method "GET"
           url "https://api.example.com/weather"
           query:
             city: input.city
 
-        flow "check_weather":
-          step "call_tool":
+        flow is "check_weather":
+          step is "call_tool":
             kind "tool"
-            tool "get_weather"
+            tool is \"get_weather"
             input:
               city: "Nowhere"
         '''

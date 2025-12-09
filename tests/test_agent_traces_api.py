@@ -4,17 +4,17 @@ from namel3ss.server import create_app
 
 
 PROGRAM_TEXT = (
-    'app "support_portal":\n'
-    '  entry_page "home"\n'
-    'page "home":\n'
+    'app is "support_portal":\n'
+    '  entry_page is "home"\n'
+    'page is "home":\n'
     '  title "Home"\n'
     '  ai_call "summarise_message"\n'
     '  agent "helper"\n'
     'model "default":\n'
     '  provider "openai:gpt-4.1-mini"\n'
-    'ai "summarise_message":\n'
+    'ai is "summarise_message":\n'
     '  model "default"\n'
-    'agent "helper":\n'
+    'agent is "helper":\n'
     '  goal "Assist"\n'
 )
 

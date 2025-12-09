@@ -52,8 +52,8 @@ def _build_engine(program: IRProgram):
 
 def test_parse_for_each_variants():
     module = parse_source(
-        'flow "f":\n'
-        '  step "script":\n'
+        'flow is "f":\n'
+        '  step is "script":\n'
         '    kind "script"\n'
         '    repeat for each item in items:\n'
         '      set state.last_item be item\n'
@@ -66,12 +66,12 @@ def test_parse_for_each_variants():
 
 def test_parse_for_each_state_and_step_output():
     module = parse_source(
-        'flow "f":\n'
-        '  step "script":\n'
+        'flow is "f":\n'
+        '  step is "script":\n'
         '    kind "script"\n'
         '    repeat for each user in state.users:\n'
         '      set state.last_user be user\n'
-        '    repeat for each row in step "fetch" output:\n'
+        '    repeat for each row in step is "fetch" output:\n'
         '      set state.last_row be row\n'
     )
     flow = next(d for d in module.declarations if isinstance(d, ast_nodes.FlowDecl))

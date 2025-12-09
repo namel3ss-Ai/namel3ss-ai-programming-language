@@ -337,15 +337,15 @@ See `docs/language/conditions.md` for the full set of supported operators, macro
 Inside a flow step (including inside condition branches), you can jump to another flow using plain English:
 
 ```ai
-flow "main_flow":
-  step "route":
+flow is "main_flow":
+  step is "route":
     if result.category is "billing":
       go to flow "billing_flow"
     otherwise:
       go to flow "fallback_flow"
 
-flow "billing_flow":
-  step "finish":
+flow is "billing_flow":
+  step is "finish":
     do tool "echo"
 ```
 
@@ -353,7 +353,7 @@ flow "billing_flow":
 
 ## Variables and Expressions (Phase 1)
 
-Use `let <name> be <expression>` to declare variables and `set <name> to <expression>` to mutate them. The symbolic `=` form is still accepted for developers, but the English `be` / `to` style is preferred. Arithmetic can be written with symbols (`+`, `-`, `*`, `/`, `%`) or words (`plus`, `minus`, `times`, `divided by`). Comparisons support both symbols and words such as `is greater than`, `is less than`, `is at least`, and `is at most`.
+Use `let <name> be <expression>` to declare variables and `set <name> be|to <expression>` to mutate them. Arithmetic supports both symbols (`+`, `-`, `*`, `/`, `%`) and English forms (`plus`, `minus`, `times`, `divided by`). Comparisons support both symbols and words such as `is greater than`, `is less than`, `is at least`, and `is at most`. Unary `-`/`+`, negative literals (e.g., `-10`), empty strings (`""`), and record literals `{ key: value }` are first-class expressions.
 
 Example:
 

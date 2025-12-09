@@ -10,30 +10,30 @@ from namel3ss.tools.registry import ToolRegistry
 
 def test_vector_query_runtime_builds_context(monkeypatch):
     source = '''
-frame "docs":
+frame is "docs":
   backend "memory"
   table "docs"
 
-vector_store "kb":
+vector_store is "kb":
   backend "memory"
-  frame "docs"
+  frame is "docs"
   text_column "content"
   id_column "id"
   embedding_model "fake"
 
-flow "index_and_query":
-  step "insert":
+flow is "index_and_query":
+  step is "insert":
     kind "frame_insert"
-    frame "docs"
+    frame is "docs"
     values:
       id: "1"
       content: "hello world"
-  step "index":
+  step is "index":
     kind "vector_index_frame"
-    vector_store "kb"
-  step "retrieve":
+    vector_store is "kb"
+  step is "retrieve":
     kind "vector_query"
-    vector_store "kb"
+    vector_store is "kb"
     query_text "hello"
     top_k 1
 '''

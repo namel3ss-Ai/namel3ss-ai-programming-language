@@ -4,21 +4,21 @@ from namel3ss import ir
 
 
 PROGRAM_TEXT = (
-    'app "support_portal":\n'
-    '  entry_page "home"\n'
-    'page "home":\n'
+    'app is "support_portal":\n'
+    '  entry_page is "home"\n'
+    'page is "home":\n'
     '  title "Home"\n'
-    'flow "pipeline":\n'
-    '  step "call":\n'
+    'flow is "pipeline":\n'
+    '  step is "call":\n'
     '    kind "ai"\n'
     '    target "summarise_message"\n'
-    'agent "helper":\n'
+    'agent is "helper":\n'
     '  goal "Assist"\n'
     'plugin "stripe":\n'
     '  description "payments"\n'
     'model "default":\n'
     '  provider "openai:gpt-4.1-mini"\n'
-    'ai "summarise_message":\n'
+    'ai is "summarise_message":\n'
     '  model "default"\n'
 )
 

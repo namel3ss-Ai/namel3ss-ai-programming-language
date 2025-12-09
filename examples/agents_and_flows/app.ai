@@ -1,7 +1,7 @@
-app "agents-flows":
-  entry_page "home"
+app is "agents-flows":
+  entry_page is "home"
 
-page "home" at "/":
+page is "home" at "/":
   section "info":
     heading "Agents + Flows demo"
     text "Run the orchestrate flow to see AI + agent steps executed."
@@ -9,20 +9,20 @@ page "home" at "/":
 model "default":
   provider "dummy"
 
-agent "writer":
+agent is \"writer":
   goal "Write a short statement about a topic."
 
-flow "orchestrate":
-  step "branch":
+flow is "orchestrate":
+  step is "branch":
     kind "ai"
     target "decide"
-  step "fanout":
+  step is "fanout":
     kind "agent"
     target "writer"
-  step "join":
+  step is "join":
     kind "tool"
     target "echo"
 
-ai "decide":
+ai is \"decide":
   model "default"
   input from "user_input"

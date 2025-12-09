@@ -307,7 +307,12 @@ class Lexer:
                 column += 1
                 continue
             if char == "-":
-                tokens.append(Token("DASH", "-", line_no, column))
+                # Treat leading "-" with whitespace as a list dash; otherwise as an operator.
+                is_dash = (line[:i].strip() == "") and (i + 1 < len(line) and line[i + 1].isspace())
+                if is_dash:
+                    tokens.append(Token("DASH", "-", line_no, column))
+                else:
+                    tokens.append(Token("OP", "-", line_no, column))
                 i += 1
                 column += 1
                 continue

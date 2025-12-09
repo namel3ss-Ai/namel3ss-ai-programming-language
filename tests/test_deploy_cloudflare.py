@@ -5,7 +5,7 @@ from namel3ss.deploy.models import DeployTargetConfig, DeployTargetKind
 
 
 def test_build_cloudflare_creates_bundle(tmp_path: Path):
-    source = 'app "demo" version "0.0.1"\nflow "hello":\n  return "hi"\n'
+    source = 'app is "demo" version "0.0.1"\nflow is "hello":\n  return "hi"\n'
     builder = DeployBuilder(source, tmp_path)
     out_dir = tmp_path / "cloudflare"
     target = DeployTargetConfig(kind=DeployTargetKind.SERVERLESS_CLOUDFLARE, name="cf", output_dir=out_dir)

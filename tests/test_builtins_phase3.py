@@ -53,8 +53,8 @@ def _make_engine(ir_prog: IRProgram):
 
 def test_string_builtins():
     source = (
-        'flow "strings":\n'
-        '  step "s":\n'
+        'flow is "strings":\n'
+        '  step is "s":\n'
         '    let name be "  Disan  "\n'
         '    let trimmed be trim of name\n'
         '    let lower be lowercase(name)\n'
@@ -80,8 +80,8 @@ def test_string_builtins():
 
 def test_numeric_builtins_and_round_abs():
     source = (
-        'flow "numbers":\n'
-        '  step "s":\n'
+        'flow is "numbers":\n'
+        '  step is "s":\n'
         '    let scores be [12, 4, 9, 10]\n'
         '    let minimum be minimum of scores\n'
         '    let maximum be max(scores)\n'
@@ -104,8 +104,8 @@ def test_numeric_builtins_and_round_abs():
 
 def test_any_all_boolean_helpers():
     source = (
-        'flow "bools":\n'
-        '  step "s":\n'
+        'flow is "bools":\n'
+        '  step is "s":\n'
         '    let scores be [1, 2, 3]\n'
         '    let any_high be any score in scores where score > 2\n'
         '    let all_high be all score in scores where score > 0\n'
@@ -128,8 +128,8 @@ def test_any_all_boolean_helpers():
 
 def test_time_and_random_builtins():
     source = (
-        'flow "time":\n'
-        '  step "s":\n'
+        'flow is "time":\n'
+        '  step is "s":\n'
         '    let now be current timestamp\n'
         '    let today be current date\n'
         '    let rid be random uuid\n'
@@ -148,8 +148,8 @@ def test_time_and_random_builtins():
 
 def test_join_non_list_errors():
     source = (
-        'flow "errors":\n'
-        '  step "s":\n'
+        'flow is "errors":\n'
+        '  step is "s":\n'
         '    let sep be ", "\n'
         '    let bad_join be join 5 with sep\n'
     )
@@ -163,8 +163,8 @@ def test_join_non_list_errors():
 
 def test_join_non_string_items_errors():
     source = (
-        'flow "errors":\n'
-        '  step "s":\n'
+        'flow is "errors":\n'
+        '  step is "s":\n'
         '    let items be [1, 2]\n'
         '    let bad_strings be join items with ", "\n'
     )
@@ -178,8 +178,8 @@ def test_join_non_string_items_errors():
 
 def test_aggregate_non_list_errors():
     source = (
-        'flow "errors":\n'
-        '  step "s":\n'
+        'flow is "errors":\n'
+        '  step is "s":\n'
         '    let bad_min be minimum of 5\n'
     )
     ir_prog = ast_to_ir(parse_source(source))
@@ -192,8 +192,8 @@ def test_aggregate_non_list_errors():
 
 def test_any_predicate_must_be_boolean():
     source = (
-        'flow "errors":\n'
-        '  step "s":\n'
+        'flow is "errors":\n'
+        '  step is "s":\n'
         '    let bad_pred be any x in [1, 2] where "oops"\n'
     )
     ir_prog = ast_to_ir(parse_source(source))

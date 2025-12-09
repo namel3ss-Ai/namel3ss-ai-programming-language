@@ -7,18 +7,18 @@ from namel3ss.server import create_app
 
 
 PROGRAM_TEXT = (
-    'app "support_portal":\n'
-    '  entry_page "home"\n'
-    'page "home":\n'
+    'app is "support_portal":\n'
+    '  entry_page is "home"\n'
+    'page is "home":\n'
     '  title "Home"\n'
     '  ai_call "summarise_message"\n'
     '  agent "helper"\n'
     '  memory "short_term"\n'
     'model "default":\n'
     '  provider "openai:gpt-4.1-mini"\n'
-    'ai "summarise_message":\n'
+    'ai is "summarise_message":\n'
     '  model "default"\n'
-    'agent "helper":\n'
+    'agent is "helper":\n'
     '  goal "Assist"\n'
     'memory "short_term":\n'
     '  type "conversation"\n'
@@ -70,13 +70,13 @@ def test_last_trace_endpoint_after_run():
 
 def test_run_flow_endpoint():
     flow_program = (
-        'flow "pipeline":\n'
-        '  step "call":\n'
+        'flow is "pipeline":\n'
+        '  step is "call":\n'
         '    kind "ai"\n'
         '    target "summarise_message"\n'
         'model "default":\n'
         '  provider "openai:gpt-4.1-mini"\n'
-        'ai "summarise_message":\n'
+        'ai is "summarise_message":\n'
         '  model "default"\n'
     )
     client = TestClient(create_app())
@@ -93,10 +93,10 @@ def test_run_flow_endpoint():
 
 def test_pages_endpoint_lists_pages():
     code = (
-        'page "home":\n'
+        'page is "home":\n'
         '  title "Home"\n'
         '  route "/"\n'
-        'page "about":\n'
+        'page is "about":\n'
         '  title "About"\n'
         '  route "/about"\n'
     )
@@ -109,7 +109,7 @@ def test_pages_endpoint_lists_pages():
 
 def test_page_ui_endpoint_returns_sections():
     code = (
-        'page "home":\n'
+        'page is "home":\n'
         '  title "Home"\n'
         '  route "/"\n'
         '  section "hero":\n'
@@ -144,16 +144,16 @@ def test_metrics_and_studio_endpoints():
 
 def test_diagnostics_and_bundle_endpoints():
     code = (
-        'page "home":\n'
+        'page is "home":\n'
         '  title "Home"\n'
         '  route "/"\n'
-        'flow "pipeline":\n'
-        '  step "call":\n'
+        'flow is "pipeline":\n'
+        '  step is "call":\n'
         '    kind "ai"\n'
         '    target "summarise_message"\n'
         'model "default":\n'
         '  provider "openai:gpt-4.1-mini"\n'
-        'ai "summarise_message":\n'
+        'ai is "summarise_message":\n'
         '  model "default"\n'
     )
     tmp = Path(tempfile.mkdtemp())

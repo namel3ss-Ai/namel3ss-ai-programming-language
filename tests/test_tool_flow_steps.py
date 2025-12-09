@@ -38,8 +38,8 @@ def test_parse_flow_tool_step_with_args():
 def test_missing_tool_target_errors():
     code = dedent(
         '''
-        flow "f":
-          step "call":
+        flow is "f":
+          step is "call":
             kind "tool"
         '''
     )
@@ -51,10 +51,10 @@ def test_missing_tool_target_errors():
 def test_unknown_tool_reference_errors():
     code = dedent(
         '''
-        flow "f":
-          step "call":
+        flow is "f":
+          step is "call":
             kind "tool"
-            tool "not_declared"
+            tool is \"not_declared"
         '''
     )
     module = Parser(Lexer(code).tokenize()).parse_module()

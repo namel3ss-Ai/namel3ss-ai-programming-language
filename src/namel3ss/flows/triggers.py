@@ -15,7 +15,7 @@ from ..distributed.queue import JobQueue
 from ..distributed.scheduler import JobScheduler
 from ..metrics.tracker import MetricsTracker
 from ..obs.tracer import Tracer
-from ..secrets.manager import SecretsManager
+from ..secrets.manager import SecretsManager, get_default_secrets_manager
 
 MAX_FILE_BYTES = 10 * 1024 * 1024
 
@@ -41,7 +41,7 @@ class TriggerManager:
     ) -> None:
         self.job_queue = job_queue
         self.scheduler = JobScheduler(job_queue)
-        self.secrets = secrets or SecretsManager()
+        self.secrets = secrets or get_default_secrets_manager()
         self.tracer = tracer
         self.metrics = metrics
         self._triggers: Dict[str, FlowTrigger] = {}

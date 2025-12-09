@@ -6,7 +6,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any, Dict, List, Optional, Union
+from typing import Any, Dict, List, Optional, Union, Literal
 
 
 @dataclass
@@ -380,6 +380,7 @@ class FlowStepDecl:
     """step \"name\" within a flow."""
 
     name: str
+    alias: Optional[str] = field(default=None, kw_only=True)
     kind: str
     target: str
     message: Optional[str] = None
@@ -570,10 +571,24 @@ class Statement:
 
 
 @dataclass
+class DestructuringField:
+    name: str
+    alias: Optional[str] = None
+
+
+@dataclass
+class DestructuringPattern:
+    kind: Literal["record", "list"]
+    fields: List[DestructuringField] | List[str]
+
+
+@dataclass
 class LetStatement(Statement):
     name: str = ""
     expr: Expr | None = None
     uses_equals: bool = False
+    is_constant: bool = False
+    pattern: object | None = None
 
 
 @dataclass

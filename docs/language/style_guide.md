@@ -2,6 +2,22 @@
 
 This guide captures the preferred English-first style for writing Namel3ss programs. The lint rules reinforce these guidelines; following them keeps code readable and consistent.
 
+## Naming Standard v1 (overview)
+- `lower_snake_case` everywhere (variables, params, state keys, helpers, flows).
+- Booleans start with `is_`, `has_`, `can_`, or `should_`.
+- Lists are plural; loop variables are singular.
+- Helpers/flows use verb phrases (`calculate_total`, `send_welcome_email`).
+- Assignments use `be`: `let total be base plus bonus`; `let constant tax_rate be 0.21`; state updates use `set state.total be ...`.
+- Full spec: [Naming Standard v1](../language/naming_v1.md) and the walkthrough in [Variables & Scope](../book/variables_and_scope.md).
+- Migrating legacy files: see [Migrating to English Syntax](../language/migrating_to_english_syntax.md).
+
+## Control Flow Style
+- Prefer clear multi-line `if / otherwise if / else` blocks; keep conditions boolean and explicit.
+- Use `match` with simple literal `when` branches; keep branches small and add an `otherwise` when possible.
+- Loops: pick meaningful singular loop variables (`user` in `for each user in users:`) and avoid using loop vars outside the loop.
+- `when` is only used inside `match` in v1; use `if` for standalone conditions.
+- Keep retries and `on error` blocks concise; log enough context to understand failures.
+
 ## General Naming
 - Prefer `lower_snake_case` for variables, parameters, and helper identifiers.
 - Choose descriptive helper names, e.g., `"normalize_score"`, `"full_name"`.
@@ -63,5 +79,4 @@ define helper "normalize_score":
 - Use `note` for lightweight markers and `checkpoint` for milestones.
 
 ## Deprecation / Legacy Syntax
-- Symbolic `=` in `let` is allowed for backwards compatibility but discouraged; prefer `be`.
-- Any future breaking changes will be announced with lint warnings first; existing syntax remains supported in 1.x.
+- Symbolic forms (`let x = ...`, `flow "name":`) are no longer accepted. Use the English `be` assignments and `is` headers everywhere.

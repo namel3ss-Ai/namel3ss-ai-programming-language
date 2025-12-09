@@ -19,13 +19,13 @@ def _client(tmp_path: Path) -> TestClient:
 def test_manifest_includes_navigation_route(tmp_path: Path):
     (tmp_path / "pages").mkdir()
     (tmp_path / "pages" / "home.ai").write_text(
-        'page "home" at "/":\n'
+        'page is "home" at "/":\n'
         '  button "Go":\n'
         '    on click:\n'
         '      go to page "dashboard"\n',
         encoding="utf-8",
     )
-    (tmp_path / "pages" / "dashboard.ai").write_text('page "dashboard" at "/dashboard":\n  heading "Dash"\n', encoding="utf-8")
+    (tmp_path / "pages" / "dashboard.ai").write_text('page is "dashboard" at "/dashboard":\n  heading "Dash"\n', encoding="utf-8")
     client = _client(tmp_path)
     resp = client.get("/api/ui/manifest", headers={"X-API-Key": "dev-key"})
     assert resp.status_code == 200

@@ -19,10 +19,10 @@ from namel3ss.runtime.vectorstores import InMemoryVectorBackend, VectorStoreRegi
 def test_parse_vector_index_step_both_syntax():
     module = parser.parse_source(
         '''
-flow "index_all_documents":
-  step "index":
+flow is "index_all_documents":
+  step is "index":
     kind "vector_index_frame"
-    vector_store "kb"
+    vector_store is "kb"
 
 flow is "index_filtered_documents":
   step is "index":
@@ -70,35 +70,35 @@ def _build_engine(ir):
 def test_vector_index_flow_indexes_rows():
     module = parser.parse_source(
         '''
-frame "docs":
+frame is "docs":
   backend "memory"
   table "docs"
 
-vector_store "kb":
+vector_store is "kb":
   backend "memory"
-  frame "docs"
+  frame is "docs"
   text_column "content"
   id_column "id"
   embedding_model "default_embedding"
 
-flow "index_docs":
-  step "insert_one":
+flow is "index_docs":
+  step is "insert_one":
     kind "frame_insert"
-    frame "docs"
+    frame is "docs"
     values:
       id: 1
       content: "hello"
       project_id: 42
-  step "insert_two":
+  step is "insert_two":
     kind "frame_insert"
-    frame "docs"
+    frame is "docs"
     values:
       id: 2
       content: "bye"
       project_id: 99
-  step "index":
+  step is "index":
     kind "vector_index_frame"
-    vector_store "kb"
+    vector_store is "kb"
     where:
       project_id: 42
 '''
@@ -138,14 +138,14 @@ flow "index_docs":
 def test_vector_index_unknown_store_errors():
     module = parser.parse_source(
         '''
-frame "docs":
+frame is "docs":
   backend "memory"
   table "docs"
 
-flow "index_docs":
-  step "index":
+flow is "index_docs":
+  step is "index":
     kind "vector_index_frame"
-    vector_store "missing"
+    vector_store is "missing"
 '''
     )
     with pytest.raises(Exception):

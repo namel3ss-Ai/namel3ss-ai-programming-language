@@ -23,6 +23,34 @@ _DEFINITIONS: Dict[str, DiagnosticDefinition] = {
         default_severity="error",
         message_template="Syntax error: {detail}",
     ),
+    "N3L-PARSE-NEWLINE": DiagnosticDefinition(
+        code="N3L-PARSE-NEWLINE",
+        category="syntax",
+        default_severity="error",
+        message_template="{detail}",
+        doc_url="https://github.com/namel3ss-ai/namel3ss-ai-programming-language/blob/main/docs/reference/errors.md#n3l-parse-newline",
+    ),
+    "N3L-PARSE-UNKNOWN-FIELD": DiagnosticDefinition(
+        code="N3L-PARSE-UNKNOWN-FIELD",
+        category="syntax",
+        default_severity="error",
+        message_template="{detail}",
+        doc_url="https://github.com/namel3ss-ai/namel3ss-ai-programming-language/blob/main/docs/reference/errors.md#n3l-parse-unknown-field",
+    ),
+    "N3L-PARSE-NAVIGATE": DiagnosticDefinition(
+        code="N3L-PARSE-NAVIGATE",
+        category="syntax",
+        default_severity="error",
+        message_template="{detail}",
+        doc_url="https://github.com/namel3ss-ai/namel3ss-ai-programming-language/blob/main/docs/reference/errors.md#n3l-parse-navigate",
+    ),
+    "N3L-PARSE-OUTPUT": DiagnosticDefinition(
+        code="N3L-PARSE-OUTPUT",
+        category="syntax",
+        default_severity="error",
+        message_template="{detail}",
+        doc_url="https://github.com/namel3ss-ai/namel3ss-ai-programming-language/blob/main/docs/reference/errors.md#n3l-parse-output",
+    ),
     # Lang-spec / structural
     "N3-1001": DiagnosticDefinition(
         code="N3-1001",

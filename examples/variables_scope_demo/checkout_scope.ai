@@ -1,0 +1,35 @@
+flow is "checkout_scope_demo":
+  description "Demonstrates Naming Standard v1: locals, constants, aliases, loops, destructuring."
+
+  step is "load_user" as user:
+    let user_record be { name: "Riley", email: "riley@example.com" }
+    let {name as customer_name, email} be user_record
+    set state.customer_name be customer_name
+    set state.customer_email be email
+    set state.user_record be user_record
+
+  step is "load_cart" as cart:
+    let items be [
+      { name: "widget", price: 10 },
+      { name: "gadget", price: 5 }
+    ]
+    set state.items be items
+
+  step is "sum_items":
+    let constant tax_rate be 0.21
+    let subtotal be 0
+
+    repeat for each item in cart.output:
+      let subtotal be subtotal plus item.price
+
+    set state.subtotal be subtotal
+    set state.total be subtotal times (1 plus tax_rate)
+
+  step is "summary":
+    let [first_item, second_item] be state.items
+    let email be user.output.email
+    log info "checkout summary" with {
+      customer: state.customer_name,
+      first_item: first_item.name,
+      total: state.total
+    }

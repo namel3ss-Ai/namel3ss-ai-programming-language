@@ -22,7 +22,7 @@ def test_scaffold_project_creates_files(tmp_path: Path):
     scaffold_project("app-basic", target, project_name="myapp", force=True)
     assert (target / "app.ai").exists()
     content = (target / "app.ai").read_text(encoding="utf-8")
-    assert 'app "myapp"' in content or 'app "hello"' in content  # allow if rename not applied
+    assert 'app is "myapp"' in content or 'app is "hello"' in content  # allow if rename not applied
     assert (target / "README.md").exists()
 
 

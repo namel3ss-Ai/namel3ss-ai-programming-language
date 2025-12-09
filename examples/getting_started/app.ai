@@ -1,7 +1,7 @@
-app "getting-started":
-  entry_page "home"
+app is "getting-started":
+  entry_page is "home"
 
-page "home" at "/":
+page is "home" at "/":
   section "hero":
     heading "Getting Started with Namel3ss"
     text "This page uses the modern English-style DSL."
@@ -9,11 +9,11 @@ page "home" at "/":
 model "default":
   provider "dummy"
 
-ai "greet":
+ai is \"greet":
   model "default"
   input from "user_input"
 
-flow "pipeline":
-  step "call":
+flow is "pipeline":
+  step is "call":
     kind "ai"
     target "greet"

@@ -53,8 +53,8 @@ def _build_engine(program: IRProgram):
 
 def test_parse_if_else_branches():
     module = parse_source(
-        'flow "f":\n'
-        '  step "script":\n'
+        'flow is "f":\n'
+        '  step is "script":\n'
         '    kind "script"\n'
         '    if state.ok:\n'
         '      set state.flag be true\n'
@@ -71,8 +71,8 @@ def test_parse_if_else_branches():
 def test_parse_else_without_if_errors():
     with pytest.raises(ParseError):
         parse_source(
-            'flow "f":\n'
-            '  step "s":\n'
+            'flow is "f":\n'
+            '  step is "s":\n'
             '    kind "script"\n'
             '    else:\n'
             '      set state.x be 1\n'

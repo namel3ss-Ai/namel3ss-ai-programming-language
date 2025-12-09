@@ -3,12 +3,12 @@ from namel3ss.parser import parse_source
 
 
 PROGRAM_TEXT = (
-    'flow "support_pipeline":\n'
+    'flow is "support_pipeline":\n'
     '  description "Handle support"\n'
-    '  step "classify":\n'
+    '  step is "classify":\n'
     '    kind "ai"\n'
     '    target "classify_ticket"\n'
-    '  step "assign_helper":\n'
+    '  step is "assign_helper":\n'
     '    kind "agent"\n'
     '    target "helper"\n'
 )
@@ -26,7 +26,7 @@ def test_parse_flow_and_steps():
 
 def test_parse_page_sections_and_components():
     module = parse_source(
-        'page "home":\n'
+        'page is "home":\n'
         '  section "hero":\n'
         '    component "text":\n'
         '      value "Welcome"\n'

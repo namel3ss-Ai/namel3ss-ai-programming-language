@@ -4,14 +4,14 @@ from namel3ss.cli import main
 
 
 PROGRAM_TEXT = (
-    'page "home":\n'
+    'page is "home":\n'
     '  title "Home"\n'
     '  ai_call "summarise_message"\n'
     'model "default":\n'
     '  provider "openai:gpt-4.1-mini"\n'
-    'ai "summarise_message":\n'
+    'ai is "summarise_message":\n'
     '  model "default"\n'
-    'agent "helper":\n'
+    'agent is "helper":\n'
     '  goal "Assist"\n'
     'memory "short_term":\n'
     '  type "conversation"\n'

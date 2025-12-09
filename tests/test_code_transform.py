@@ -18,7 +18,7 @@ def _client(tmp_path: Path) -> TestClient:
 
 def test_code_transform_label(tmp_path: Path):
     (tmp_path / "pages").mkdir()
-    (tmp_path / "pages" / "home.ai").write_text('page "home" at "/":\n  heading "Welcome"\n', encoding="utf-8")
+    (tmp_path / "pages" / "home.ai").write_text('page is "home" at "/":\n  heading "Welcome"\n', encoding="utf-8")
     client = _client(tmp_path)
     manifest = client.get("/api/ui/manifest", headers={"X-API-Key": "dev-key"}).json()
     heading = manifest["pages"][0]["layout"][0]
@@ -34,7 +34,7 @@ def test_code_transform_label(tmp_path: Path):
 
 def test_code_transform_missing_element(tmp_path: Path):
     (tmp_path / "pages").mkdir()
-    (tmp_path / "pages" / "home.ai").write_text('page "home" at "/":\n  heading "Welcome"\n', encoding="utf-8")
+    (tmp_path / "pages" / "home.ai").write_text('page is "home" at "/":\n  heading "Welcome"\n', encoding="utf-8")
     client = _client(tmp_path)
     resp = client.post(
         "/api/studio/code/transform",
@@ -46,7 +46,7 @@ def test_code_transform_missing_element(tmp_path: Path):
 
 def test_code_transform_insert_delete_move(tmp_path: Path):
     (tmp_path / "pages").mkdir()
-    (tmp_path / "pages" / "home.ai").write_text('page "home" at "/":\n  heading "One"\n  heading "Two"\n', encoding="utf-8")
+    (tmp_path / "pages" / "home.ai").write_text('page is "home" at "/":\n  heading "One"\n  heading "Two"\n', encoding="utf-8")
     client = _client(tmp_path)
     manifest = client.get("/api/ui/manifest", headers={"X-API-Key": "dev-key"}).json()
     first = manifest["pages"][0]["layout"][0]

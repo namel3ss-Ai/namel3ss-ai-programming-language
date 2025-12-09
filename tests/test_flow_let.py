@@ -43,13 +43,13 @@ def test_parse_let_variants():
     from namel3ss.parser import parse_source
 
     module = parse_source(
-        'flow "f":\n'
-        '  step "one":\n'
-        '    kind "ai"\n'
-        '    target "bot"\n'
-        '  step "two":\n'
-        '    kind "script"\n'
-        '    let a = 1\n'
+        'flow is "f":\n'
+        '  step is "one":\n'
+        '    kind is "ai"\n'
+        '    target is "bot"\n'
+        '  step is "two":\n'
+        '    kind is "script"\n'
+        '    let a be 1\n'
         '    let b be a\n'
     )
     flow = next(d for d in module.declarations if isinstance(d, ast_nodes.FlowDecl))

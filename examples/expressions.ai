@@ -1,5 +1,5 @@
-flow "scoring":
-  step "compute score":
+flow is "scoring":
+  step is "compute score":
     let base be 10
     let bonus be 5
     let total be base plus bonus
@@ -7,8 +7,8 @@ flow "scoring":
     if total is greater than 10:
       do agent "notify"
 
-flow "collections":
-  step "aggregate":
+flow is "collections":
+  step is "aggregate":
     let scores be [3, 1, 2]
     let sorted_scores be sorted form of scores
     let high_scores be all scores where item > 1
@@ -19,8 +19,8 @@ flow "collections":
 
     do tool "echo"
 
-flow "strings":
-  step "cleanup":
+flow is "strings":
+  step is "cleanup":
     let title be "  Hello World!  "
     let trimmed be trim of title
     let slug be slugify of title

@@ -9,7 +9,7 @@ from namel3ss.errors import IRError, ParseError
 
 def test_parse_page_with_layout():
     src = (
-        'page "home" at "/":\n'
+        'page is "home" at "/":\n'
         '  heading "Welcome"\n'
         '  text "Hello"\n'
     )
@@ -22,7 +22,7 @@ def test_parse_page_with_layout():
 
 def test_parse_section_and_image_and_form():
     src = (
-        'page "signup" at "/signup":\n'
+        'page is "signup" at "/signup":\n'
         '  section "hero":\n'
         '    heading "Create account"\n'
         '    image "https://example.com/logo.png"\n'
@@ -37,17 +37,17 @@ def test_parse_section_and_image_and_form():
 
 
 def test_route_validation():
-    src = 'page "bad" at "signup":\n  heading "oops"\n'
+    src = 'page is "bad" at "signup":\n  heading "oops"\n'
     with pytest.raises(ParseError):
         parse_source(src)
 
 
 def test_duplicate_page_route():
     src = (
-        'page "home" at "/":\n'
+        'page is "home" at "/":\n'
         '  heading "A"\n'
         '\n'
-        'page "home2" at "/":\n'
+        'page is "home2" at "/":\n'
         '  heading "B"\n'
     )
     module = parse_source(src)
@@ -63,7 +63,7 @@ def test_layout_outside_page_error():
 
 def test_ir_lowering_and_registry():
     src = (
-        'page "home" at "/":\n'
+        'page is "home" at "/":\n'
         '  heading "Welcome"\n'
         '  text "Hello"\n'
     )

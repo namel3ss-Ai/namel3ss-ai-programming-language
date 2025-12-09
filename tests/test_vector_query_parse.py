@@ -11,10 +11,10 @@ def _first_flow(mod):
 def test_vector_query_parses_legacy():
     mod = parser.parse_source(
         '''
-flow "f1":
-  step "retrieve":
+flow is "f1":
+  step is "retrieve":
     kind "vector_query"
-    vector_store "kb"
+    vector_store is "kb"
     query_text "hello"
     top_k 3
 '''
@@ -49,10 +49,10 @@ flow is "f2":
 def test_vector_query_requires_declared_vector_store():
     mod = parser.parse_source(
         '''
-flow "f1":
-  step "retrieve":
+flow is "f1":
+  step is "retrieve":
     kind "vector_query"
-    vector_store "missing"
+    vector_store is "missing"
     query_text "hi"
 '''
     )

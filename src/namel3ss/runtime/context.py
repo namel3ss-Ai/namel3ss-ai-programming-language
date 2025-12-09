@@ -16,18 +16,37 @@ from ..ai.router import ModelRouter
 from ..ir import IRAgent, IRAiCall, IRAiShortTermMemoryConfig, IRApp, IRMemory, IRPage, IRProgram
 from ..memory.engine import MemoryEngine
 from ..metrics.tracker import MetricsTracker
-from ..errors import Namel3ssError, ProviderAuthError, ProviderConfigError
+from ..errors import Namel3ssError, ProviderAuthError, ProviderConfigError, ProviderTimeoutError
 from ..obs.tracer import Tracer
 from ..rag.engine import RAGEngine
-from ..secrets.manager import SecretsManager
+from ..secrets.manager import SecretsManager, get_default_secrets_manager
 from ..tools.registry import ToolRegistry
 from ..tools.registry import build_ai_tool_specs
 from .. import ast_nodes
+from ..observability.metrics import default_metrics
+from .deprecation import warn_deprecated
+from .cache import (
+    ProviderCacheBackend,
+    cache_get_sync,
+    cache_set_sync,
+    get_default_provider_cache,
+    get_provider_cache_ttl_seconds,
+    build_provider_cache_key,
+)
+from ..memory.summarisation import ConversationSummaryConfig, get_summary_config_from_env, summarise_conversation
+from ..memory.vector_helpers import (
+    get_vector_memory_settings,
+    retrieve_relevant_chunks,
+    upsert_conversation_chunks,
+)
 from .expressions import ExpressionEvaluator, VariableEnvironment
 import json
 import urllib.error
 import urllib.parse
 import urllib.request
+from .retries import get_default_retry_config, run_with_retries_and_timeout
+from .circuit_breaker import default_circuit_breaker
+from .vectorstores import VectorStoreRegistry
 
 
 DEFAULT_SHORT_TERM_WINDOW = 20
@@ -169,6 +188,145 @@ def _normalize_user_id(value: Any) -> str | None:
     return str(value)
 
 
+class UserContext(TypedDict, total=False):
+    id: str | None
+    is_authenticated: bool
+    roles: list[str]
+    record: Any | None
+
+
+def _default_user_context() -> UserContext:
+    return {"id": None, "is_authenticated": False, "roles": [], "record": None}
+
+
+def get_user_context(ctx: Any) -> UserContext:
+    if not ctx or not isinstance(ctx, dict):
+        return _default_user_context()
+    merged: UserContext = _default_user_context()
+    merged.update(ctx)
+    # Ensure roles present
+    if "roles" not in merged or merged.get("roles") is None:
+        merged["roles"] = []
+    return merged
+
+
+def _simple_summary(transcript: str, config: ConversationSummaryConfig) -> str:
+    target_len = config.target_summary_length or 1
+    if not transcript:
+        return "Summary unavailable."
+    lines = transcript.splitlines()
+    # Take the first few lines as a crude summary when AI summarisation is unavailable.
+    take = max(target_len, 1)
+    trimmed = lines[: take * 2]
+    text = " ".join(trimmed)
+    if len(lines) > len(trimmed):
+        text += " ..."
+    return f"Conversation summary: {text.strip()}"
+
+
+def _apply_conversation_summary_if_needed(
+    messages: list[dict[str, Any]],
+    provider: Any,
+    provider_model: str | None,
+    provider_name: str | None,
+) -> list[dict[str, Any]]:
+    """
+    Apply conversation summarisation when enabled, falling back to a simple summariser on failure.
+    """
+
+    config = get_summary_config_from_env()
+    if not config.enabled or len(messages) <= config.max_messages_before_summary:
+        return messages
+    retry_cfg = get_default_retry_config()
+    provider_key = f"summary:{provider_name}:{provider_model or ''}"
+
+    def _model_summariser(transcript: str, cfg: ConversationSummaryConfig) -> str:
+        if provider is None:
+            return _simple_summary(transcript, cfg)
+
+        def _do() -> str:
+            prompt_lines = [
+                "Summarize the prior conversation so the assistant can continue coherently.",
+                "Keep key facts, decisions, and user intent concise.",
+            ]
+            if cfg.target_summary_length:
+                prompt_lines.append(f"Target roughly {cfg.target_summary_length} bullet(s) or short paragraphs.")
+            prompt_lines.append("")
+            prompt_lines.append(transcript)
+            summary_messages = [
+                {"role": "system", "content": "You are a concise conversation summarizer."},
+                {"role": "user", "content": "\n".join(prompt_lines)},
+            ]
+            response = provider.generate(messages=summary_messages, model=provider_model)
+            if hasattr(response, "text"):
+                return response.text or ""
+            if isinstance(response, dict):
+                return response.get("text") or response.get("content") or ""
+            return str(response)
+
+        return run_with_retries_and_timeout(
+            _do,
+            config=retry_cfg,
+            error_types=(ProviderTimeoutError, urllib.error.URLError, TimeoutError, ConnectionError),
+            circuit_breaker=default_circuit_breaker,
+            provider_key=provider_key,
+        )
+
+    try:
+        summarised = summarise_conversation(messages, config=config, summariser=_model_summariser)
+        try:
+            default_metrics.record_conversation_summary("success")
+        except Exception:
+            pass
+        return summarised
+    except Exception:
+        try:
+            default_metrics.record_conversation_summary("failure")
+        except Exception:
+            pass
+        try:
+            return summarise_conversation(messages, config=config, summariser=lambda transcript, cfg: _simple_summary(transcript, cfg))
+        except Exception:
+            return messages
+
+
+def _build_vector_context_messages(
+    vector_registry: VectorStoreRegistry | None,
+    query: str,
+    store_name: str,
+    top_k: int,
+) -> list[dict[str, str]]:
+    if not vector_registry or not query:
+        return []
+    results = retrieve_relevant_chunks(vector_registry, store_name, query=query, top_k=top_k)
+    context_parts: list[str] = []
+    for idx, res in enumerate(results, start=1):
+        text_val = res.get("text")
+        if not text_val:
+            meta = res.get("metadata") or {}
+            text_val = meta.get("text") or meta.get("content")
+        if not text_val:
+            text_val = str(res.get("id") or "")
+        text_val = text_val.strip() if isinstance(text_val, str) else str(text_val)
+        if text_val:
+            context_parts.append(f"Memory {idx}: {text_val}")
+    if not context_parts:
+        return []
+    context_text = "Relevant long-term memory:\n" + "\n\n".join(context_parts)
+    return [{"role": "system", "content": context_text}]
+
+
+def _upsert_vector_memory(
+    vector_registry: VectorStoreRegistry | None,
+    store_name: str,
+    messages: list[dict[str, Any]],
+    metadata: dict[str, Any] | None = None,
+) -> None:
+    if not vector_registry or not messages:
+        return
+    upsert_conversation_chunks(vector_registry, store_name, messages, metadata=metadata)
+
+
 @dataclass
 class ExecutionContext:
     app_name: str
@@ -176,9 +334,10 @@ class ExecutionContext:
     user_input: Optional[str] = None
     metadata: Dict[str, Any] = field(default_factory=dict)
     variables: Dict[str, Any] = field(default_factory=dict)
-    user_context: Dict[str, Any] = field(default_factory=lambda: {"id": None, "is_authenticated": False, "record": None})
+    user_context: Dict[str, Any] = field(default_factory=_default_user_context)
     memory_engine: Optional[MemoryEngine] = None
     memory_stores: Optional[Dict[str, Any]] = None
+    vectorstores: Optional[VectorStoreRegistry] = None
     rag_engine: Optional[RAGEngine] = None
     tracer: Optional[Tracer] = None
     tool_registry: Optional[ToolRegistry] = None
@@ -186,6 +345,7 @@ class ExecutionContext:
     secrets: Optional[SecretsManager] = None
     trigger_manager: Optional[Any] = None
     optimizer_engine: Optional[Any] = None
+    provider_cache: Optional[ProviderCacheBackend] = field(default_factory=get_default_provider_cache)
 
 
 def execute_app(app: IRApp, context: ExecutionContext) -> Dict[str, Any]:
@@ -271,6 +431,20 @@ def get_last_recall_snapshot(ai_id: str, session_id: str) -> Dict[str, Any] | No
     if not snap:
         return None
     return copy.deepcopy(snap)
+
+
+def list_recall_snapshots(session_id: str | None = None) -> Dict[str, Dict[str, Any]]:
+    """
+    Return recall snapshots for all AIs or a specific session.
+    """
+
+    if session_id is None:
+        return {key: copy.deepcopy(value) for key, value in _RECALL_SNAPSHOTS.items()}
+    return {
+        ai_id: copy.deepcopy(snap)
+        for (ai_id, sess_id), snap in _RECALL_SNAPSHOTS.items()
+        if sess_id == session_id
+    }
 
 
 def clear_recall_snapshot(ai_id: str, session_id: str) -> None:
@@ -780,6 +954,8 @@ def execute_ai_call_with_registry(
     provider_model = provider_model or getattr(provider, "default_model", None) or getattr(ai_call, "model_name", None)
     selection = SimpleNamespace(provider_name=provider_name, model_name=provider_model or provider_name)
     messages: list[Dict[str, str]] = []
+    vector_registry = getattr(context, "vectorstores", None)
+    vector_enabled, vector_store_name, vector_top_k = get_vector_memory_settings()
 
     session_id = context.metadata.get("session_id") if context.metadata else None
     session_id = session_id or context.request_id or "default"
@@ -797,6 +973,12 @@ def execute_ai_call_with_registry(
         memory_state, memory_messages = build_memory_messages(ai_call, context, session_id, user_id)
         messages.extend(memory_messages)
     elif getattr(ai_call, "memory_name", None) and context.memory_engine:
+        warn_deprecated(
+            "ai.memory_name",
+            remove_in="1.0.0",
+            code="N3-DEPR-001",
+            details="Use the 'memory' block on ai calls instead of memory_name.",
+        )
         try:
             history = context.memory_engine.load_conversation(ai_call.memory_name or "", session_id=session_id)
             messages.extend(history)
@@ -806,8 +988,26 @@ def execute_ai_call_with_registry(
             )
 
     user_content = ai_call.input_source or (context.user_input or "")
+    vector_context_messages: list[dict[str, str]] = []
+    if vector_enabled:
+        if not vector_registry:
+            raise ProviderConfigError("Vector memory is enabled but no vector store registry is configured.")
+        try:
+            vector_context_messages = _build_vector_context_messages(
+                vector_registry,
+                user_content,
+                vector_store_name,
+                vector_top_k,
+            )
+        except Exception as exc:
+            raise ProviderConfigError(
+                f"Vector memory store '{vector_store_name}' is unavailable or misconfigured: {exc}"
+            ) from exc
+    if vector_context_messages:
+        messages.extend(vector_context_messages)
     user_message = {"role": "user", "content": user_content}
     messages.append(user_message)
+    messages = _apply_conversation_summary_if_needed(messages, provider, provider_model, selection.provider_name)
     if memory_state and memory_cfg:
         record_recall_snapshot(
             ai_call.name,
@@ -816,11 +1016,47 @@ def execute_ai_call_with_registry(
             messages,
         )
 
-    def _http_json_request(method: str, url: str, headers: dict[str, str], body: bytes | None) -> dict:
-        req = urllib.request.Request(url, data=body, headers=headers, method=method)
-        with urllib.request.urlopen(req, timeout=15) as resp:  # pragma: no cover - live calls
-            text = resp.read().decode("utf-8")
-            return json.loads(text)
+    def _http_json_request(method: str, url: str, headers: dict[str, str], body: bytes | None, provider_key: str | None = None, provider_cache: ProviderCacheBackend | None = None) -> dict:
+        retry_cfg = get_default_retry_config()
+        cache_key = None
+        cache_enabled = provider_cache is not None
+        if cache_enabled:
+            cache_payload = {
+                "method": method,
+                "url": url,
+                "headers": headers,
+                "body": body.decode("utf-8") if isinstance(body, (bytes, bytearray)) else body,
+            }
+            cache_key = build_provider_cache_key("http", url, cache_payload)
+            cached = cache_get_sync(provider_cache, cache_key)
+            if cached is not None:
+                try:
+                    default_metrics.record_provider_cache_hit("http", url)
+                except Exception:
+                    pass
+                return cached
+            else:
+                try:
+                    default_metrics.record_provider_cache_miss("http", url)
+                except Exception:
+                    pass
+
+        def _do_request() -> dict:
+            req = urllib.request.Request(url, data=body, headers=headers, method=method)
+            with urllib.request.urlopen(req, timeout=retry_cfg.timeout) as resp:  # pragma: no cover - live calls
+                text = resp.read().decode("utf-8")
+                return json.loads(text)
+
+        response = run_with_retries_and_timeout(
+            _do_request,
+            config=retry_cfg,
+            error_types=(ProviderTimeoutError, urllib.error.HTTPError, urllib.error.URLError, TimeoutError),
+            circuit_breaker=default_circuit_breaker,
+            provider_key=provider_key or f"http:{url}",
+        )
+        if cache_enabled and cache_key:
+            cache_set_sync(provider_cache, cache_key, response, ttl=get_provider_cache_ttl_seconds())
+        return response
 
     def _execute_tool_by_name(tool_name: str, args: dict[str, Any]) -> Any:
         if not context.tool_registry:
@@ -849,7 +1085,7 @@ def execute_ai_call_with_registry(
         input_values = args or {}
         env = VariableEnvironment()
         env.declare("input", input_values)
-        env.declare("secret", _SecretProxy(context.secrets or SecretsManager()))
+        env.declare("secret", _SecretProxy(context.secrets or get_default_secrets_manager()))
 
         def _resolver(name: str) -> tuple[bool, Any]:
             if env.has(name):
@@ -923,12 +1159,22 @@ def execute_ai_call_with_registry(
                 body_bytes = json.dumps(body_payload).encode("utf-8")
                 headers.setdefault("Content-Type", "application/json")
         try:
-            return _http_json_request(method, url_str, headers, body_bytes)
+            provider_key = f"tool:{tool_cfg.name}" if getattr(tool_cfg, "name", None) else f"tool:{url_str}"
+            return _http_json_request(
+                method,
+                url_str,
+                headers,
+                body_bytes,
+                provider_key=provider_key,
+                provider_cache=provider_cache,
+            )
         except urllib.error.HTTPError as exc:  # pragma: no cover - fallback
             raise Namel3ssError(f"N3F-963: Tool '{tool_cfg.name}' failed with HTTP {exc.code}")
         except urllib.error.URLError as exc:  # pragma: no cover - fallback
             raise Namel3ssError(f"N3F-963: Tool '{tool_cfg.name}' failed with HTTP error: {exc}")
 
+    provider_cache = getattr(context, "provider_cache", None)
+    cache_ttl = get_provider_cache_ttl_seconds()
     tool_bindings = list(getattr(ai_call, "tools", []) or [])
     requested_mode = (tools_mode or "auto").lower()
     tools_enabled = requested_mode != "none" and bool(tool_bindings)
@@ -949,6 +1195,9 @@ def execute_ai_call_with_registry(
 
     assistant_content = ""
     provider_payload: dict[str, Any] | None = None
+    cache_key: str | None = None
+    cache_hit = False
+    cacheable = provider_cache is not None and not tools_enabled
 
     def _build_provider_payload(raw_payload: Any, finish_reason: str | None) -> dict[str, Any]:
         return {
@@ -1038,32 +1287,59 @@ def execute_ai_call_with_registry(
             assistant_content = follow_up.final_text or ""
             provider_payload = _build_provider_payload(follow_up.raw, follow_up.finish_reason)
     else:
-        try:
-            invocation = provider.generate(messages=messages, model=provider_model)
-            registry.provider_status[provider_name] = "ok"
-            ModelRegistry.last_status[provider_name] = "ok"
-        except urllib.error.HTTPError as exc:  # pragma: no cover - live calls
-            if exc.code in {401, 403}:
-                registry.provider_status[provider_name] = "unauthorized"
-                ModelRegistry.last_status[provider_name] = "unauthorized"
-                raise ProviderAuthError(
-                    f"Provider '{provider_name}' rejected the API key (unauthorized). Check your key and account permissions.",
-                    code="N3P-1802",
-                ) from exc
-            raise
-        assistant_content = invocation.text if hasattr(invocation, "text") else str(invocation)
-        provider_payload = invocation.to_dict() if hasattr(invocation, "to_dict") else {
-            "provider": selection.provider_name,
-            "model": provider_model,
-            "messages": list(messages),
-            "result": assistant_content,
-            "raw": getattr(invocation, "raw", None),
-            "usage": None,
-            "finish_reason": getattr(invocation, "finish_reason", None),
-            "cost": None,
-            "json": None,
-        }
-        provider_payload["messages"] = list(messages)
+        if cacheable:
+            cache_payload = {"messages": messages, "tools": tool_schemas, "mode": tools_mode}
+            cache_key = build_provider_cache_key(selection.provider_name, provider_model, cache_payload)
+            cached = cache_get_sync(provider_cache, cache_key)
+            if cached is not None:
+                cache_hit = True
+                provider_payload = cached.get("provider_payload")
+                assistant_content = cached.get("assistant_content", "")
+                registry.provider_status[provider_name] = "ok"
+                ModelRegistry.last_status[provider_name] = "ok"
+                try:
+                    default_metrics.record_provider_cache_hit(selection.provider_name, provider_model)
+                except Exception:
+                    pass
+            else:
+                try:
+                    default_metrics.record_provider_cache_miss(selection.provider_name, provider_model)
+                except Exception:
+                    pass
+        if not cache_hit:
+            try:
+                invocation = provider.generate(messages=messages, model=provider_model)
+                registry.provider_status[provider_name] = "ok"
+                ModelRegistry.last_status[provider_name] = "ok"
+            except urllib.error.HTTPError as exc:  # pragma: no cover - live calls
+                if exc.code in {401, 403}:
+                    registry.provider_status[provider_name] = "unauthorized"
+                    ModelRegistry.last_status[provider_name] = "unauthorized"
+                    raise ProviderAuthError(
+                        f"Provider '{provider_name}' rejected the API key (unauthorized). Check your key and account permissions.",
+                        code="N3P-1802",
+                    ) from exc
+                raise
+            assistant_content = invocation.text if hasattr(invocation, "text") else str(invocation)
+            provider_payload = invocation.to_dict() if hasattr(invocation, "to_dict") else {
+                "provider": selection.provider_name,
+                "model": provider_model,
+                "messages": list(messages),
+                "result": assistant_content,
+                "raw": getattr(invocation, "raw", None),
+                "usage": None,
+                "finish_reason": getattr(invocation, "finish_reason", None),
+                "cost": None,
+                "json": None,
+            }
+            provider_payload["messages"] = list(messages)
+            if cacheable and cache_key and provider_payload is not None:
+                cache_set_sync(
+                    provider_cache,
+                    cache_key,
+                    {"provider_payload": provider_payload, "assistant_content": assistant_content},
+                    ttl=cache_ttl,
+                )
 
     result = execute_ai_call(ai_call, context)
     result.update(
@@ -1099,6 +1375,20 @@ def execute_ai_call_with_registry(
             raise Namel3ssError(
                 f"Failed to append conversation history for memory '{ai_call.memory_name}'."
             )
+    if vector_enabled:
+        if not vector_registry:
+            raise ProviderConfigError("Vector memory is enabled but no vector store registry is configured.")
+        try:
+            _upsert_vector_memory(
+                vector_registry,
+                vector_store_name,
+                [user_message, {"role": "assistant", "content": assistant_content}],
+                metadata={"session_id": session_id, "ai": ai_call.name, "user_id": user_id},
+            )
+        except Exception as exc:
+            raise ProviderConfigError(
+                f"Vector memory store '{vector_store_name}' is unavailable or misconfigured: {exc}"
+            ) from exc
 
     if context.metrics:
         context.metrics.record_ai_call(

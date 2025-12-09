@@ -53,8 +53,8 @@ def _make_engine(ir_prog: IRProgram):
 
 def test_ask_user_with_answer():
     source = (
-        'flow "f":\n'
-        '  step "s":\n'
+        'flow is "f":\n'
+        '  step is "s":\n'
         '    ask user for "Email" as email\n'
         '    do agent "done"\n'
     )
@@ -69,8 +69,8 @@ def test_ask_user_with_answer():
 
 def test_ask_user_requests_input_when_missing():
     source = (
-        'flow "f":\n'
-        '  step "s":\n'
+        'flow is "f":\n'
+        '  step is "s":\n'
         '    ask user for "Email" as email\n'
         '    do agent "done"\n'
     )
@@ -87,8 +87,8 @@ def test_ask_user_requests_input_when_missing():
 
 def test_form_collects_values():
     source = (
-        'flow "f":\n'
-        '  step "s":\n'
+        'flow is "f":\n'
+        '  step is "s":\n'
         '    form "Signup" as signup:\n'
         '      field "Name" as name\n'
         '      field "Age" as age\n'
@@ -110,8 +110,8 @@ def test_form_collects_values():
 
 def test_logging_notes_and_checkpoints_are_recorded():
     source = (
-        'flow "f":\n'
-        '  step "s":\n'
+        'flow is "f":\n'
+        '  step is "s":\n'
         '    log info "Starting" with { status: "begin" }\n'
         '    note "midway"\n'
         '    checkpoint "after_midway"\n'
@@ -131,8 +131,8 @@ def test_logging_notes_and_checkpoints_are_recorded():
 
 def test_invalid_validation_rule_errors():
     source = (
-        'flow "f":\n'
-        '  step "s":\n'
+        'flow is "f":\n'
+        '  step is "s":\n'
         '    ask user for "X" as x\n'
         '      must be around 5\n'
     )
@@ -142,8 +142,8 @@ def test_invalid_validation_rule_errors():
 
 def test_invalid_log_level_errors():
     source = (
-        'flow "f":\n'
-        '  step "s":\n'
+        'flow is "f":\n'
+        '  step is "s":\n'
         '    log verbose "Nope"\n'
     )
     with pytest.raises(Exception):

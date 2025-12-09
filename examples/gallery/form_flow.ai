@@ -1,5 +1,5 @@
-flow "signup_flow":
-  step "collect":
+flow is "signup_flow":
+  step is "collect":
     form "Signup" as signup:
       field "Name" as name
         type is text

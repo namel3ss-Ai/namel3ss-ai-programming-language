@@ -6,8 +6,8 @@ settings:
     model_provider be "openai"
     retries be 3
 
-flow "score_flow":
-  step "compute":
+flow is "score_flow":
+  step is "compute":
     let raw be 82
     let normalized be normalize_score(raw)
     if normalized is greater than 0.7:

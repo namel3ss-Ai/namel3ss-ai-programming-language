@@ -35,21 +35,21 @@ def _build_engine(program: IRProgram):
 
 def test_parse_frame_update_delete():
     module = parse_source(
-        'frame "users":\n'
+        'frame is "users":\n'
         '  backend "memory"\n'
         '  table "users"\n'
         '\n'
-        'flow "f":\n'
-        '  step "u":\n'
+        'flow is "f":\n'
+        '  step is "u":\n'
         '    kind "frame_update"\n'
-        '    frame "users"\n'
+        '    frame is "users"\n'
         '    where:\n'
         '      id: 1\n'
         '    set:\n'
         '      name: "Bob"\n'
-        '  step "d":\n'
+        '  step is "d":\n'
         '    kind "frame_delete"\n'
-        '    frame "users"\n'
+        '    frame is "users"\n'
         '    where:\n'
         '      id: 2\n'
     )

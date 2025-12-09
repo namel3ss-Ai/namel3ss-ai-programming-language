@@ -2,11 +2,17 @@
 
 ## [Unreleased]
 ### Added
+- Variables & Scope guidance: new book chapter, refreshed Naming Standard v1 links, and a focused example demonstrating locals, constants, step aliases, loops, and destructuring.
+- Naming & Scope diagnostics: clearer messages for unknown identifiers, constants, loop vars, and step aliases aligned with English-first rules.
+- Semantic versioning and IR version centralization, plus deprecation helper with optional strict mode.
+- Golden example regression suite and documentation for versioning, releases, and roadmap.
+- CLI exports for IR/FastAPI scaffolds and IR docs to support migrations.
 - Lint engine with core English-style rules (unused bindings, shadowing, unreachable match branches, discouraged `=` in `let`), plus style and lint references.
 - Example gallery programs demonstrating the stabilized language surface.
+- Developer experience improvements: clearer parser diagnostics (with codes/hints), `n3 lint`/`n3 doctor` commands, and updated VS Code extension with lint-on-save, hover docs, and diagnostic links.
 
 ### Notes
-- Language surface is frozen for the v1.0 English-style syntax; legacy symbolic forms remain supported but are discouraged via lint warnings.
+- Language surface is frozen for the v1.0 English-style syntax; legacy symbolic forms have been removed. See Naming Standard v1 and Variables & Scope for the canonical forms.
 
 ## [3.0.0] - 2025-12-04
 ### Added

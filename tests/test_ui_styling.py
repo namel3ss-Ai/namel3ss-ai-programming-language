@@ -22,7 +22,7 @@ def test_theme_settings_ir():
 
 def test_styles_on_section_and_heading():
     src = (
-        'page "styled" at "/":\n'
+        'page is "styled" at "/":\n'
         '  section "hero":\n'
         '    layout is row\n'
         '    padding is small\n'
@@ -40,7 +40,7 @@ def test_styles_on_section_and_heading():
 
 def test_invalid_spacing_raises():
     src = (
-        'page "bad" at "/":\n'
+        'page is "bad" at "/":\n'
         "  padding is huge\n"
         '  heading "X"\n'
     )
@@ -57,7 +57,7 @@ def test_component_decl_and_call():
         "      on click:\n"
         '        do flow "save" with name: label\n'
         '\n'
-        'page "home" at "/":\n'
+        'page is "home" at "/":\n'
         '  PrimaryButton "Save changes":\n'
         "    action:\n"
         '      do flow "save"\n'
@@ -70,7 +70,7 @@ def test_component_decl_and_call():
 
 def test_runtime_theme_resolution():
     src = (
-        'page "colors" at "/":\n'
+        'page is "colors" at "/":\n'
         '  heading "Hello"\n'
         "    color is primary\n"
     )

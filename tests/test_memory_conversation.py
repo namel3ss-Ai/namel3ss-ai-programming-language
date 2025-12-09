@@ -17,7 +17,7 @@ def test_parse_memory_and_ai_reference():
         '  type "conversation"\n'
         '  retention "30 days"\n'
         '\n'
-        'ai "bot":\n'
+        'ai is "bot":\n'
         '  model "default"\n'
         '  memory "support_chat"\n'
     )

@@ -8,7 +8,7 @@ from namel3ss import ast_nodes
 def test_parse_tool_with_query_and_url_expr():
     code = dedent(
         '''
-        tool "get_weather":
+        tool is \"get_weather":
           kind "http_json"
           method "GET"
           url "https://api.example.com/weather"

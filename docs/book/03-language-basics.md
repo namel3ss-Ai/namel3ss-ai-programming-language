@@ -9,5 +9,6 @@
 - **Tools:** HTTP JSON tools; invoke via `kind is "tool"` or AI tool-calling.
 - **Auth:** Configure user model; use `auth_register/login/logout`; access `user.*`.
 - **UI:** Sections with headings, text, inputs, buttons; `on click` performs flows or navigation.
+- **Control Flow:** English `if / otherwise if / else`, `match / when / otherwise`, loops (`repeat for each`, `repeat up to N times`), `retry up to N times [with backoff]`, `on error`, and step kinds (`script`, `ai`, `agent`, `tool`). See `docs/language/control_flow.md` for the Control Flow v1 overview.
 
 Cross-reference: parser for each construct in `src/namel3ss/parser.py`; runtime counterparts in `src/namel3ss/flows/engine.py`, `src/namel3ss/runtime/context.py`, `src/namel3ss/memory/*`, `src/namel3ss/tools/registry.py`, `src/namel3ss/runtime/auth.py`; tests across `tests/test_parser_*` and feature-specific files; examples: support_bot, rag_qa, tools_and_ai, crud_app.

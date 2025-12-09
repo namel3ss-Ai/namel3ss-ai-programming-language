@@ -4,6 +4,7 @@ import datetime
 from typing import Any, Dict
 
 from ..errors import Namel3ssError
+from ..observability.logging_utils import redact_event
 
 
 class EventLogger:
@@ -25,7 +26,7 @@ class EventLogger:
                 pass
 
     def log(self, event: Dict[str, Any]) -> None:
-        row = dict(event)
+        row = redact_event(event)
         row.setdefault("timestamp", datetime.datetime.utcnow().isoformat() + "Z")
         row.setdefault("session_id", self.session_id)
         try:

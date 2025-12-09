@@ -40,19 +40,19 @@ def _build_engine(program: IRProgram):
 
 def test_parse_frame_and_steps():
     module = parse_source(
-        'frame "conversations":\n'
+        'frame is "conversations":\n'
         '  backend "memory"\n'
         '  table "conversations"\n'
         '\n'
-        'flow "log_and_load":\n'
-        '  step "store":\n'
+        'flow is "log_and_load":\n'
+        '  step is "store":\n'
         '    kind "frame_insert"\n'
-        '    frame "conversations"\n'
+        '    frame is "conversations"\n'
         '    values:\n'
         '      message: "hi"\n'
-        '  step "load":\n'
+        '  step is "load":\n'
         '    kind "frame_query"\n'
-        '    frame "conversations"\n'
+        '    frame is "conversations"\n'
         '    where:\n'
         '      message: "hi"\n'
     )

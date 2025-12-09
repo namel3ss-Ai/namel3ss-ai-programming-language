@@ -4,13 +4,13 @@ from namel3ss.server import create_app
 
 
 PROGRAM_TEXT = (
-    'flow "pipeline":\n'
-    '  step "call":\n'
+    'flow is "pipeline":\n'
+    '  step is "call":\n'
     '    kind "ai"\n'
     '    target "summarise_message"\n'
     'model "default":\n'
     '  provider "openai:gpt-4.1-mini"\n'
-    'ai "summarise_message":\n'
+    'ai is "summarise_message":\n'
     '  model "default"\n'
 )
 

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from pathlib import Path
+import re
 from typing import Dict, List, Optional, Set
 
 try:  # Python 3.11+
@@ -73,6 +74,9 @@ class LintConfig:
             "loop_bound": "N3-L004",
             "shadowed_vars": "N3-L005",
             "prefer_english_let": "N3-L006",
+            "naming_snake_case": "N3-L008",
+            "naming_boolean_prefix": "N3-L009",
+            "naming_plural_loop": "N3-L010",
         }
         levels: Dict[str, str] = {}
         for key, val in lint_section.items():
@@ -113,6 +117,21 @@ def lint_module(module: ast_nodes.Module, file: Optional[str] = None, config: Op
                 )
         if isinstance(decl, ast_nodes.HelperDecl):
             initial_scope = set(decl.params or [])
+            for p in decl.params or []:
+                # Basic parameter naming hints
+                tmp_config = config or LintConfig()
+                snake_case_pattern = re.compile(r"^[a-z][a-z0-9_]*$")
+                if not snake_case_pattern.match(p):
+                    finding = _make(
+                        "N3-L008",
+                        "warning",
+                        "Prefer snake_case for identifiers. Example: use user_email instead of userEmail.",
+                        file,
+                        getattr(decl, "span", None),
+                        tmp_config,
+                    )
+                    if finding:
+                        findings.append(finding)
             findings.extend(_lint_statements(decl.body, helper_calls, file=file, config=config, initial_scope=initial_scope))
         if isinstance(decl, ast_nodes.SettingsDecl):
             for env in decl.envs:
@@ -238,6 +257,64 @@ def _lint_statements(
     declared_global: set[str] = set(initial_scope or set())
     used: set[str] = set()
 
+    snake_case_pattern = re.compile(r"^[a-z][a-z0-9_]*$")
+
+    def check_snake_case(name: str, span) -> None:
+        if not snake_case_pattern.match(name):
+            finding = _make(
+                "N3-L008",
+                "warning",
+                "Prefer snake_case for identifiers. Example: use user_email instead of userEmail.",
+                file,
+                span,
+                config,
+            )
+            if finding:
+                findings.append(finding)
+
+    def check_boolean_name(name: str, expr: Optional[ast_nodes.Expr], span) -> None:
+        bool_like = False
+        if isinstance(expr, ast_nodes.Literal) and isinstance(expr.value, bool):
+            bool_like = True
+        if isinstance(expr, ast_nodes.BinaryOp) and expr.op in {"==", "!=", "is", "is not", "<", ">", "<=", ">=", "and", "or"}:
+            bool_like = True
+        if isinstance(expr, ast_nodes.UnaryOp) and expr.op == "not":
+            bool_like = True
+        if bool_like and not name.startswith(("is_", "has_", "can_", "should_")):
+            finding = _make(
+                "N3-L009",
+                "info",
+                "This looks like a boolean value. Consider naming it is_active / has_items for clarity.",
+                file,
+                span,
+                config,
+            )
+            if finding:
+                findings.append(finding)
+
+    def check_plural_loop(var_name: str, iterable: Optional[ast_nodes.Expr], span) -> None:
+        source_name: Optional[str] = None
+        if isinstance(iterable, ast_nodes.Identifier):
+            source_name = iterable.name
+        elif isinstance(iterable, ast_nodes.VarRef):
+            source_name = iterable.root
+        if not source_name:
+            return
+        if not source_name.endswith("s"):
+            return
+        if var_name.endswith("s") or var_name == source_name:
+            suggestion = source_name[:-1] if source_name.endswith("s") else source_name
+            finding = _make(
+                "N3-L010",
+                "info",
+                f"Since {source_name} is a list, prefer a singular name like {suggestion} for the loop variable.",
+                file,
+                span,
+                config,
+            )
+            if finding:
+                findings.append(finding)
+
     def declare(name: str, span):
         nonlocal findings
         for scope in scope_stack:
@@ -246,6 +323,7 @@ def _lint_statements(
                 if finding:
                     findings.append(finding)
                 break
+        check_snake_case(name, span)
         scope_stack[-1].add(name)
         declared_global.add(name)
 
@@ -298,7 +376,16 @@ def _lint_statements(
 
     def walk_statement(stmt: ast_nodes.Statement | ast_nodes.FlowAction):
         if isinstance(stmt, ast_nodes.LetStatement):
-            declare(stmt.name, stmt.span)
+            if stmt.pattern:
+                if stmt.pattern.kind == "record":
+                    for field in stmt.pattern.fields:
+                        declare(field.alias or field.name, stmt.span)
+                elif stmt.pattern.kind == "list":
+                    for name in stmt.pattern.fields:
+                        declare(name, stmt.span)
+            else:
+                declare(stmt.name, stmt.span)
+            check_boolean_name(getattr(stmt, "name", ""), stmt.expr, stmt.span)
             if stmt.uses_equals:
                 finding = _make("N3-L006", "info", f"Prefer 'let {stmt.name} be ...' over '=' style", file, stmt.span, config)
                 if finding:
@@ -337,6 +424,8 @@ def _lint_statements(
                     walk_statement(a)
                 scope_stack.pop()
         elif isinstance(stmt, ast_nodes.ForEachLoop):
+            check_snake_case(stmt.var_name, stmt.span)
+            check_plural_loop(stmt.var_name, stmt.iterable, stmt.span)
             declare(stmt.var_name, stmt.span)
             walk_expr(stmt.iterable)
             scope_stack.append(set())

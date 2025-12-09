@@ -7,7 +7,7 @@ def test_navigate_missing_target_errors():
     with pytest.raises(errors.ParseError) as exc:
         parser.parse_source(
             '''
-page "home" at "/":
+page is "home" at "/":
   section "main":
     button "Go":
       on click:
@@ -20,11 +20,11 @@ page "home" at "/":
 def test_navigate_unknown_page_errors_in_ir():
     mod = parser.parse_source(
         '''
-page "home" at "/":
+page is "home" at "/":
   section "main":
     button "Go":
       on click:
-        navigate to page "chat"
+        navigate to page is "chat"
 '''
     )
     with pytest.raises(ir.IRError) as exc:
@@ -36,12 +36,12 @@ def test_navigate_and_flow_not_allowed_together():
     with pytest.raises(errors.ParseError) as exc:
         parser.parse_source(
             '''
-page "home" at "/":
+page is "home" at "/":
   section "main":
     button "Go":
       on click:
         do flow "start_chat"
-        navigate to page "chat"
+        navigate to page is "chat"
 '''
         )
     assert "N3L-1300" in str(exc.value)

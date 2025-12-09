@@ -9,7 +9,7 @@ from namel3ss.ui.runtime import UIPresenter
 
 def test_parse_state_input_button():
     src = (
-        'page "signup" at "/signup":\n'
+        'page is "signup" at "/signup":\n'
         '  state name is ""\n'
         '  input "Your name" as name\n'
         '  button "Continue":\n'
@@ -34,7 +34,7 @@ def test_invalid_state_outside_page():
 
 
 def test_invalid_input_type():
-    src = 'page "bad" at "/":\n  input "X" as x type is weird\n'
+    src = 'page is "bad" at "/":\n  input "X" as x type is weird\n'
     module = parse_source(src)
     with pytest.raises(IRError):
         ast_to_ir(module)
@@ -42,7 +42,7 @@ def test_invalid_input_type():
 
 def test_conditional_runtime_updates():
     src = (
-        'page "greeting" at "/hello":\n'
+        'page is "greeting" at "/hello":\n'
         '  state name is ""\n'
         '  when name is not "":\n'
         '    show:\n'
@@ -61,7 +61,7 @@ def test_conditional_runtime_updates():
 
 def test_button_dispatch_uses_state_snapshot():
     src = (
-        'page "action" at "/":\n'
+        'page is "action" at "/":\n'
         '  state counter is 0\n'
         '  button "Run":\n'
         '    on click:\n'

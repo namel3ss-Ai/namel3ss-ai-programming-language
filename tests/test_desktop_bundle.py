@@ -8,10 +8,10 @@ from namel3ss.deploy.desktop import generate_tauri_config
 
 
 APP = """\
-app "desk":
-  entry_page "home"
+app is "desk":
+  entry_page is "home"
 
-page "home":
+page is "home":
   route "/"
 """
 

@@ -16,7 +16,7 @@ def run_cli(args, tmp_path):
 
 def test_diagnostics_valid_file(tmp_path, capsys):
     src = tmp_path / "valid.ai"
-    src.write_text('app "a":\n  entry_page "home"\npage "home":\n  route "/"\n', encoding="utf-8")
+    src.write_text('app is "a":\n  entry_page is "home"\npage is "home":\n  route "/"\n', encoding="utf-8")
     cli.main(["diagnostics", str(src)])
     out = capsys.readouterr().out
     assert "Summary:" in out
@@ -25,7 +25,7 @@ def test_diagnostics_valid_file(tmp_path, capsys):
 
 def test_diagnostics_invalid_file_json(tmp_path, capsys):
     src = tmp_path / "invalid.ai"
-    src.write_text('app "a":\n  entry_page "home"\npage "home":\n  title "Home"\n', encoding="utf-8")
+    src.write_text('app is "a":\n  entry_page is "home"\npage is "home":\n  title "Home"\n', encoding="utf-8")
     with pytest.raises(SystemExit):
         cli.main(["diagnostics", str(src), "--json"])
     out = capsys.readouterr().out
@@ -37,7 +37,7 @@ def test_diagnostics_invalid_file_json(tmp_path, capsys):
 
 def test_diagnostics_strict_mode_upgrades_warning(tmp_path, capsys):
     src = tmp_path / "flow.ai"
-    src.write_text('flow "pipeline":\n', encoding="utf-8")
+    src.write_text('flow is "pipeline":\n', encoding="utf-8")
     # non-strict should succeed
     exit_code, _ = run_cli(["diagnostics", str(src)], tmp_path)
     assert exit_code == 0
@@ -50,7 +50,7 @@ def test_diagnostics_strict_mode_upgrades_warning(tmp_path, capsys):
 
 def test_diagnostics_summary_only(tmp_path, capsys):
     src = tmp_path / "valid.ai"
-    src.write_text('app "a":\n  entry_page "home"\npage "home":\n  route "/"\n', encoding="utf-8")
+    src.write_text('app is "a":\n  entry_page is "home"\npage is "home":\n  route "/"\n', encoding="utf-8")
     cli.main(["diagnostics", str(src), "--summary-only"])
     out = capsys.readouterr().out.strip()
     assert out.startswith("Summary:")
@@ -60,8 +60,8 @@ def test_diagnostics_summary_only(tmp_path, capsys):
 def test_diagnostics_directory_multiple_files(tmp_path, capsys):
     good = tmp_path / "good.ai"
     bad = tmp_path / "bad.ai"
-    good.write_text('app "a":\n  entry_page "home"\npage "home":\n  route "/"\n', encoding="utf-8")
-    bad.write_text('page "p":\n', encoding="utf-8")
+    good.write_text('app is "a":\n  entry_page is "home"\npage is "home":\n  route "/"\n', encoding="utf-8")
+    bad.write_text('page is "p":\n', encoding="utf-8")
     with pytest.raises(SystemExit):
         cli.main(["diagnostics", str(tmp_path), "--json"])
     out = capsys.readouterr().out

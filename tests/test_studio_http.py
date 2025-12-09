@@ -52,7 +52,7 @@ def test_last_trace_endpoint_reachable():
 
 
 def test_diagnostics_endpoint_reachable(tmp_path: Path):
-    sample = 'page "home":\n  title "Home"\n'
+    sample = 'page is "home":\n  title "Home"\n'
     sample_file = tmp_path / "program.ai"
     sample_file.write_text(sample, encoding="utf-8")
     payload = {"paths": [str(sample_file)], "strict": False, "summary_only": True}

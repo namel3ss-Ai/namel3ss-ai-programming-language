@@ -7,7 +7,7 @@ from typing import Dict, List, Optional
 from ..errors import Namel3ssError
 from ..ir import IRProgram
 from ..rag.embedding_registry import EmbeddingProviderRegistry
-from ..secrets.manager import SecretsManager
+from ..secrets.manager import SecretsManager, get_default_secrets_manager
 
 
 @dataclass
@@ -31,7 +31,7 @@ class EmbeddingClient:
 
 
 class VectorBackend:
-    def index(self, cfg: VectorStoreConfig, ids: List[str], embeddings: List[List[float]]) -> None:
+    def index(self, cfg: VectorStoreConfig, ids: List[str], embeddings: List[List[float]], metadata: List[dict] | None = None) -> None:
         raise NotImplementedError
 
     def query(self, cfg: VectorStoreConfig, embedding: List[float], top_k: int) -> List[Dict]:
@@ -43,12 +43,15 @@ class InMemoryVectorBackend(VectorBackend):
         # store name -> list of tuples(id, embedding, metadata)
         self._store: Dict[str, List[tuple[str, List[float], Dict]]] = {}
 
-    def index(self, cfg: VectorStoreConfig, ids: List[str], embeddings: List[List[float]]) -> None:
+    def index(self, cfg: VectorStoreConfig, ids: List[str], embeddings: List[List[float]], metadata: List[dict] | None = None) -> None:
         if len(ids) != len(embeddings):
             raise Namel3ssError("Mismatched ids and embeddings length during index")
         bucket = self._store.setdefault(cfg.name, [])
-        for id_, emb in zip(ids, embeddings):
-            bucket.append((str(id_), emb, {}))
+        for idx, (id_, emb) in enumerate(zip(ids, embeddings)):
+            meta = {}
+            if metadata and idx < len(metadata):
+                meta = metadata[idx] or {}
+            bucket.append((str(id_), emb, meta))
 
     def query(self, cfg: VectorStoreConfig, embedding: List[float], top_k: int) -> List[Dict]:
         bucket = self._store.get(cfg.name, [])
@@ -86,7 +89,7 @@ class VectorStoreRegistry:
                 options=cfg.options,
             )
         self.backends: Dict[str, VectorBackend] = {"memory": InMemoryVectorBackend(), "default_vector": InMemoryVectorBackend()}
-        self.secrets = secrets or SecretsManager()
+        self.secrets = secrets or get_default_secrets_manager()
         self.embedding_client = EmbeddingClient(secrets=self.secrets)
 
     def get(self, name: str) -> VectorStoreConfig:
@@ -102,13 +105,13 @@ class VectorStoreRegistry:
             )
         return self.backends[backend]
 
-    def index_texts(self, store_name: str, ids: List[str], texts: List[str]) -> None:
+    def index_texts(self, store_name: str, ids: List[str], texts: List[str], metadata: List[dict] | None = None) -> None:
         if not texts or not ids:
             return
         cfg = self.get(store_name)
         embeddings = self.embedding_client.embed(cfg.embedding_model, texts)
         backend = self.backend_for(cfg)
-        backend.index(cfg, ids, embeddings)
+        backend.index(cfg, ids, embeddings, metadata)
 
     def query(self, store_name: str, query_text: str, top_k: int = 5, frames=None) -> List[Dict]:
         cfg = self.get(store_name)

@@ -4,15 +4,21 @@ Multi-agent team runner.
 
 from __future__ import annotations
 
+import time
+import urllib.error
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import List, Tuple, Optional
 
+from ..errors import ProviderCircuitOpenError, ProviderRetryError, ProviderTimeoutError
 from ..ir import IRAgent, IRProgram
 from ..runtime.context import ExecutionContext, execute_ai_call_with_registry
 from ..ai.router import ModelRouter
 from ..ai.registry import ModelRegistry
 from ..tools.registry import ToolRegistry
+from ..runtime.retries import get_default_retry_config, run_with_retries_and_timeout
+from ..runtime.circuit_breaker import default_circuit_breaker
+from ..observability.metrics import default_metrics
 from .debate import DebateAgentConfig, DebateConfig, DebateEngine, DebateOutcome
 from .models import AgentConfig
 from .planning import AgentGoal, AgentStepPlan
@@ -70,8 +76,41 @@ class AgentTeamRunner:
             content = f"{role.value} processed task: {task}"
             if ai_call_name:
                 ai_call = self.program.ai_calls[ai_call_name]
-                output = execute_ai_call_with_registry(ai_call, self.model_registry, self.router, context)
-                content = str(output)
+                provider, provider_model, provider_name = self.model_registry.resolve_provider_for_ai(ai_call)
+                provider_model = provider_model or ai_call.model_name or provider_name
+                provider_key = f"model:{provider_name}:{provider_model}"
+                retry_config = get_default_retry_config()
+                status = "success"
+                start_time = time.monotonic()
+                try:
+                    output = run_with_retries_and_timeout(
+                        lambda: execute_ai_call_with_registry(ai_call, self.model_registry, self.router, context),
+                        config=retry_config,
+                        error_types=(ProviderTimeoutError, urllib.error.URLError, ConnectionError, TimeoutError),
+                        circuit_breaker=default_circuit_breaker,
+                        provider_key=provider_key,
+                    )
+                    content = str(output)
+                except ProviderCircuitOpenError:
+                    status = "circuit_open"
+                    raise
+                except ProviderTimeoutError:
+                    status = "timeout"
+                    raise
+                except ProviderRetryError:
+                    status = "failure"
+                    raise
+                except Exception:
+                    status = "failure"
+                    raise
+                finally:
+                    duration = time.monotonic() - start_time
+                    try:
+                        default_metrics.record_provider_call(provider_name, provider_model, status, duration)
+                        if status == "circuit_open":
+                            default_metrics.record_circuit_open(provider_name)
+                    except Exception:
+                        pass
             messages.append(AgentMessage(sender=name, role=role, content=content))
             candidates.append((name, content))
             if context.tracer:

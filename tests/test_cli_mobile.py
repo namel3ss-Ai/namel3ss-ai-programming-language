@@ -6,10 +6,10 @@ from pathlib import Path
 from namel3ss.cli import main
 
 APP = """\
-app "mobileapp":
-  entry_page "home"
+app is "mobileapp":
+  entry_page is "home"
 
-page "home":
+page is "home":
   route "/"
 """
 

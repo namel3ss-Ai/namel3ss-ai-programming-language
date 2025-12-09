@@ -8,10 +8,10 @@ from namel3ss.cli import main
 
 def test_lint_unused_and_shadowed(tmp_path: Path):
     source = (
-        'flow "demo":\n'
-        '  step "s":\n'
-        '    let x = 1\n'
-        '    let x = 2\n'
+        'flow is "demo":\n'
+        '  step is "s":\n'
+        '    let x be 1\n'
+        '    let x be 2\n'
         '    do tool "echo"\n'
     )
     findings = lint_source(source, file="demo.ai")
@@ -22,9 +22,9 @@ def test_lint_unused_and_shadowed(tmp_path: Path):
 
 def test_lint_config_disables_rule():
     source = (
-        'flow "demo":\n'
-        '  step "s":\n'
-        '    let y = 1\n'
+        'flow is "demo":\n'
+        '  step is "s":\n'
+        '    let y be 1\n'
         '    do tool "echo"\n'
     )
     cfg = LintConfig(rule_levels={"N3-L001": "off"})
@@ -34,8 +34,7 @@ def test_lint_config_disables_rule():
 
 def test_cli_lint_outputs_findings(tmp_path: Path, capsys):
     program_file = tmp_path / "lint.ai"
-    program_file.write_text('flow "demo":\n  step "s":\n    let temp = 1\n', encoding="utf-8")
+    program_file.write_text('flow is "demo":\n  step is "s":\n    let temp be 1\n', encoding="utf-8")
     main(["lint", str(program_file)])
     out = capsys.readouterr().out
     assert "N3-L001" in out
-    assert "N3-L007" in out

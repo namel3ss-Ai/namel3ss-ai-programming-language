@@ -11,10 +11,10 @@ def _first_flow(source: str) -> ast_nodes.FlowDecl:
 
 def test_parse_let_with_be_and_equals():
     source = (
-        'flow "scores":\n'
-        '  step "init":\n'
+        'flow is "scores":\n'
+        '  step is "init":\n'
         '    let score be 1\n'
-        '    let bonus = 2\n'
+        '    let bonus be 2\n'
         '    set score to score + bonus\n'
     )
     flow = _first_flow(source)
@@ -35,8 +35,8 @@ def test_parse_let_with_be_and_equals():
 
 def test_arithmetic_precedence_and_parentheses():
     source = (
-        'flow "calc":\n'
-        '  step "compute":\n'
+        'flow is "calc":\n'
+        '  step is "compute":\n'
         '    let total be 1 plus 2 times 3\n'
         '    let nested be (1 + 2) * 3\n'
     )
@@ -55,8 +55,8 @@ def test_arithmetic_precedence_and_parentheses():
 
 def test_boolean_comparisons_and_not():
     source = (
-        'flow "logic":\n'
-        '  step "check":\n'
+        'flow is "logic":\n'
+        '  step is "check":\n'
         '    if score is greater than 10 and not false:\n'
         '      do tool "echo"\n'
     )

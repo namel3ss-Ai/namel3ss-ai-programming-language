@@ -6,7 +6,7 @@ from namel3ss.server import create_app
 def test_ui_manifest_endpoint():
     client = TestClient(create_app())
     src = (
-        'page "home" at "/":\n'
+        'page is "home" at "/":\n'
         '  state name is ""\n'
         '  heading "Hello"\n'
         '  button "Next":\n'
@@ -23,8 +23,8 @@ def test_ui_manifest_endpoint():
 def test_ui_flow_execute_endpoint():
     client = TestClient(create_app())
     src = (
-'flow "echo":\n'
-'  step "emit":\n'
+'flow is "echo":\n'
+'  step is "emit":\n'
 '    kind "tool"\n'
 '    tool "echo"\n'
 '    message "hi"\n'

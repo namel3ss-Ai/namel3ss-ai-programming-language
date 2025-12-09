@@ -51,12 +51,12 @@ def _build_engine(program: IRProgram):
 
 def test_parse_record_decl_fields():
     module = parse_source(
-        'frame "documents":\n'
+        'frame is "documents":\n'
         '  backend "memory"\n'
         '  table "documents"\n'
         '\n'
         'record "Document":\n'
-        '  frame "documents"\n'
+        '  frame is "documents"\n'
         "  fields:\n"
         '    id:\n'
         '      type "uuid"\n'

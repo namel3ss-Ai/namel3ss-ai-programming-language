@@ -7,10 +7,10 @@ from namel3ss.cli import main
 
 
 APP = """\
-app "desk":
-  entry_page "home"
+app is "desk":
+  entry_page is "home"
 
-page "home":
+page is "home":
   route "/"
 """
 

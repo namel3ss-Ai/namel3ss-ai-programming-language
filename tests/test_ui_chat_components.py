@@ -35,7 +35,7 @@ def test_parse_message_list_and_messages():
 def test_manifest_contains_message_list():
     code = dedent(
         """
-        page "chat" at "/chat":
+        page is "chat" at "/chat":
           section "main":
             message_list:
               message:

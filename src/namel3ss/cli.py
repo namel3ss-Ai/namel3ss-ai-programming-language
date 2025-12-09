@@ -9,6 +9,7 @@ import contextlib
 import http.server
 import json
 import multiprocessing
+import os
 import socket
 import sys
 import threading
@@ -22,9 +23,7 @@ from pathlib import Path
 
 from . import ir, lexer, parser
 from . import ast_nodes
-from .server import create_app
-from .runtime.engine import Engine
-from .secrets.manager import SecretsManager
+from .secrets.manager import SecretsManager, get_default_secrets_manager
 from .diagnostics import Diagnostic
 from .diagnostics.runner import apply_strict_mode, collect_diagnostics, collect_lint, iter_ai_files
 from .linting import LintConfig
@@ -33,6 +32,8 @@ from .errors import ParseError
 from .templates.manager import list_templates, scaffold_project
 from .examples.manager import list_examples, resolve_example_path
 from .version import __version__
+from .memory.inspection import inspect_memory_state
+from .migration.naming import migrate_path, migrate_file
 
 
 def build_cli_parser() -> argparse.ArgumentParser:
@@ -55,6 +56,15 @@ def build_cli_parser() -> argparse.ArgumentParser:
     ir_cmd = register("ir", help="Generate IR from an .ai file")
     ir_cmd.add_argument("file", type=Path)
 
+    export_cmd = register("export", help="Export IR or migration scaffolds")
+    export_sub = export_cmd.add_subparsers(dest="export_command", required=True)
+    export_ir_cmd = export_sub.add_parser("ir", help="Export IR JSON")
+    export_ir_cmd.add_argument("source", type=Path, help="Path to .ai file")
+    export_ir_cmd.add_argument("--out", type=Path, help="Path to write IR JSON (stdout if omitted)")
+    export_fastapi_cmd = export_sub.add_parser("fastapi", help="Generate FastAPI scaffold from IR")
+    export_fastapi_cmd.add_argument("source", type=Path, help="Path to .ai file")
+    export_fastapi_cmd.add_argument("--out", type=Path, required=True, help="Output directory for scaffold")
+
     run_cmd = register("run", help="Run an app from an .ai file")
     run_cmd.add_argument("app_name", type=str)
     run_cmd.add_argument("--file", type=Path, required=True, help="Path to .ai file")
@@ -75,6 +85,25 @@ def build_cli_parser() -> argparse.ArgumentParser:
     run_flow_cmd.add_argument("--file", type=Path, required=True, help="Path to .ai file")
     run_flow_cmd.add_argument("--flow", required=True, help="Flow name to run")
 
+    mem_inspect_cmd = register("memory-inspect", help="Inspect memory state for a session")
+    mem_inspect_cmd.add_argument("--session-id", required=True, help="Session identifier to inspect")
+    mem_inspect_cmd.add_argument("--ai-id", help="AI call identifier (optional)")
+
+    migrate_cmd = register("migrate", help="Migration helpers")
+    migrate_sub = migrate_cmd.add_subparsers(dest="migrate_command", required=True)
+    migrate_naming_cmd = migrate_sub.add_parser(
+        "naming-standard",
+        help="Rewrite legacy headers/assignments to the English syntax (Naming Standard v1).",
+    )
+    migrate_naming_cmd.add_argument("--path", required=True, type=Path, help="Path to a file or directory containing .ai sources")
+    migrate_naming_cmd.add_argument("--dry-run", action="store_true", help="Show what would change (default)")
+    migrate_naming_cmd.add_argument("--write", action="store_true", help="Apply changes in place")
+    migrate_naming_cmd.add_argument("--no-backup", action="store_true", help="Skip writing .bak backups when --write is used")
+    migrate_naming_cmd.add_argument(
+        "--fix-names",
+        action="store_true",
+        help="Conservatively rename simple camelCase locals to snake_case (or emit suggestions).",
+    )
     page_ui_cmd = register("page-ui", help="Render UI for a page")
     page_ui_cmd.add_argument("--file", type=Path, required=True, help="Path to .ai file")
     page_ui_cmd.add_argument("--page", required=True, help="Page name to render")
@@ -105,6 +134,7 @@ def build_cli_parser() -> argparse.ArgumentParser:
     lint_cmd.add_argument("paths", nargs="*", type=Path, help="Files or directories to lint")
     lint_cmd.add_argument("--file", type=Path, help="Legacy single-file flag")
     lint_cmd.add_argument("--json", action="store_true", help="Emit lint results as JSON")
+    lint_cmd.add_argument("--strict", action="store_true", help="Treat warnings as errors")
 
     bundle_cmd = register("bundle", help="Create an app bundle")
     bundle_cmd.add_argument("path", nargs="?", type=Path, help="Path to .ai file or project")
@@ -162,6 +192,8 @@ def build_cli_parser() -> argparse.ArgumentParser:
 
     cov_cmd = register("test-cov", help="Run tests with coverage")
     cov_cmd.add_argument("pytest_args", nargs="*", help="Additional pytest arguments")
+
+    doctor_cmd = register("doctor", help="Run environment and configuration health checks")
 
     studio_cmd = register("studio", help="Start Namel3ss Studio (Phase 1)")
     studio_cmd.add_argument("--backend-port", type=int, default=8000, help="Port for backend runtime (default: 8000)")
@@ -230,6 +262,122 @@ def _infer_app_name(source: str, filename: str, default: str) -> str:
     return default
 
 
+def _load_ir_program(path: Path) -> ir.IRProgram:
+    source = path.read_text(encoding="utf-8")
+    module = parser.Parser(lexer.Lexer(source, filename=str(path)).tokenize()).parse_module()
+    return ir.ast_to_ir(module)
+
+
+def _load_engine(path: Path):
+    from .runtime.engine import Engine
+
+    return Engine.from_file(path)
+
+
+def export_ir_json(source: Path, out_path: Path | None = None) -> None:
+    program = _load_ir_program(source)
+    payload = asdict(program)
+    text = json.dumps(payload, indent=2, sort_keys=True)
+    if out_path:
+        out_path.write_text(text, encoding="utf-8")
+    else:
+        print(text)
+
+
+def _sanitize_name(name: str) -> str:
+    return "".join(ch if ch.isalnum() or ch == "_" else "_" for ch in name)
+
+
+def generate_fastapi_scaffold(source: Path, out_dir: Path) -> None:
+    out_dir.mkdir(parents=True, exist_ok=True)
+    program = _load_ir_program(source)
+    flows_module = []
+    flow_funcs = []
+    for flow in program.flows.values():
+        func_name = f"flow_{_sanitize_name(flow.name)}"
+        flow_funcs.append((flow.name, func_name))
+        steps_comment = []
+        for step in flow.steps:
+            target = getattr(step, "target", None) or getattr(step, "name", "step")
+            kind = getattr(step, "kind", "step")
+            steps_comment.append(f"# - {kind}: {target}")
+        steps_block = "\n    ".join(steps_comment) or "# - (no steps captured)"
+        flows_module.append(
+            f"async def {func_name}(payload: dict) -> dict:\n    \"\"\"Flow '{flow.name}' stub generated from Namel3ss IR.\"\"\"\n    {steps_block}\n    return {{\"flow\": \"{flow.name}\", \"input\": payload}}\n\n"
+        )
+    flows_py = "\n".join(flows_module) or "\nasync def flow_default(payload: dict) -> dict:\n    return {\"flow\": \"default\", \"input\": payload}\n"
+    (out_dir / "flows.py").write_text(flows_py, encoding="utf-8")
+
+    imports = "\n".join([f"from flows import {fn}" for _, fn in flow_funcs]) if flow_funcs else "from flows import flow_default"
+    mapping_entries = ",\n    ".join([f"\"{name}\": {fn}" for name, fn in flow_funcs]) if flow_funcs else "\"default\": flow_default"
+    main_py = f"""try:
+    from fastapi import FastAPI, HTTPException
+except ImportError:  # pragma: no cover - fallback for environments without FastAPI
+    class HTTPException(Exception):
+        def __init__(self, status_code: int, detail: str):
+            super().__init__(detail)
+            self.status_code = status_code
+            self.detail = detail
+    class FastAPI:
+        def __init__(self, *args, **kwargs):
+            self.routes = {{}}
+        def post(self, path: str):
+            def decorator(func):
+                self.routes[path] = func
+                return func
+            return decorator
+
+app = FastAPI()
+{imports}
+
+flows_map = {{
+    {mapping_entries}
+}}
+
+@app.post('/flows/{{flow_name}}')
+async def run_flow(flow_name: str, payload: dict):
+    handler = flows_map.get(flow_name)
+    if handler is None:
+        raise HTTPException(status_code=404, detail='Flow not found')
+    return await handler(payload)
+
+@app.get('/')
+async def root():
+    return {{'status': 'ok', 'flows': list(flows_map.keys())}}
+"""  # noqa: E501
+    (out_dir / "main.py").write_text(main_py, encoding="utf-8")
+
+
+def run_doctor() -> int:
+    from platform import python_version
+    from .version import __version__, IR_VERSION
+
+    issues: list[tuple[str, str]] = []
+    py_ver = python_version()
+    py_status = "OK" if py_ver >= "3.10" else "WARNING"
+    issues.append((py_status, f"Python version: {py_ver} (minimum recommended 3.10)"))
+    issues.append(("OK", f"Namel3ss version: {__version__}"))
+    issues.append(("OK", f"IR version: {IR_VERSION}"))
+
+    provider_envs = ["N3_OPENAI_API_KEY", "OPENAI_API_KEY", "N3_ANTHROPIC_API_KEY", "N3_GEMINI_API_KEY"]
+    missing = [env for env in provider_envs if not os.getenv(env)]
+    if len(missing) == len(provider_envs):
+        issues.append(("WARNING", "No provider API keys found in environment (set N3_OPENAI_API_KEY, N3_ANTHROPIC_API_KEY, etc.)."))
+    else:
+        issues.append(("OK", "Provider API keys detected in environment."))
+
+    manifest = Path("examples/golden_examples.json")
+    if manifest.exists():
+        issues.append(("OK", f"Golden manifest present at {manifest}"))
+    else:
+        issues.append(("WARNING", "Golden manifest (examples/golden_examples.json) not found."))
+
+    has_error = any(status == "ERROR" for status, _ in issues)
+    for status, msg in issues:
+        print(f"[{status}] {msg}")
+    return 1 if has_error else 0
+
+
 def _post_run_app(source: str, app_name: str, api_base: str) -> dict:
     payload = json.dumps({"source": source, "app_name": app_name}).encode("utf-8")
     url = urljoin(api_base.rstrip("/") + "/", "api/run-app")
@@ -253,14 +401,23 @@ def main(argv: list[str] | None = None) -> None:
         print(json.dumps(asdict(program), indent=2))
         return
 
+    if args.command == "export":
+        if args.export_command == "ir":
+            export_ir_json(args.source, out_path=args.out)
+            return
+        if args.export_command == "fastapi":
+            generate_fastapi_scaffold(args.source, args.out)
+            print(f"FastAPI scaffold written to {args.out}")
+            return
+
     if args.command == "run":
-        engine = Engine.from_file(args.file)
+        engine = _load_engine(args.file)
         result = engine.run_app(args.app_name)
         print(json.dumps(result, indent=2))
         return
 
     if args.command == "graph":
-        engine = Engine.from_file(args.file)
+        engine = _load_engine(args.file)
         graph = engine.graph
         print(
             json.dumps(
@@ -279,7 +436,56 @@ def main(argv: list[str] | None = None) -> None:
         )
         return
 
+    if args.command == "migrate":
+        if args.migrate_command == "naming-standard":
+            target_path: Path = args.path
+            if not target_path.exists():
+                print(f"Path '{target_path}' does not exist.", file=sys.stderr)
+                return
+            results = []
+            if target_path.is_file() and target_path.suffix == ".ai":
+                results.append(
+                    migrate_file(
+                        target_path,
+                        write=args.write,
+                        backup=not args.no_backup,
+                        apply_name_fixes=args.fix_names,
+                    )
+                )
+            else:
+                results = migrate_path(
+                    target_path,
+                    write=args.write,
+                    backup=not args.no_backup,
+                    apply_name_fixes=args.fix_names,
+                )
+            changed = sum(1 for r in results if r.changed)
+            header_total = sum(getattr(r, "header_rewrites", 0) for r in results)
+            let_total = sum(getattr(r, "let_rewrites", 0) for r in results)
+            set_total = sum(getattr(r, "set_rewrites", 0) for r in results)
+            if args.write:
+                print(f"Migrated {changed} file(s). Headers: {header_total}, let: {let_total}, set: {set_total}.")
+                for r in results:
+                    if r.renames:
+                        for old, new in r.renames.items():
+                            print(f"Renaming '{old}' -> '{new}' in {r.path}")
+            else:
+                print("Dry run. Re-run with --write to apply changes.")
+                for r in results:
+                    if r.changed or (r.suggested_names):
+                        print(f"- {r.path}: headers={r.header_rewrites}, let={r.let_rewrites}, set={r.set_rewrites}")
+                        if r.suggested_names:
+                            for old, new in r.suggested_names:
+                                print(f"  Suggest: rename {old} -> {new}")
+            return
+        print("Unknown migrate subcommand", file=sys.stderr)
+        return
+
     if args.command == "serve":
+        try:
+            from .server import create_app
+        except Exception as exc:  # pragma: no cover - load-time guard
+            raise SystemExit(f"Failed to import server: {exc}") from exc
         app = create_app()
         if args.dry_run:
             print(
@@ -297,19 +503,24 @@ def main(argv: list[str] | None = None) -> None:
         return
 
     if args.command == "run-agent":
-        engine = Engine.from_file(args.file)
+        engine = _load_engine(args.file)
         result = engine.execute_agent(args.agent)
         print(json.dumps(result, indent=2))
         return
 
     if args.command == "run-flow":
-        engine = Engine.from_file(args.file)
+        engine = _load_engine(args.file)
         result = engine.execute_flow(args.flow)
         print(json.dumps(result, indent=2))
         return
 
+    if args.command == "memory-inspect":
+        output = inspect_memory_state(args.session_id, ai_id=getattr(args, "ai_id", None))
+        print(json.dumps(output, indent=2))
+        return
+
     if args.command == "page-ui":
-        engine = Engine.from_file(args.file)
+        engine = _load_engine(args.file)
         if args.page not in engine.program.pages:
             raise SystemExit(f"Page '{args.page}' not found")
         ui_page = engine.ui_renderer.from_ir_page(engine.program.pages[args.page])
@@ -322,7 +533,7 @@ def main(argv: list[str] | None = None) -> None:
         return
 
     if args.command == "meta":
-        engine = Engine.from_file(args.file)
+        engine = _load_engine(args.file)
         meta = {
             "models": list(engine.registry.models.keys()),
             "providers": list(engine.registry.providers.keys()),
@@ -410,7 +621,8 @@ def main(argv: list[str] | None = None) -> None:
             print("No .ai files found.")
             return
         lint_results = collect_lint(ai_files, config=LintConfig.load(Path.cwd()))
-        error_count = sum(1 for d in lint_results if d.severity == "error")
+        lint_results, lint_summary = apply_strict_mode(lint_results, args.strict)
+        error_count = lint_summary["errors"]
         success = error_count == 0
         if args.json:
             print(
@@ -418,11 +630,7 @@ def main(argv: list[str] | None = None) -> None:
                     {
                         "success": success,
                         "lint": [d.to_dict() for d in lint_results],
-                        "summary": {
-                            "warnings": sum(1 for d in lint_results if d.severity == "warning"),
-                            "infos": sum(1 for d in lint_results if d.severity == "info"),
-                            "errors": error_count,
-                        },
+                        "summary": lint_summary,
                     },
                     indent=2,
                 )
@@ -432,12 +640,17 @@ def main(argv: list[str] | None = None) -> None:
                 print("No lint findings.")
             for lint in lint_results:
                 print(_format_diagnostic(lint))
-            warn_count = sum(1 for d in lint_results if d.severity == "warning")
-            info_count = sum(1 for d in lint_results if d.severity == "info")
+                if lint.hint:
+                    print(f"  hint: {lint.hint}")
+            warn_count = lint_summary["warnings"]
+            info_count = lint_summary["infos"]
             print(f"Summary: {error_count} errors, {warn_count} warnings, {info_count} infos across {len(ai_files)} files.")
         if not success:
             raise SystemExit(1)
         return
+
+    if args.command == "doctor":
+        raise SystemExit(run_doctor())
 
     if args.command == "example":
         if args.example_command == "list":
@@ -714,7 +927,7 @@ def main(argv: list[str] | None = None) -> None:
         from namel3ss.obs.tracer import Tracer
         from namel3ss.optimizer.models import OptimizationStatus
 
-        secrets = SecretsManager()
+        secrets = get_default_secrets_manager()
         storage = OptimizerStorage(Path(secrets.get("N3_OPTIMIZER_DB") or "optimizer.db"))
         overlays = OverlayStore(Path(secrets.get("N3_OPTIMIZER_OVERLAYS") or "optimizer_overlays.json"))
         if args.opt_command == "scan":

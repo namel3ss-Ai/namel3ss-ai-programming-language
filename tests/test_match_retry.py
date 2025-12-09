@@ -55,8 +55,8 @@ def _make_engine(ir_prog: IRProgram, fail_times: int = 0):
 
 def test_match_literal_and_otherwise():
     source = (
-        'flow "m":\n'
-        '  step "s":\n'
+        'flow is "m":\n'
+        '  step is "s":\n'
         '    let intent be "billing"\n'
         '    match intent:\n'
         '      when "technical":\n'
@@ -76,8 +76,8 @@ def test_match_literal_and_otherwise():
 
 def test_match_success_and_error_patterns():
     source = (
-        'flow "m":\n'
-        '  step "s":\n'
+        'flow is "m":\n'
+        '  step is "s":\n'
         '    let result be { error: "oops" }\n'
         '    match result:\n'
         '      when success as value:\n'
@@ -95,8 +95,8 @@ def test_match_success_and_error_patterns():
 
 def test_match_comparison_condition():
     source = (
-        'flow "m":\n'
-        '  step "s":\n'
+        'flow is "m":\n'
+        '  step is "s":\n'
         '    let score be 0.6\n'
         '    match score:\n'
         '      when score is less than 0.5:\n'
@@ -116,8 +116,8 @@ def test_match_comparison_condition():
 
 def test_retry_with_backoff():
     source = (
-        'flow "r":\n'
-        '  step "s":\n'
+        'flow is "r":\n'
+        '  step is "s":\n'
         '    retry up to 3 times with backoff:\n'
         '      do tool "flaky"\n'
         '    do agent "done"\n'
@@ -134,8 +134,8 @@ def test_retry_with_backoff():
 
 def test_retry_invalid_count_errors():
     source = (
-        'flow "r":\n'
-        '  step "s":\n'
+        'flow is "r":\n'
+        '  step is "s":\n'
         '    retry up to "oops" times:\n'
         '      do tool "flaky"\n'
     )

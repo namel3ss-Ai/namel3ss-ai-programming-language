@@ -55,9 +55,9 @@ def _make_flow_engine(ir_prog: IRProgram):
 
 def test_parse_list_literal_and_index():
     source = (
-        'flow "lists":\n'
-        '  step "s":\n'
-        '    let xs = [1, 2, 3]\n'
+        'flow is "lists":\n'
+        '  step is "s":\n'
+        '    let xs be [1, 2, 3]\n'
         '    set first to xs[0]\n'
     )
     module = parse_source(source)
@@ -71,10 +71,10 @@ def test_parse_list_literal_and_index():
 
 def test_flow_runtime_index_and_slice():
     source = (
-        'flow "lists":\n'
-        '  step "s":\n'
-        '    let xs = [1, 2, 3]\n'
-        '    let tail = xs[1:]\n'
+        'flow is "lists":\n'
+        '  step is "s":\n'
+        '    let xs be [1, 2, 3]\n'
+        '    let tail be xs[1:]\n'
         '    do tool "echo"\n'
     )
     ir_prog = ast_to_ir(parse_source(source))
@@ -88,10 +88,10 @@ def test_flow_runtime_index_and_slice():
 
 def test_flow_index_errors():
     source = (
-        'flow "bad":\n'
-        '  step "s":\n'
-        '    let xs = [1]\n'
-        '    let v = 0\n'
+        'flow is "bad":\n'
+        '  step is "s":\n'
+        '    let xs be [1]\n'
+        '    let v be 0\n'
         '    set v to xs[2]\n'
         '    do tool "echo"\n'
     )
@@ -142,14 +142,14 @@ def test_agent_list_usage():
 
 def test_negative_indices_and_slices():
     source = (
-        'flow "lists":\n'
-        '  step "s":\n'
-        '    let xs = [10, 20, 30, 40]\n'
-        '    let last = xs[-1]\n'
-        '    let second_last = xs[-2]\n'
-        '    let mid = xs[-3:-1]\n'
-        '    let head = xs[:-2]\n'
-        '    let tail = xs[-2:]\n'
+        'flow is "lists":\n'
+        '  step is "s":\n'
+        '    let xs be [10, 20, 30, 40]\n'
+        '    let last be xs[-1]\n'
+        '    let second_last be xs[-2]\n'
+        '    let mid be xs[-3:-1]\n'
+        '    let head be xs[:-2]\n'
+        '    let tail be xs[-2:]\n'
         '    do tool "echo"\n'
     )
     ir_prog = ast_to_ir(parse_source(source))
@@ -166,10 +166,10 @@ def test_negative_indices_and_slices():
 
 def test_negative_index_out_of_range():
     source = (
-        'flow "badneg":\n'
-        '  step "s":\n'
-        '    let xs = [1, 2]\n'
-        '    let v = xs[-5]\n'
+        'flow is "badneg":\n'
+        '  step is "s":\n'
+        '    let xs be [1, 2]\n'
+        '    let v be xs[-5]\n'
         '    do tool "echo"\n'
     )
     ir_prog = ast_to_ir(parse_source(source))

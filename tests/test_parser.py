@@ -5,15 +5,15 @@ from namel3ss.parser import parse_source
 def test_parse_program_ast_structure():
     program = parse_source(
         'use "common.ai"\n'
-        'app "support_portal":\n'
+        'app is "support_portal":\n'
         '  description "Support portal for customer questions"\n'
-        '  entry_page "home"\n'
-        'page "home":\n'
+        '  entry_page is "home"\n'
+        'page is "home":\n'
         '  title "Home"\n'
         '  route "/"\n'
         'model "default":\n'
         '  provider "openai:gpt-4.1-mini"\n'
-        'ai "summarise_message":\n'
+        'ai is "summarise_message":\n'
         '  model "default"\n'
         '  input from user_message\n'
     )

@@ -22,6 +22,7 @@ import {
   PluginsResponse,
   MemorySessionDetail,
   MemorySessionsResponse,
+  NamingMigrationResponse,
 } from "./types";
 
 const defaultBase = import.meta.env.VITE_API_BASE_URL || "http://localhost:8000";
@@ -149,6 +150,12 @@ export const postFmtPreview = (source: string) =>
   request<FmtPreviewResponse>("/api/fmt/preview", {
     method: "POST",
     body: JSON.stringify({ source }),
+  });
+
+export const postMigrateNamingStandard = (source: string, fixNames = true) =>
+  request<NamingMigrationResponse>("/api/migrate/naming-standard", {
+    method: "POST",
+    body: JSON.stringify({ source, fix_names: fixNames }),
   });
 
 export const postRunApp = (code: string, appName: string) =>

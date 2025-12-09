@@ -19,7 +19,7 @@ def _client(tmp_path: Path) -> TestClient:
 def test_ui_manifest_endpoint(tmp_path: Path):
     (tmp_path / "pages").mkdir()
     (tmp_path / "pages" / "home.ai").write_text(
-        'page "home" at "/":\n  heading "Welcome"\n  text "Hello"\n', encoding="utf-8"
+        'page is "home" at "/":\n  heading "Welcome"\n  text "Hello"\n', encoding="utf-8"
     )
     client = _client(tmp_path)
     resp = client.get("/api/ui/manifest", headers={"X-API-Key": "dev-key"})

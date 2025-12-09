@@ -8,8 +8,8 @@ def test_comments_standalone_and_inline():
     code = dedent(
         '''
         # top-level comment
-        app "Test":
-          entry_page "home"
+        app is "Test":
+          entry_page is "home"
 
         page is "home" at "/":
           # comment inside page

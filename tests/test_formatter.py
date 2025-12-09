@@ -3,20 +3,20 @@ from namel3ss.lang.formatter import format_source
 
 def test_format_source_formats_and_idempotent():
     source = (
-        'app "demo":\n'
+        'app is "demo":\n'
         '  description "Sample"\n'
         '\n'
-        'page "home":\n'
+        'page is "home":\n'
         '  route  "/" \n'
         '  section "main":\n'
         '    component "text":\n'
         '      value "Hello"'
     )
     expected = (
-        'app "demo":\n'
+        'app is "demo":\n'
         '  description "Sample"\n'
         '\n'
-        'page "home":\n'
+        'page is "home":\n'
         '  route "/"\n'
         '  section "main":\n'
         '    component "text":\n'
@@ -30,22 +30,22 @@ def test_format_source_formats_and_idempotent():
 
 def test_format_source_with_flow_and_ai():
     source = (
-        'ai "greet":\n'
+        'ai is "greet":\n'
         ' model "m"\n'
         ' input from user\n'
         '\n'
-        'flow "pipeline":\n'
-        ' step "s":\n'
+        'flow is "pipeline":\n'
+        ' step is "s":\n'
         '  target "greet"\n'
         '  kind "ai"\n'
     )
     expected = (
-        'ai "greet":\n'
+        'ai is "greet":\n'
         '  model "m"\n'
         '  input from "user"\n'
         '\n'
-        'flow "pipeline":\n'
-        '  step "s":\n'
+        'flow is "pipeline":\n'
+        '  step is "s":\n'
         '    kind "ai"\n'
         '    target "greet"\n'
     )

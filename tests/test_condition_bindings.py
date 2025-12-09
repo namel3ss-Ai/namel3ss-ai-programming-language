@@ -45,18 +45,18 @@ def _make_engine(ir_prog):
 
 def test_parser_allows_binding_variants():
     module = parse_source(
-        'flow "f":\n'
-        '  step "s":\n'
+        'flow is "f":\n'
+        '  step is "s":\n'
         '    if result.category is "billing" as cat:\n'
         '      do agent "billing"\n'
         '    otherwise if result.category is "tech" as t:\n'
         '      do agent "tech_agent"\n'
         '    otherwise:\n'
         '      do agent "other"\n'
-        '  step "w":\n'
+        '  step is "w":\n'
         '    when score > 0.8 as high:\n'
         '      do agent "vip"\n'
-        '  step "u":\n'
+        '  step is "u":\n'
         '    unless flag is "off" as fl:\n'
         '      do agent "on"\n'
     )
@@ -70,22 +70,22 @@ def test_parser_allows_binding_variants():
 def test_parser_binding_errors():
     with pytest.raises(Exception):
         parse_source(
-            'flow "f":\n'
-            '  step "s":\n'
+            'flow is "f":\n'
+            '  step is "s":\n'
             '    if result is "x" as:\n'
             '      do agent "a"\n'
         )
     with pytest.raises(Exception):
         parse_source(
-            'flow "f":\n'
-            '  step "s":\n'
+            'flow is "f":\n'
+            '  step is "s":\n'
             '    when result is "x" as 123:\n'
             '      do agent "a"\n'
         )
     with pytest.raises(Exception):
         parse_source(
-            'flow "f":\n'
-            '  step "s":\n'
+            'flow is "f":\n'
+            '  step is "s":\n'
             '    if result is "x" as a as b:\n'
             '      do agent "a"\n'
         )
@@ -93,11 +93,11 @@ def test_parser_binding_errors():
 
 def test_flow_runtime_binding_and_trace():
     source = (
-        'agent "billing":\n'
+        'agent is "billing":\n'
         '  the goal is "g"\n'
         '  the personality is "p"\n'
-        'flow "f":\n'
-        '  step "s":\n'
+        'flow is "f":\n'
+        '  step is "s":\n'
         '    if result.category is "billing" as cat:\n'
         '      do agent "billing"\n'
     )
@@ -116,7 +116,7 @@ def test_flow_runtime_binding_and_trace():
 
 def test_agent_runtime_binding():
     source = (
-        'agent "triage_agent":\n'
+        'agent is "triage_agent":\n'
         '  if user.score > 0.8 as high:\n'
         '    do tool "send_alert" with message:\n'
         '      "high"\n'

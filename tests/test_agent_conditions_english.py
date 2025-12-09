@@ -47,7 +47,7 @@ def _make_runner(ir_prog):
 
 def test_parse_agent_when_block():
     module = parse_source(
-        'agent "support_agent":\n'
+        'agent is "support_agent":\n'
         '  the goal is "Help."\n'
         '  when user_intent is "billing":\n'
         '    do tool "lookup_invoice"\n'
@@ -63,7 +63,7 @@ def test_parse_agent_when_block():
 
 def test_agent_condition_runtime_branch_selection_and_trace():
     source = (
-        'agent "support_agent":\n'
+        'agent is "support_agent":\n'
         '  the goal is "Help."\n'
         '  when user_intent is "billing":\n'
         '    do tool "lookup_invoice"\n'
@@ -85,7 +85,7 @@ def test_agent_condition_runtime_branch_selection_and_trace():
 
 def test_agent_condition_fallback_branch():
     source = (
-        'agent "triage_agent":\n'
+        'agent is "triage_agent":\n'
         '  the goal is "Route"\n'
         '  if user_intent is "billing":\n'
         '    do tool "lookup_invoice"\n'

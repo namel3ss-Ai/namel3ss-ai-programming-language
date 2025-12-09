@@ -6,15 +6,15 @@ from namel3ss.parser import parse_source
 
 
 PROGRAM_TEXT = (
-    'app "support_portal":\n'
+    'app is "support_portal":\n'
     '  description "Support portal for customer questions"\n'
-    '  entry_page "home"\n'
-    'page "home":\n'
+    '  entry_page is "home"\n'
+    'page is "home":\n'
     '  title "Home"\n'
     '  route "/"\n'
     'model "default":\n'
     '  provider "openai:gpt-4.1-mini"\n'
-    'ai "summarise_message":\n'
+    'ai is "summarise_message":\n'
     '  model "default"\n'
     '  input from user_message\n'
 )
@@ -34,8 +34,8 @@ def test_ast_to_ir_produces_program():
 
 def test_ast_to_ir_missing_page_raises():
     module = parse_source(
-        'app "broken":\n'
-        '  entry_page "missing"\n'
+        'app is "broken":\n'
+        '  entry_page is "missing"\n'
     )
     with pytest.raises(IRError):
         ast_to_ir(module)

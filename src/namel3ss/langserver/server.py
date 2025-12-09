@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional
 
 from .. import ir, lexer, parser
-from ..diagnostics import Diagnostic, create_diagnostic, legacy_to_structured
+from ..diagnostics import Diagnostic, create_diagnostic, legacy_to_structured, get_definition
 from ..diagnostics.pipeline import run_diagnostics
 from ..diagnostics.runner import apply_strict_mode
 from ..errors import Namel3ssError
@@ -211,14 +211,7 @@ class LanguageServer:
             tokens = lexer.Lexer(text, filename=uri).tokenize()
             module = parser.Parser(tokens).parse_module()
         except Namel3ssError as err:
-            diag = create_diagnostic(
-                "N3-0001",
-                message_kwargs={"detail": err.message},
-                file=uri,
-                line=err.line,
-                column=err.column,
-            )
-            diag_list.append(diag)
+            diag_list.append(self._diagnostic_from_error(err, uri))
             return diag_list
         try:
             program = ir.ast_to_ir(module)
@@ -250,7 +243,10 @@ class LanguageServer:
         severity_map = {"error": 1, "warning": 2, "info": 3}
         start_line = max((diag.line or 1) - 1, 0)
         start_char = max((diag.column or 1) - 1, 0)
-        return {
+        message = diag.message
+        if diag.hint:
+            message = f"{message}\nHint: {diag.hint}"
+        lsp_diag: dict[str, Any] = {
             "range": {
                 "start": {"line": start_line, "character": start_char},
                 "end": {"line": start_line, "character": start_char + 1},
@@ -258,8 +254,39 @@ class LanguageServer:
             "severity": severity_map.get(diag.severity, 3),
             "code": diag.code,
             "source": "namel3ss",
-            "message": diag.message,
+            "message": message,
         }
+        if diag.doc_url:
+            lsp_diag["codeDescription"] = {"href": diag.doc_url}
+        return lsp_diag
+
+    @staticmethod
+    def _diagnostic_from_error(err: Namel3ssError, uri: str) -> Diagnostic:
+        msg = err.message or ""
+        detail = msg
+        hint = None
+        if ":" in msg:
+            prefix, remainder = msg.split(":", 1)
+            prefix = prefix.strip()
+            detail = remainder.strip() or msg
+            if "Did you mean" in detail:
+                hint = detail[detail.index("Did you mean") :].strip()
+            if prefix.startswith("N3L-") and get_definition(prefix):
+                return create_diagnostic(
+                    prefix,
+                    message_kwargs={"detail": detail},
+                    file=uri,
+                    line=err.line,
+                    column=err.column,
+                    hint=hint,
+                )
+        return create_diagnostic(
+            "N3-0001",
+            message_kwargs={"detail": msg},
+            file=uri,
+            line=err.line,
+            column=err.column,
+        )
 
     # --- IO loop ----------------------------------------------------------
     def run_stdio(self) -> None:

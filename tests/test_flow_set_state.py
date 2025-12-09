@@ -41,10 +41,10 @@ def _build_engine(program: IRProgram):
 
 def test_parse_set_variants():
     module = parse_source(
-        'flow "f":\n'
-        '  step "script":\n'
+        'flow is "f":\n'
+        '  step is "script":\n'
         '    kind "script"\n'
-        '    set state.answer = 1\n'
+        '    set state.answer be 1\n'
         '    set state.answer be state.answer\n'
     )
     flow = next(d for d in module.declarations if isinstance(d, ast_nodes.FlowDecl))

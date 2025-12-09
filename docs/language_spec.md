@@ -2,7 +2,12 @@
 
 This document describes the Namel3ss V3 language as it exists today. It mirrors the current lexer/parser/IR and the validation rules enforced at runtime. No grammar changes are introduced here; all constraints are enforced via validation and diagnostics.
 
-The English-style surface is now frozen for the 1.0 line: legacy symbolic forms stay supported for backwards compatibility, but the preferred style is documented in `docs/language/style_guide.md` and enforced via the lint rules in `docs/language/lint_rules.md`.
+Naming & variables follow **Naming Standard v1** (`docs/language/naming_v1.md`). The English-style surface is now frozen for the 1.0 line: headers use `is`, assignments use `be`, and legacy symbolic forms have been removed. See the walkthrough in `docs/book/variables_and_scope.md` and the guidance in `docs/language/style_guide.md` and `docs/language/lint_rules.md`.
+- For migrating legacy sources, use `n3 migrate naming-standard` (see `docs/language/migrating_to_english_syntax.md`).
+
+## Control Flow
+
+Control structures are English-first: `if` / `otherwise if` / `else`, `match` / `when` / `otherwise`, loops (`repeat for each`, `repeat up to N times`, flow-level `for each`), `retry up to N times [with backoff]`, `on error`, and core step kinds (`script`, `ai`, `agent`, `tool`). See `docs/language/control_flow.md` for the Control Flow v1 spec, examples, and out-of-scope items.
 
 ## Top-Level Declarations
 
@@ -57,7 +62,7 @@ Each block kind has required and optional fields aligned with the current IR:
   - required: `name`
   - optional: `description`
   - children: ordered `step`s with `kind` in `{ai, agent, tool}` and a `target`.
-  - statements: `let/set` inside script steps for local variables and state updates.
+  - statements: `let` / `let constant` for locals, `set state.*` for state updates (preferred English form per Naming Standard v1).
   - references: `ai`/`agent` targets must exist; tool targets must be registered/builtin.
 - **Streaming metadata (AI steps)**
   - Example:
@@ -111,8 +116,9 @@ Each block kind has required and optional fields aligned with the current IR:
 - Section names must be unique within a page; component ordering is preserved.
 
 ## Expressions & Values
-- Variables: `let <name> be <expression>` (or `let <name> = <expression>`) declares a variable in the current flow/agent scope. Redeclaring in the same scope is an error.
-- Mutation: `set <name> to <expression>` updates an existing variable. Assigning to an undefined variable is an error.
+- Variables: `let <name> be <expression>` declares a variable in the current flow/agent scope. Redeclaring in the same scope is an error.
+- Constants: `let constant <name> be <expression>` declares an immutable local.
+- Mutation: `set state.<name> be <expression>` updates flow/page state. Assigning to an undefined local with `set` is an error.
 - Frames: frame values behave like lists of record rows and can be iterated (`repeat for each row in sales_data`), filtered/mapped (`all row from sales_data where ...`), and aggregated (`sum of all row.revenue from sales_data`).
 - Macros: `use macro "name"` expands AI-generated code at load-time; macro definitions capture description/sample/parameters.
 - Built-in AI macro `crud_ui` generates CRUD flows, forms, and UI pages for an entity:
@@ -231,7 +237,7 @@ ai is "support_bot":
 - `llm_fact_extractor` pulls durable user facts from the interaction and appends them to the profile store.
 - Pipelines run in the order declared; each entry must provide `step` (a friendly name) and `type`. Unknown pipeline types raise `N3L-1203`. `max_tokens` is optional and only applies to `llm_summarizer`.
 - The resulting summaries/facts are available to recall rules (e.g., `long_term` `top_k` or `profile` `include`) on subsequent turns, completing the short/long/profile memory loop.
-- Canonical DSL: The English-style surface is the primary, modern syntax. Legacy symbolic/colon forms remain supported via automatic transformation, but lint will suggest migrating to the English forms. All examples in this spec use the modern syntax.
+- Canonical DSL: The English-style surface is the primary, modern syntax. Legacy symbolic/colon forms are no longer accepted. All examples in this spec use the modern syntax.
 
 ### Memory Privacy, Retention & Scope
 
@@ -322,7 +328,7 @@ Studio's Memory Inspector shows these policies (scope, retention, PII handling, 
     - or English form: `kind is "vector_query" vector_store is "kb" query_text is state.question top_k 5`
   - Typical pattern: index documents with `vector_index_frame`, then in a flow run `vector_query` and feed `step "retrieve" output.context` into an `ai` step alongside the user question.
 - UI pages & layout:
-  - `page "name" at "/route":` defines a UI page. Layout elements: `section`, `heading`, `text`, `image`, `use form`, `state`, `input`, `button`, `when ... show ... otherwise ...`.
+  - `page is "name" at "/route":` defines a UI page. Layout elements: `section`, `heading`, `text`, `image`, `use form`, `state`, `input`, `button`, `when ... show ... otherwise ...`.
   - Styling directives inside pages/sections/elements: `color is <token|string>`, `background color is ...`, `align is left|center|right`, `align vertically is top|middle|bottom`, `layout is row|column|two columns|three columns`, `padding|margin|gap is small|medium|large`.
   - Class/inline styling on components: every layout element may declare `class is "<classes>"` and a `style:` map of string key/value pairs. Example:
     ```
@@ -350,7 +356,7 @@ Studio's Memory Inspector shows these policies (scope, retention, PII handling, 
 
 ## Loops
 - Flow-level for-each loops: `for each is <var> in <expr>:` (or `for each <var> in <expr>:`) inside a `flow` block. The indented body contains normal flow steps and runs once per element in the iterable. Iterables resolving to `None` are treated as empty; non-list/array-like values raise a flow error (“loop iterable must be a list/array-like”). The loop variable is available inside the body (including `when` conditions) and is not guaranteed to exist outside the loop.
-- Script for-each loops: `repeat for each <name> in <expr>:` followed by a block of statements. The iterable must evaluate to a list (`N3-3400`).
+- Script for-each loops: `repeat for each <name> in <expr>:` followed by a block of statements. The iterable must evaluate to a list (`N3-3400`). Use `let <name> be ...` / `let constant <name> be ...` for locals and `set state.*` for state mutation (per Naming Standard v1).
 - Bounded loops: `repeat up to <expr> times:`; the count must be numeric and non-negative (`N3-3401` / `N3-3402`).
 - Loops execute inside flow/agent script blocks and share the current variable environment.
 

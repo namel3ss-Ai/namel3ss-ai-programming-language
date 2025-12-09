@@ -14,7 +14,7 @@ from ..obs.tracer import Tracer
 from ..ai.router import ModelRouter
 from .models import OptimizationKind, OptimizationStatus, OptimizationSuggestion
 from .storage import OptimizerStorage
-from ..secrets.manager import SecretsManager
+from ..secrets.manager import SecretsManager, get_default_secrets_manager
 
 
 class OptimizerEngine:
@@ -32,7 +32,7 @@ class OptimizerEngine:
         self.memory_engine = memory_engine
         self.tracer = tracer
         self.router = router
-        self.secrets = secrets or SecretsManager()
+        self.secrets = secrets or get_default_secrets_manager()
 
     def scan(self, snapshot: Optional[dict] = None, auto_apply: bool = False) -> List[OptimizationSuggestion]:
         snap = snapshot or self.metrics.snapshot()

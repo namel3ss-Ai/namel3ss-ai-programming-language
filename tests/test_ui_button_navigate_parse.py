@@ -8,7 +8,7 @@ def _first_page(mod):
 def test_navigate_path_parses():
     mod = parser.parse_source(
         '''
-page "home" at "/":
+page is "home" at "/":
   section "main":
     button "Go":
       on click:
@@ -42,11 +42,11 @@ page is "home" at "/":
 def test_navigate_page_parses():
     mod = parser.parse_source(
         '''
-page "home" at "/":
+page is "home" at "/":
   section "main":
     button "Go":
       on click:
-        navigate to page "chat"
+        navigate to page is "chat"
 '''
     )
     btn = _first_page(mod).layout[0].components[0]

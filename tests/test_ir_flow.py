@@ -6,18 +6,18 @@ from namel3ss.parser import parse_source
 
 
 PROGRAM_TEXT = (
-    'flow "support_pipeline":\n'
-    '  step "classify":\n'
+    'flow is "support_pipeline":\n'
+    '  step is "classify":\n'
     '    kind "ai"\n'
     '    target "classify_ticket"\n'
-    '  step "assign_helper":\n'
+    '  step is "assign_helper":\n'
     '    kind "agent"\n'
     '    target "helper"\n'
     'model "default":\n'
     '  provider "openai:gpt-4.1-mini"\n'
-    'ai "classify_ticket":\n'
+    'ai is "classify_ticket":\n'
     '  model "default"\n'
-    'agent "helper":\n'
+    'agent is "helper":\n'
     '  goal "Assist"\n'
 )
 
@@ -34,7 +34,7 @@ def test_flow_ir_transforms():
 
 def test_page_sections_ir():
     module = parse_source(
-        'page "home":\n'
+        'page is "home":\n'
         '  section "hero":\n'
         '    component "text":\n'
         '      value "Welcome"\n'
@@ -57,8 +57,8 @@ def test_plugin_ir_mapping():
 
 def test_flow_invalid_reference_raises():
     module = parse_source(
-        'flow "bad":\n'
-        '  step "missing":\n'
+        'flow is "bad":\n'
+        '  step is "missing":\n'
         '    kind "agent"\n'
         '    target "ghost"\n'
     )
@@ -68,8 +68,8 @@ def test_flow_invalid_reference_raises():
 
 def test_flow_invalid_tool_reference_raises():
     module = parse_source(
-'flow "bad":\n'
-'  step "missing":\n'
+'flow is "bad":\n'
+'  step is "missing":\n'
 '    kind "tool"\n'
 '    tool "unknown"\n'
     )

@@ -2,9 +2,9 @@ from namel3ss.runtime.engine import Engine
 
 
 PROGRAM_TEXT = (
-    'app "support_portal":\n'
-    '  entry_page "home"\n'
-    'page "home":\n'
+    'app is "support_portal":\n'
+    '  entry_page is "home"\n'
+    'page is "home":\n'
     '  title "Home"\n'
     '  route "/"\n'
     '  ai_call "summarise_message"\n'
@@ -13,7 +13,7 @@ PROGRAM_TEXT = (
     '      value "Welcome"\n'
     'model "default":\n'
     '  provider "openai:gpt-4.1-mini"\n'
-    'ai "summarise_message":\n'
+    'ai is "summarise_message":\n'
     '  model "default"\n'
 )
 

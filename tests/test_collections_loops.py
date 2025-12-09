@@ -54,8 +54,8 @@ def _make_engine(ir_prog: IRProgram):
 
 def test_list_builtins_and_sum():
     source = (
-        'flow "lists":\n'
-        '  step "s":\n'
+        'flow is "lists":\n'
+        '  step is "s":\n'
         '    let xs be [1, 2, 3]\n'
         '    let l be length of xs\n'
         '    let r be reverse of xs\n'
@@ -72,8 +72,8 @@ def test_list_builtins_and_sum():
 
 def test_filter_and_map_english_and_functional():
     source = (
-        'flow "f":\n'
-        '  step "s":\n'
+        'flow is "f":\n'
+        '  step is "s":\n'
         '    let xs be [1, 2, 3]\n'
         '    let highs be all xs where item > 1\n'
         '    let doubled be map(xs, to: item * 2)\n'
@@ -90,8 +90,8 @@ def test_filter_and_map_english_and_functional():
 
 def test_english_map_with_record_field_access():
     source = (
-        'flow "map":\n'
-        '  step "s":\n'
+        'flow is "map":\n'
+        '  step is "s":\n'
         '    let users be [{ email: "a@example.com" }, { email: "b@example.com" }]\n'
         '    let emails be all user.email from users\n'
         '    do tool "echo"\n'
@@ -107,8 +107,8 @@ def test_english_map_with_record_field_access():
 
 def test_record_literal_and_field_access():
     source = (
-        'flow "records":\n'
-        '  step "s":\n'
+        'flow is "records":\n'
+        '  step is "s":\n'
         '    let user be { name: "Alice", age: 30 }\n'
         '    let n be user.name\n'
         '    do tool "echo"\n'
@@ -122,8 +122,8 @@ def test_record_literal_and_field_access():
 
 def test_for_each_loop_accumulates():
     source = (
-        'flow "loop":\n'
-        '  step "s":\n'
+        'flow is "loop":\n'
+        '  step is "s":\n'
         '    let xs be [1, 2, 3]\n'
         '    let total be 0\n'
         '    repeat for each item in xs:\n'
@@ -139,8 +139,8 @@ def test_for_each_loop_accumulates():
 
 def test_repeat_up_to_loop():
     source = (
-        'flow "repeat":\n'
-        '  step "s":\n'
+        'flow is "repeat":\n'
+        '  step is "s":\n'
         '    let count be 0\n'
         '    repeat up to 3 times:\n'
         '      set count to count + 1\n'
@@ -155,8 +155,8 @@ def test_repeat_up_to_loop():
 
 def test_invalid_for_each_type_errors():
     source = (
-        'flow "bad":\n'
-        '  step "s":\n'
+        'flow is "bad":\n'
+        '  step is "s":\n'
         '    let total be 0\n'
         '    repeat for each item in 5:\n'
         '      set total to total + item\n'

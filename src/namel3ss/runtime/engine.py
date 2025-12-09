@@ -34,7 +34,7 @@ from ..optimizer.overlays import OverlayStore
 from ..optimizer.storage import OptimizerStorage
 from ..plugins.registry import PluginRegistry
 from ..rag.engine import RAGEngine
-from ..secrets.manager import SecretsManager
+from ..secrets.manager import SecretsManager, get_default_secrets_manager
 from ..tools.builtin import register_builtin_tools
 from ..tools.registry import ToolRegistry
 from ..ui.renderer import UIRenderer
@@ -57,7 +57,7 @@ class Engine:
         plugin_registry: Optional[PluginRegistry] = None,
     ) -> None:
         self.program = program
-        self.secrets_manager = SecretsManager()
+        self.secrets_manager = get_default_secrets_manager()
         self.config = load_config()
         from ..memory.registry import build_memory_store_registry
         self.memory_stores = build_memory_store_registry(self.secrets_manager)

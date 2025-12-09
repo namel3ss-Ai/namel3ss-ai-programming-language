@@ -6,7 +6,7 @@ def test_parse_memory_block_and_page_properties():
     module = parse_source(
         'memory "short_term":\n'
         '  type "conversation"\n'
-        'page "home":\n'
+        'page is "home":\n'
         '  title "Home"\n'
         '  route "/"\n'
         '  description "Landing"\n'
