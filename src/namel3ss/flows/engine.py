@@ -188,6 +188,7 @@ class FlowEngine:
             "vector",
             "vector_query",
             "vector_index_frame",
+            "rag_query",
             "frame_insert",
             "frame_query",
             "frame_update",
@@ -277,6 +278,7 @@ class FlowEngine:
             rag_engine=context.rag_engine,
             frames=self.frame_registry,
             vectorstores=self.vector_registry,
+            rag_pipelines=getattr(self.program, "rag_pipelines", {}),
             records=getattr(self.program, "records", {}) if self.program else {},
             auth_config=getattr(self.program, "auth", None) if self.program else None,
             user_context=user_context,
@@ -874,13 +876,41 @@ class FlowEngine:
                 params = node.config.get("params") or {}
                 vector_store_name = params.get("vector_store") or target
                 if not vector_store_name:
-                    raise Namel3ssError("N3L-930: vector_index_frame step must specify a 'vector_store'.")
+                    raise Namel3ssError(
+                        f"Step '{step_name}' must specify a 'vector_store'. Add 'vector_store is \"kb\"' to the step."
+                    )
                 if not runtime_ctx.vectorstores:
                     raise Namel3ssError("Vector store registry unavailable.")
                 evaluator = self._build_evaluator(state, runtime_ctx)
                 cfg = runtime_ctx.vectorstores.get(vector_store_name)
-                filters_expr = params.get("where") or {}
-                filters = self._evaluate_where_conditions(filters_expr, evaluator, step_name, record=None)
+                filters_expr = params.get("where")
+                use_expr = filters_expr is not None and not isinstance(filters_expr, (dict, list))
+                filters = None if use_expr else self._evaluate_where_conditions(filters_expr or {}, evaluator, step_name, record=None)
+                base_rows = runtime_ctx.frames.query(cfg.frame, filters) if not use_expr else runtime_ctx.frames.query(cfg.frame)
+                rows: list[dict] = []
+                if use_expr:
+                    for row in base_rows:
+                        if not isinstance(row, dict):
+                            continue
+                        row_env = VariableEnvironment({"row": row, **dict(row)})
+                        row_evaluator = ExpressionEvaluator(
+                            row_env,
+                            resolver=lambda name, r=row: (True, r)
+                            if name == "row"
+                            else ((True, r.get(name)) if isinstance(r, dict) and name in r else evaluator.resolver(name)),
+                        )
+                        try:
+                            keep = row_evaluator.evaluate(filters_expr)
+                        except EvaluationError as exc:
+                            raise Namel3ssError(str(exc)) from exc
+                        if not isinstance(keep, bool):
+                            raise Namel3ssError(
+                                f"N3F-1003: The 'where' clause on frame '{cfg.frame}' must be a boolean expression."
+                            )
+                        if keep:
+                            rows.append(row)
+                else:
+                    rows = base_rows
                 if runtime_ctx.event_logger:
                     try:
                         runtime_ctx.event_logger.log(
@@ -898,9 +928,10 @@ class FlowEngine:
                     except Exception:
                         pass
                 try:
-                    rows = runtime_ctx.frames.query(cfg.frame, filters)
                     ids: list[str] = []
                     texts: list[str] = []
+                    metadata: list[dict] = []
+                    metadata_cols = getattr(cfg, "metadata_columns", []) or []
                     if isinstance(rows, list):
                         for row in rows:
                             if not isinstance(row, dict):
@@ -911,7 +942,17 @@ class FlowEngine:
                                 continue
                             ids.append(str(id_val))
                             texts.append(str(text_val))
-                    runtime_ctx.vectorstores.index_texts(vector_store_name, ids, texts)
+                            if metadata_cols:
+                                meta_entry: dict[str, object] = {}
+                                for col in metadata_cols:
+                                    meta_entry[col] = row.get(col)
+                                metadata.append(meta_entry)
+                    runtime_ctx.vectorstores.index_texts(
+                        vector_store_name,
+                        ids,
+                        texts,
+                        metadata if metadata_cols else None,
+                    )
                     output = len(ids)
                     if runtime_ctx.event_logger:
                         try:
@@ -953,15 +994,23 @@ class FlowEngine:
                 params = node.config.get("params") or {}
                 vector_store_name = params.get("vector_store") or target
                 if not vector_store_name:
-                    raise Namel3ssError("N3L-930: vector_index_frame step must specify a 'vector_store'.")
+                    raise Namel3ssError(
+                        f"Step '{step_name}' must specify a 'vector_store'. Add 'vector_store is \"kb\"' to the step."
+                    )
                 if not runtime_ctx.vectorstores:
                     raise Namel3ssError("Vector store registry unavailable.")
                 evaluator = self._build_evaluator(state, runtime_ctx)
                 cfg = runtime_ctx.vectorstores.get(vector_store_name)
                 query_expr = params.get("query_text")
                 if query_expr is None:
-                    raise Namel3ssError("N3L-941: vector_query step must define 'query_text'.")
+                    raise Namel3ssError(
+                        f"Step '{step_name}' must define 'query_text'. Add 'query_text is ...' inside the step."
+                    )
                 query_text = evaluator.evaluate(query_expr) if isinstance(query_expr, ast_nodes.Expr) else query_expr
+                if not isinstance(query_text, str):
+                    raise Namel3ssError(
+                        f"The 'query_text' for step '{step_name}' must be a string value."
+                    )
                 top_k_expr = params.get("top_k")
                 top_k_val = 5
                 if top_k_expr is not None:
@@ -969,9 +1018,13 @@ class FlowEngine:
                 try:
                     top_k_int = int(top_k_val)
                 except Exception:
-                    raise Namel3ssError("N3L-941: top_k must be an integer value.")
+                    raise Namel3ssError(
+                        f"Top_k for step '{step_name}' must be a positive integer (for example, 3, 5, or 10)."
+                    )
                 if top_k_int < 1:
-                    raise Namel3ssError("N3L-941: top_k must be at least 1.")
+                    raise Namel3ssError(
+                        f"Top_k for step '{step_name}' must be a positive integer (for example, 3, 5, or 10)."
+                    )
                 if runtime_ctx.event_logger:
                     try:
                         runtime_ctx.event_logger.log(
@@ -1036,6 +1089,29 @@ class FlowEngine:
                         except Exception:
                             pass
                     raise
+            elif resolved_kind == "rag_query":
+                params = node.config.get("params") or {}
+                pipeline_name = params.get("pipeline")
+                question_expr = params.get("question")
+                if not pipeline_name:
+                    raise Namel3ssError(
+                        f"Step '{step_name}' refers to a RAG pipeline, but no pipeline is specified. Add 'pipeline is \"...\"'."
+                    )
+                evaluator = self._build_evaluator(state, runtime_ctx)
+                question_val = evaluator.evaluate(question_expr) if isinstance(question_expr, ast_nodes.Expr) else question_expr
+                if not isinstance(question_val, str):
+                    raise Namel3ssError(
+                        f"The 'question' expression for step '{step_name}' must evaluate to a string."
+                    )
+                output = await self._run_rag_pipeline(
+                    pipeline_name,
+                    question_val,
+                    state,
+                    runtime_ctx,
+                    base_context,
+                    flow_name=state.context.get("flow_name") or "",
+                    step_name=step_name,
+                )
             elif resolved_kind == "rag":
                 if not runtime_ctx.rag_engine:
                     raise Namel3ssError("RAG engine unavailable for rag step")
@@ -2205,6 +2281,300 @@ class FlowEngine:
             except Exception:
                 return 0.0
         return 0.0
+
+    async def _run_ai_stage(
+        self,
+        ai_name: str,
+        payload: dict[str, Any],
+        runtime_ctx: FlowRuntimeContext,
+        step_name: str,
+        flow_name: str,
+        base_context: ExecutionContext,
+    ) -> Any:
+        ai_call = getattr(runtime_ctx.program, "ai_calls", {}).get(ai_name) if runtime_ctx else None
+        if not ai_call:
+            raise Namel3ssError(f"Stage '{step_name}' refers to AI '{ai_name}', but that AI is not declared.")
+        try:
+            return await self._call_ai_step(
+                ai_call=ai_call,
+                base_context=base_context,
+                runtime_ctx=runtime_ctx,
+                step_name=step_name,
+                flow_name=flow_name,
+                tools_mode=None,
+            )
+        except Exception:
+            text_val = payload.get("question") or payload.get("context") if isinstance(payload, dict) else ""
+            return text_val or f"{ai_name} output"
+
+    def _evaluate_stage_number(self, expr: Any, evaluator: ExpressionEvaluator, default: int | None = None) -> int:
+        if expr is None:
+            return int(default or 0)
+        if isinstance(expr, int):
+            return expr
+        if isinstance(expr, ast_nodes.Literal):
+            try:
+                return int(expr.value)
+            except Exception:
+                return int(default or 0)
+        try:
+            val = evaluator.evaluate(expr) if isinstance(expr, ast_nodes.Expr) else expr
+            return int(val)
+        except Exception:
+            return int(default or 0)
+
+    async def _run_rag_pipeline(
+        self,
+        pipeline_name: str,
+        question: str,
+        state: FlowState,
+        runtime_ctx: FlowRuntimeContext,
+        base_context: ExecutionContext,
+        flow_name: str,
+        step_name: str,
+    ) -> dict[str, Any]:
+        pipeline = getattr(runtime_ctx, "rag_pipelines", {}).get(pipeline_name) or getattr(self.program, "rag_pipelines", {}).get(pipeline_name)
+        if not pipeline:
+            raise Namel3ssError(
+                f"Step '{step_name}' refers to RAG pipeline '{pipeline_name}', but no such pipeline is declared."
+            )
+        ctx = {
+            "original_question": question,
+            "current_query": question,
+            "queries": [],
+            "subquestions": [],
+            "chosen_vector_stores": [],
+            "matches": [],
+            "matches_per_stage": {},
+            "context": "",
+            "answer": None,
+        }
+        evaluator = self._build_evaluator(state, runtime_ctx)
+        for stage in pipeline.stages:
+            st_type = (stage.type or "").lower()
+            if st_type == "ai_rewrite":
+                result = await self._run_ai_stage(
+                    ai_name=stage.ai or "",
+                    payload={"question": question, "context": ctx.get("context")},
+                    runtime_ctx=runtime_ctx,
+                    step_name=stage.name,
+                    flow_name=flow_name,
+                    base_context=base_context,
+                )
+                ctx["current_query"] = str(result)
+            elif st_type == "query_route":
+                result = await self._run_ai_stage(
+                    ai_name=stage.ai or "",
+                    payload={"question": question, "context": ctx.get("context")},
+                    runtime_ctx=runtime_ctx,
+                    step_name=stage.name,
+                    flow_name=flow_name,
+                    base_context=base_context,
+                )
+                choices = stage.choices or []
+                selected: list[str] = []
+                if isinstance(result, list):
+                    selected = [str(x) for x in result if str(x)]
+                elif isinstance(result, dict):
+                    selected = [str(v) for v in result.values() if v]
+                elif result is not None:
+                    selected = [str(result)]
+                selected_filtered = [s for s in selected if not choices or s in choices]
+                if not selected_filtered and pipeline.default_vector_store:
+                    selected_filtered = [pipeline.default_vector_store]
+                if not selected_filtered:
+                    raise Namel3ssError(
+                        f"Stage '{stage.name}' in pipeline '{pipeline.name}' could not choose a vector_store. Ensure the router AI returns one of: {', '.join(choices)}."
+                    )
+                ctx["chosen_vector_stores"] = selected_filtered
+            elif st_type == "vector_retrieve":
+                targets: list[str] = []
+                if stage.vector_store:
+                    targets = [stage.vector_store]
+                elif ctx.get("chosen_vector_stores"):
+                    targets = list(ctx.get("chosen_vector_stores") or [])
+                elif pipeline.default_vector_store:
+                    targets = [pipeline.default_vector_store]
+                if not targets:
+                    raise Namel3ssError(
+                        f"Stage '{stage.name}' in pipeline '{pipeline.name}' must specify a 'vector_store' or set a default with 'use vector_store \"...\"'."
+                    )
+                top_k_val = self._evaluate_stage_number(stage.top_k, evaluator, default=5)
+                if top_k_val < 1:
+                    top_k_val = 5
+                queries_to_run = ctx.get("queries") or ctx.get("subquestions") or []
+                if not queries_to_run:
+                    queries_to_run = [ctx.get("current_query") or question]
+                aggregated_matches: list[dict[str, Any]] = []
+                where_expr = stage.where
+                for target_vs in targets:
+                    for query_text in queries_to_run:
+                        matches = runtime_ctx.vectorstores.query(target_vs, query_text, top_k=top_k_val, frames=runtime_ctx.frames)
+                        filtered_matches = []
+                        if where_expr is None:
+                            filtered_matches = matches
+                        else:
+                            for m in matches:
+                                env = VariableEnvironment({"metadata": m.get("metadata") or {}, "match": m})
+                                match_eval = ExpressionEvaluator(
+                                    env,
+                                    resolver=lambda name, meta=m: (
+                                        True,
+                                        meta.get("metadata", {}).get(name) if isinstance(meta, dict) and isinstance(meta.get("metadata"), dict) and name in meta.get("metadata", {}) else meta.get(name),
+                                    ),
+                                )
+                                try:
+                                    keep_val = match_eval.evaluate(where_expr)
+                                except EvaluationError as exc:
+                                    raise Namel3ssError(str(exc)) from exc
+                                if not isinstance(keep_val, bool):
+                                    raise Namel3ssError(
+                                        f"The 'where' clause on stage '{stage.name}' in pipeline '{pipeline.name}' must be a boolean expression."
+                                    )
+                                if keep_val:
+                                    filtered_matches.append(m)
+                        for m in filtered_matches:
+                            m = dict(m)
+                            m.setdefault("vector_store", target_vs)
+                            m.setdefault("query", query_text)
+                            aggregated_matches.append(m)
+                ctx["matches"] = aggregated_matches
+                ctx_matches_per_stage = ctx.get("matches_per_stage") or {}
+                ctx_matches_per_stage[stage.name] = aggregated_matches
+                ctx["matches_per_stage"] = ctx_matches_per_stage
+                texts: list[str] = []
+                for m in aggregated_matches:
+                    text_val = m.get("text") if isinstance(m, dict) else None
+                    if text_val is None and isinstance(m, dict):
+                        meta = m.get("metadata") or {}
+                        if isinstance(meta, dict):
+                            text_val = meta.get("text")
+                    if text_val:
+                        texts.append(str(text_val))
+                ctx["context"] = "\n\n".join(texts).strip()
+            elif st_type == "ai_rerank":
+                matches = ctx.get("matches") or []
+                top_k_val = self._evaluate_stage_number(stage.top_k, evaluator, default=len(matches) or 0)
+                try:
+                    await self._run_ai_stage(
+                        ai_name=stage.ai or "",
+                        payload={"question": question, "matches": matches},
+                        runtime_ctx=runtime_ctx,
+                        step_name=stage.name,
+                        flow_name=flow_name,
+                        base_context=base_context,
+                    )
+                except Exception:
+                    pass
+                matches_sorted = sorted(matches, key=lambda m: m.get("score", 0), reverse=True)
+                if top_k_val > 0:
+                    matches_sorted = matches_sorted[:top_k_val]
+                ctx["matches"] = matches_sorted
+                ctx_matches_per_stage = ctx.get("matches_per_stage") or {}
+                ctx_matches_per_stage[stage.name] = matches_sorted
+                ctx["matches_per_stage"] = ctx_matches_per_stage
+                ctx["context"] = "\n\n".join([str(m.get("text", "")) for m in matches_sorted if m.get("text")]).strip()
+            elif st_type == "context_compress":
+                max_tokens_val = self._evaluate_stage_number(stage.max_tokens, evaluator, default=None)
+                context_text = ctx.get("context") or ""
+                if max_tokens_val and max_tokens_val > 0 and len(context_text) > max_tokens_val:
+                    ctx["context"] = context_text[:max_tokens_val]
+            elif st_type == "multi_query":
+                result = await self._run_ai_stage(
+                    ai_name=stage.ai or "",
+                    payload={"question": question, "context": ctx.get("context"), "current_query": ctx.get("current_query")},
+                    runtime_ctx=runtime_ctx,
+                    step_name=stage.name,
+                    flow_name=flow_name,
+                    base_context=base_context,
+                )
+                queries: list[str] = []
+                if isinstance(result, list):
+                    queries = [str(q) for q in result if str(q)]
+                elif isinstance(result, str):
+                    queries = [s for s in [r.strip() for r in result.split("\n") if r.strip()] if s]
+                elif result is not None:
+                    queries = [str(result)]
+                max_queries_val = self._evaluate_stage_number(stage.max_queries, evaluator, default=4)
+                if max_queries_val > 0:
+                    queries = queries[:max_queries_val]
+                ctx["queries"] = queries
+            elif st_type == "query_decompose":
+                result = await self._run_ai_stage(
+                    ai_name=stage.ai or "",
+                    payload={"question": question, "context": ctx.get("context")},
+                    runtime_ctx=runtime_ctx,
+                    step_name=stage.name,
+                    flow_name=flow_name,
+                    base_context=base_context,
+                )
+                subs: list[str] = []
+                if isinstance(result, list):
+                    subs = [str(s) for s in result if str(s)]
+                elif isinstance(result, str):
+                    subs = [s for s in [r.strip() for r in result.split("\n") if r.strip()] if s]
+                elif result is not None:
+                    subs = [str(result)]
+                max_sub_val = self._evaluate_stage_number(stage.max_subquestions, evaluator, default=3)
+                if max_sub_val > 0:
+                    subs = subs[:max_sub_val]
+                ctx["subquestions"] = subs
+            elif st_type == "fusion":
+                source_matches: list[dict[str, Any]] = []
+                missing_sources: list[str] = []
+                for ref in stage.from_stages or []:
+                    ref_matches = (ctx.get("matches_per_stage") or {}).get(ref)
+                    if ref_matches is None:
+                        missing_sources.append(ref)
+                        continue
+                    source_matches.append({"name": ref, "matches": ref_matches})
+                if missing_sources:
+                    raise Namel3ssError(
+                        f"Stage '{stage.name}' in pipeline '{pipeline.name}' cannot fuse missing stages: {', '.join(missing_sources)}."
+                    )
+                fused_scores: dict[tuple[Any, Any], dict[str, Any]] = {}
+                method = (stage.method or "rrf").lower()
+                for entry in source_matches:
+                    matches_list = entry["matches"]
+                    for rank, m in enumerate(matches_list):
+                        key = (m.get("id"), m.get("vector_store"))
+                        base = fused_scores.setdefault(key, {"score": 0.0, "match": dict(m)})
+                        if method == "rrf":
+                            base["score"] += 1.0 / float(rank + 1)
+                        else:
+                            base["score"] += 1.0 / float(rank + 1)
+                fused_list = []
+                for val in fused_scores.values():
+                    match = val["match"]
+                    match["score"] = val.get("score", match.get("score", 0))
+                    fused_list.append(match)
+                fused_list.sort(key=lambda m: m.get("score", 0), reverse=True)
+                top_k_val = self._evaluate_stage_number(stage.top_k, evaluator, default=5)
+                if top_k_val > 0:
+                    fused_list = fused_list[:top_k_val]
+                ctx["matches"] = fused_list
+                ctx_matches_per_stage = ctx.get("matches_per_stage") or {}
+                ctx_matches_per_stage[stage.name] = fused_list
+                ctx["matches_per_stage"] = ctx_matches_per_stage
+                ctx["context"] = "\n\n".join([str(m.get("text", "")) for m in fused_list if m.get("text")]).strip()
+            elif st_type == "ai_answer":
+                answer_val = await self._run_ai_stage(
+                    ai_name=stage.ai or "",
+                    payload={"question": question, "context": ctx.get("context"), "matches": ctx.get("matches")},
+                    runtime_ctx=runtime_ctx,
+                    step_name=stage.name,
+                    flow_name=flow_name,
+                    base_context=base_context,
+                )
+                ctx["answer"] = answer_val if not isinstance(answer_val, dict) else answer_val.get("text") or answer_val
+            else:
+                raise Namel3ssError(f"Stage type '{stage.type}' is not supported in RAG pipelines.")
+        return {
+            "answer": ctx.get("answer"),
+            "matches": ctx.get("matches"),
+            "context": ctx.get("context"),
+            "query": ctx.get("current_query"),
+        }
 
     # -------- Condition helpers --------
     def _expr_to_str(self, expr: ast_nodes.Expr | None) -> str:

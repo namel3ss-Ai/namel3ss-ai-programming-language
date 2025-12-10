@@ -59,3 +59,28 @@ flow is "f1":
     with pytest.raises(IRError):
         ast_to_ir(mod)
 
+
+def test_vector_query_requires_query_text():
+    mod = parser.parse_source(
+        '''
+frame is "docs":
+  source:
+    backend is "memory"
+    table is "docs"
+
+vector_store is "kb":
+  backend is "memory"
+  frame is "docs"
+  text_column is "content"
+  id_column is "id"
+  embedding_model is "default_embedding"
+
+flow is "f3":
+  step is "retrieve":
+    kind is "vector_query"
+    vector_store is "kb"
+'''
+    )
+    with pytest.raises(IRError) as exc:
+        ast_to_ir(mod)
+    assert "must define 'query_text'" in str(exc.value)

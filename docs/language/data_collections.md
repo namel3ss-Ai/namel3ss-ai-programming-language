@@ -52,8 +52,9 @@ let result be source:
 - Declare a frame:
   ```
   frame is "sales":
-    from file "data/sales.csv"
-    has headers
+    source:
+      from file "data/sales.csv"
+      has headers
   ```
 - Frames behave like list-of-record collections in pipelines (same steps as above).
 

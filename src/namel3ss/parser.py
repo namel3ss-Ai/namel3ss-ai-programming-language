@@ -98,6 +98,13 @@ class Parser:
             return self.parse_vector_store()
         if token.value == "tool":
             return self.parse_tool()
+        if token.value == "rag":
+            next_tok = self.peek_offset(1)
+            if next_tok.value == "pipeline":
+                return self.parse_rag_pipeline()
+            if next_tok.value == "evaluation":
+                return self.parse_rag_evaluation()
+            raise self.error("Expected 'pipeline' or 'evaluation' after 'rag'.", next_tok)
         if token.value == "macro":
             return self.parse_macro()
         if token.value == "flow":
@@ -1422,7 +1429,13 @@ class Parser:
 
     def parse_agent(self) -> ast_nodes.AgentDecl:
         start = self.consume("KEYWORD", "agent")
-        name = self.consume("STRING")
+        if self.match_value("KEYWORD", "is"):
+            name = self.consume_any({"STRING", "IDENT"})
+        else:
+            tok = self.peek()
+            if tok.type == "STRING":
+                raise self.error(f'agent "{tok.value}": is not supported. Use agent is "{tok.value}": instead.', tok)
+            raise self.error("Expected 'is' after 'agent'", tok)
         self.consume("COLON")
         self.consume("NEWLINE")
         self.consume("INDENT")
@@ -1927,6 +1940,7 @@ class Parser:
         text_col = None
         id_col = None
         embedding_model = None
+        metadata_columns: list[str] = []
         options: dict[str, str] = {}
 
         if self.check("INDENT"):
@@ -1938,9 +1952,9 @@ class Parser:
                 if tok.value == "backend":
                     self.consume("KEYWORD", "backend")
                     if self.match_value("KEYWORD", "is"):
-                        backend_tok = self.consume("STRING")
+                        backend_tok = self.consume_any({"STRING", "IDENT", "KEYWORD"})
                     else:
-                        backend_tok = self.consume("STRING")
+                        backend_tok = self.consume_any({"STRING", "IDENT", "KEYWORD"})
                     backend = backend_tok.value
                     self.optional_newline()
                     continue
@@ -1956,7 +1970,7 @@ class Parser:
                 if tok.value == "text_column":
                     self.consume_any({"KEYWORD", "IDENT"})
                     if self.match_value("KEYWORD", "is"):
-                        t_tok = self.consume("STRING")
+                        t_tok = self.consume_any({"STRING", "IDENT", "KEYWORD"})
                     else:
                         t_tok = self.consume_any({"STRING", "IDENT", "KEYWORD"})
                     text_col = t_tok.value
@@ -1965,7 +1979,7 @@ class Parser:
                 if tok.value == "id_column":
                     self.consume_any({"KEYWORD", "IDENT"})
                     if self.match_value("KEYWORD", "is"):
-                        i_tok = self.consume("STRING")
+                        i_tok = self.consume_any({"STRING", "IDENT", "KEYWORD"})
                     else:
                         i_tok = self.consume_any({"STRING", "IDENT", "KEYWORD"})
                     id_col = i_tok.value
@@ -1974,10 +1988,20 @@ class Parser:
                 if tok.value == "embedding_model":
                     self.consume_any({"KEYWORD", "IDENT"})
                     if self.match_value("KEYWORD", "is"):
-                        e_tok = self.consume("STRING")
+                        e_tok = self.consume_any({"STRING", "IDENT", "KEYWORD"})
                     else:
-                        e_tok = self.consume("STRING")
+                        e_tok = self.consume_any({"STRING", "IDENT", "KEYWORD"})
                     embedding_model = e_tok.value
+                    self.optional_newline()
+                    continue
+                if tok.value == "metadata_columns":
+                    self.consume("KEYWORD", "metadata_columns")
+                    if self.match_value("KEYWORD", "are"):
+                        pass
+                    elif self.peek().value == "is":
+                        self.consume_any({"KEYWORD"})
+                    start_list_token = self.peek()
+                    metadata_columns = self._parse_string_list_literal(start_list_token)
                     self.optional_newline()
                     continue
                 # allow options passthrough as key "option is value"
@@ -1999,7 +2023,286 @@ class Parser:
             text_column=text_col,
             id_column=id_col,
             embedding_model=embedding_model,
+            metadata_columns=metadata_columns,
             options=options,
+            span=self._span(start),
+        )
+
+    def parse_rag_evaluation(self) -> ast_nodes.RagEvaluationDecl:
+        start = self.consume("KEYWORD", "rag")
+        eval_tok = self.consume_any({"KEYWORD", "IDENT"})
+        if (eval_tok.value or "") != "evaluation":
+            raise self.error("Expected 'evaluation' after 'rag'.", eval_tok)
+        if not self.match_value("KEYWORD", "is"):
+            raise self.error('rag evaluation must use: rag evaluation is "Name":', self.peek())
+        name_tok = self.consume("STRING")
+        self.consume("COLON")
+        self.consume("NEWLINE")
+        pipeline_name: str | None = None
+        dataset_frame: str | None = None
+        question_column: str | None = None
+        answer_column: str | None = None
+        metrics: list[str] | None = None
+        if self.check("INDENT"):
+            self.consume("INDENT")
+            while not self.check("DEDENT"):
+                if self.match("NEWLINE"):
+                    continue
+                tok = self.peek()
+                field = tok.value or ""
+                if field == "pipeline":
+                    self.consume_any({"KEYWORD", "IDENT"})
+                    if self.peek().value == "is":
+                        self.consume_any({"KEYWORD"})
+                    p_tok = self.consume_any({"STRING", "IDENT", "KEYWORD"})
+                    pipeline_name = p_tok.value
+                    self.optional_newline()
+                    continue
+                if field == "dataset":
+                    self.consume_any({"KEYWORD", "IDENT"})
+                    self.consume("COLON")
+                    self.consume("NEWLINE")
+                    self.consume("INDENT")
+                    while not self.check("DEDENT"):
+                        if self.match("NEWLINE"):
+                            continue
+                        inner_tok = self.peek()
+                        inner = inner_tok.value or ""
+                        if inner == "from":
+                            self.consume_any({"KEYWORD"})
+                            next_tok = self.peek()
+                            if next_tok.value == "frame":
+                                self.consume_any({"KEYWORD", "IDENT"})
+                            frame_tok = self.consume_any({"STRING", "IDENT", "KEYWORD"})
+                            dataset_frame = frame_tok.value
+                            self.optional_newline()
+                            continue
+                        if inner == "question_column":
+                            self.consume_any({"KEYWORD", "IDENT"})
+                            if self.peek().value == "is":
+                                self.consume_any({"KEYWORD"})
+                            q_tok = self.consume_any({"STRING", "IDENT", "KEYWORD"})
+                            question_column = q_tok.value
+                            self.optional_newline()
+                            continue
+                        if inner == "answer_column":
+                            self.consume_any({"KEYWORD", "IDENT"})
+                            if self.peek().value == "is":
+                                self.consume_any({"KEYWORD"})
+                            a_tok = self.consume_any({"STRING", "IDENT", "KEYWORD"})
+                            answer_column = a_tok.value
+                            self.optional_newline()
+                            continue
+                        raise self.error(f"Unexpected field '{inner}' in dataset block", inner_tok)
+                    self.consume("DEDENT")
+                    self.optional_newline()
+                    continue
+                if field == "metrics":
+                    self.consume_any({"KEYWORD", "IDENT"})
+                    if self.match("COLON"):
+                        self.consume("NEWLINE")
+                        self.consume("INDENT")
+                        metrics_list: list[str] = []
+                        while not self.check("DEDENT"):
+                            if self.match("NEWLINE"):
+                                continue
+                            self.consume("DASH")
+                            item_tok = self.consume_any({"STRING", "IDENT", "KEYWORD"})
+                            metrics_list.append(item_tok.value or "")
+                            self.optional_newline()
+                        self.consume("DEDENT")
+                        metrics = metrics_list
+                        self.optional_newline()
+                        continue
+                    start_tok = self.peek()
+                    if start_tok.type == "LBRACKET":
+                        metrics = self._parse_string_list_literal(start_tok)
+                    else:
+                        val_tok = self.consume_any({"STRING", "IDENT", "KEYWORD"})
+                        metrics = [val_tok.value or ""]
+                    self.optional_newline()
+                    continue
+                raise self.error(f"Unexpected field '{field}' in rag evaluation block", tok)
+            self.consume("DEDENT")
+        self.optional_newline()
+        return ast_nodes.RagEvaluationDecl(
+            name=name_tok.value or "",
+            pipeline=pipeline_name or "",
+            dataset_frame=dataset_frame or "",
+            question_column=question_column or "",
+            answer_column=answer_column,
+            metrics=metrics,
+            span=self._span(start),
+        )
+
+    def parse_rag_pipeline(self) -> ast_nodes.RagPipelineDecl:
+        start = self.consume("KEYWORD", "rag")
+        self.consume("KEYWORD", "pipeline")
+        if not self.match_value("KEYWORD", "is"):
+            raise self.error('rag pipeline must use: rag pipeline is "Name":', self.peek())
+        name_tok = self.consume("STRING")
+        self.consume("COLON")
+        self.consume("NEWLINE")
+        stages: list[ast_nodes.RagPipelineStageDecl] = []
+        default_vector_store: str | None = None
+        if self.check("INDENT"):
+            self.consume("INDENT")
+            while not self.check("DEDENT"):
+                if self.match("NEWLINE"):
+                    continue
+                tok = self.peek()
+                if tok.value == "use":
+                    self.consume("KEYWORD", "use")
+                    if self.match_value("KEYWORD", "vector_store"):
+                        vs_tok = self.consume_any({"STRING", "IDENT", "KEYWORD"})
+                        default_vector_store = vs_tok.value
+                        self.optional_newline()
+                        continue
+                    raise self.error("I expected 'vector_store' after 'use' in a rag pipeline.", tok)
+                if tok.value == "stage":
+                    stages.append(self._parse_rag_stage())
+                    continue
+                raise self.error(f"Unexpected field '{tok.value}' in rag pipeline block", tok)
+            self.consume("DEDENT")
+        self.optional_newline()
+        return ast_nodes.RagPipelineDecl(
+            name=name_tok.value or "",
+            default_vector_store=default_vector_store,
+            stages=stages,
+            span=self._span(start),
+        )
+
+    def _parse_rag_stage(self) -> ast_nodes.RagPipelineStageDecl:
+        start = self.consume("KEYWORD", "stage")
+        if self.match_value("KEYWORD", "is"):
+            name_tok = self.consume("STRING")
+        else:
+            name_tok = self.consume("STRING")
+        self.consume("COLON")
+        self.consume("NEWLINE")
+        stage_type: str | None = None
+        ai_name: str | None = None
+        vector_store: str | None = None
+        top_k: ast_nodes.Expr | None = None
+        where_expr: ast_nodes.Expr | None = None
+        max_tokens: ast_nodes.Expr | None = None
+        choices: list[str] | None = None
+        max_queries: ast_nodes.Expr | None = None
+        max_subquestions: ast_nodes.Expr | None = None
+        from_stages: list[str] | None = None
+        method: str | None = None
+        if self.check("INDENT"):
+            self.consume("INDENT")
+            while not self.check("DEDENT"):
+                if self.match("NEWLINE"):
+                    continue
+                field_tok = self.consume_any({"KEYWORD", "IDENT"})
+                field = field_tok.value or ""
+                if field == "type":
+                    if not self.match_value("KEYWORD", "is"):
+                        raise self.error("Use 'type is \"...\"' inside a rag pipeline stage.", field_tok)
+                    type_tok = self.consume_any({"STRING", "IDENT", "KEYWORD"})
+                    stage_type = type_tok.value
+                    self.optional_newline()
+                    continue
+                if field == "ai":
+                    if self.match_value("KEYWORD", "is"):
+                        ai_tok = self.consume_any({"STRING", "IDENT", "KEYWORD"})
+                    else:
+                        ai_tok = self.consume_any({"STRING", "IDENT", "KEYWORD"})
+                    ai_name = ai_tok.value
+                    self.optional_newline()
+                    continue
+                if field == "vector_store":
+                    if self.match_value("KEYWORD", "is"):
+                        vs_tok = self.consume_any({"STRING", "IDENT", "KEYWORD"})
+                    else:
+                        vs_tok = self.consume_any({"STRING", "IDENT", "KEYWORD"})
+                    vector_store = vs_tok.value
+                    self.optional_newline()
+                    continue
+                if field == "top_k":
+                    if self.match_value("KEYWORD", "is"):
+                        top_k = self.parse_expression()
+                    else:
+                        top_k = self.parse_expression()
+                    self.optional_newline()
+                    continue
+                if field == "max_tokens":
+                    if self.match_value("KEYWORD", "is"):
+                        max_tokens = self.parse_expression()
+                    else:
+                        max_tokens = self.parse_expression()
+                    self.optional_newline()
+                    continue
+                if field == "where":
+                    self.consume("COLON")
+                    self.consume("NEWLINE")
+                    self.consume("INDENT")
+                    where_expr = self._parse_expression_block()
+                    self.optional_newline()
+                    continue
+                if field == "choices":
+                    if self.peek().value in {"are", "is"}:
+                        self.consume_any({"KEYWORD", "IDENT"})
+                    start_tok = self.peek()
+                    if start_tok.type == "STRING":
+                        choices = [self.consume("STRING").value or ""]
+                    else:
+                        choices = self._parse_string_list_literal(start_tok)
+                    self.optional_newline()
+                    continue
+                if field == "max_queries":
+                    if self.match_value("KEYWORD", "is"):
+                        max_queries = self.parse_expression()
+                    else:
+                        max_queries = self.parse_expression()
+                    self.optional_newline()
+                    continue
+                if field == "max_subquestions":
+                    if self.match_value("KEYWORD", "is"):
+                        max_subquestions = self.parse_expression()
+                    else:
+                        max_subquestions = self.parse_expression()
+                    self.optional_newline()
+                    continue
+                if field == "from":
+                    next_tok = self.peek()
+                    if next_tok.value == "stages":
+                        self.consume_any({"KEYWORD", "IDENT"})
+                    if self.peek().value in {"are", "is"}:
+                        self.consume_any({"KEYWORD", "IDENT"})
+                    start_tok = self.peek()
+                    if start_tok.type == "STRING":
+                        from_stages = [self.consume("STRING").value or ""]
+                    else:
+                        from_stages = self._parse_string_list_literal(start_tok)
+                    self.optional_newline()
+                    continue
+                if field == "method":
+                    if self.match_value("KEYWORD", "is"):
+                        method_tok = self.consume_any({"STRING", "IDENT", "KEYWORD"})
+                    else:
+                        method_tok = self.consume_any({"STRING", "IDENT", "KEYWORD"})
+                    method = method_tok.value
+                    self.optional_newline()
+                    continue
+                raise self.error(f"Unexpected field '{field}' in stage block", field_tok)
+            self.consume("DEDENT")
+        self.optional_newline()
+        return ast_nodes.RagPipelineStageDecl(
+            name=name_tok.value or "",
+            type=stage_type or "",
+            ai=ai_name,
+            vector_store=vector_store,
+            top_k=top_k,
+            where=where_expr,
+            max_tokens=max_tokens,
+            choices=choices,
+            max_queries=max_queries,
+            max_subquestions=max_subquestions,
+            from_stages=from_stages,
+            method=method,
             span=self._span(start),
         )
 
@@ -2148,12 +2451,14 @@ class Parser:
         source_kind = None
         source_path = None
         backend = None
+        url_expr: ast_nodes.Expr | None = None
         table = None
         primary_key = None
         delimiter = None
         has_headers = False
         select_cols: list[str] = []
         where_expr = None
+        seen_source = False
 
         if self.check("INDENT"):
             self.consume("INDENT")
@@ -2161,72 +2466,101 @@ class Parser:
                 if self.match("NEWLINE"):
                     continue
                 tok = self.peek()
-                if tok.value == "from":
-                    self.consume("KEYWORD", "from")
-                    if self.peek().value == "file":
-                        self.consume("KEYWORD", "file")
-                        source_kind = "file"
-                    else:
-                        raise self.error("N3F-1001: invalid frame configuration", self.peek())
-                    path_tok = self.consume("STRING")
-                    source_path = path_tok.value
-                    self.optional_newline()
-                    continue
-                if tok.value == "backend":
-                    self.consume("KEYWORD", "backend")
-                    if self.match_value("KEYWORD", "is"):
-                        backend_tok = self.consume("STRING")
-                    else:
-                        backend_tok = self.consume("STRING")
-                    backend = backend_tok.value
-                    self.optional_newline()
-                    continue
-                if tok.value == "table":
-                    self.consume("KEYWORD", "table")
-                    if self.match_value("KEYWORD", "is"):
-                        table_tok = self.consume("STRING")
-                    else:
-                        table_tok = self.consume("STRING")
-                    table = table_tok.value
-                    self.optional_newline()
-                    continue
-                if tok.value == "primary_key":
-                    self.consume("KEYWORD", "primary_key")
-                    pk_tok = self.consume_any({"STRING", "IDENT", "KEYWORD"})
-                    primary_key = pk_tok.value
-                    self.optional_newline()
-                    continue
-                if tok.value == "with":
-                    self.consume("KEYWORD", "with")
-                    if self.peek().value != "delimiter":
-                        raise self.error("N3F-1001: invalid frame configuration", self.peek())
-                    self.consume("KEYWORD", "delimiter")
-                    delim_tok = self.consume("STRING")
-                    delimiter = delim_tok.value or ","
-                    self.optional_newline()
-                    continue
-                if tok.value == "has":
-                    self.consume("KEYWORD", "has")
-                    if self.peek().value != "headers":
-                        raise self.error("N3F-1001: invalid frame configuration", self.peek())
-                    self.consume("KEYWORD", "headers")
-                    has_headers = True
-                    self.optional_newline()
+                if tok.value == "source":
+                    if seen_source:
+                        raise self.error("N3F-1001: invalid frame configuration", tok)
+                    seen_source = True
+                    self.consume("KEYWORD", "source")
+                    self.consume("COLON")
+                    self.consume("NEWLINE")
+                    self.consume("INDENT")
+                    while not self.check("DEDENT"):
+                        if self.match("NEWLINE"):
+                            continue
+                        inner = self.peek()
+                        if inner.value == "from":
+                            self.consume("KEYWORD", "from")
+                            if self.peek().value == "file":
+                                self.consume("KEYWORD", "file")
+                                source_kind = "file"
+                            else:
+                                raise self.error("N3F-1001: invalid frame configuration", self.peek())
+                            path_tok = self.consume("STRING")
+                            source_path = path_tok.value
+                            self.optional_newline()
+                            continue
+                        if inner.value == "backend":
+                            self.consume("KEYWORD", "backend")
+                            if self.match_value("KEYWORD", "is"):
+                                backend_tok = self.consume_any({"STRING", "IDENT", "KEYWORD"})
+                            else:
+                                backend_tok = self.consume_any({"STRING", "IDENT", "KEYWORD"})
+                            backend = backend_tok.value
+                            source_kind = "backend"
+                            self.optional_newline()
+                            continue
+                        if inner.value == "url":
+                            self.consume("KEYWORD", "url")
+                            if self.match_value("KEYWORD", "is"):
+                                url_expr = self.parse_expression()
+                            else:
+                                url_expr = self.parse_expression()
+                            self.optional_newline()
+                            continue
+                        if inner.value == "table":
+                            self.consume("KEYWORD", "table")
+                            if self.match_value("KEYWORD", "is"):
+                                table_tok = self.consume("STRING")
+                            else:
+                                table_tok = self.consume_any({"STRING", "IDENT", "KEYWORD"})
+                            table = table_tok.value
+                            self.optional_newline()
+                            continue
+                        if inner.value == "primary_key":
+                            self.consume("KEYWORD", "primary_key")
+                            pk_tok = self.consume_any({"STRING", "IDENT", "KEYWORD"})
+                            primary_key = pk_tok.value
+                            self.optional_newline()
+                            continue
+                        if inner.value == "delimiter":
+                            self.consume("KEYWORD", "delimiter")
+                            if self.match_value("KEYWORD", "is"):
+                                delim_tok = self.consume("STRING")
+                            else:
+                                delim_tok = self.consume("STRING")
+                            delimiter = delim_tok.value or ","
+                            self.optional_newline()
+                            continue
+                        if inner.value == "has":
+                            self.consume("KEYWORD", "has")
+                            if self.peek().value != "headers":
+                                raise self.error("N3F-1001: invalid frame configuration", self.peek())
+                            self.consume("KEYWORD", "headers")
+                            has_headers = True
+                            self.optional_newline()
+                            continue
+                        raise self.error("N3F-1001: invalid frame configuration", inner)
+                    self.consume("DEDENT")
                     continue
                 if tok.value == "select":
                     self.consume("KEYWORD", "select")
-                    select_cols = []
-                    while True:
-                        col_tok = self.consume_any({"IDENT", "KEYWORD"})
-                        select_cols.append(col_tok.value or "")
-                        if self.match("COMMA"):
-                            continue
-                        break
+                    self.consume("COLON")
+                    self.consume("NEWLINE")
+                    self.consume("INDENT")
+                    self.consume("KEYWORD", "columns")
+                    if self.peek().value in {"are", "is"}:
+                        self.consume_any({"KEYWORD", "IDENT"})
+                    start_list_token = self.peek()
+                    select_cols = self._parse_string_list_literal(start_list_token)
                     self.optional_newline()
+                    self.consume("DEDENT")
                     continue
                 if tok.value == "where":
                     self.consume("KEYWORD", "where")
-                    where_expr = self.parse_expression()
+                    self.consume("COLON")
+                    self.consume("NEWLINE")
+                    self.consume("INDENT")
+                    where_expr = self._parse_expression_block()
                     self.optional_newline()
                     continue
                 raise self.error("N3F-1001: invalid frame configuration", tok)
@@ -2238,6 +2572,7 @@ class Parser:
             source_kind=source_kind,
             source_path=source_path,
             backend=backend,
+            url=url_expr,
             table=table,
             primary_key=primary_key,
             delimiter=delimiter,
@@ -2246,6 +2581,41 @@ class Parser:
             where=where_expr,
             span=self._span(start),
         )
+
+    def _parse_string_list_literal(self, start_token) -> list[str]:
+        lit = self.parse_list_literal()
+        values: list[str] = []
+        for item in lit.items:
+            if isinstance(item, ast_nodes.Literal) and isinstance(item.value, str):
+                values.append(item.value)
+            elif isinstance(item, ast_nodes.Identifier):
+                values.append(item.name)
+            else:
+                raise self.error("Columns must be specified as a list of strings.", start_token)
+        return values
+
+    def _parse_expression_block(self) -> ast_nodes.Expr:
+        start_tok = self.peek()
+        tokens: list[Token] = []
+        depth = 1
+        while depth > 0:
+            tok = self.advance()
+            if tok.type == "INDENT":
+                depth += 1
+                continue
+            if tok.type == "DEDENT":
+                depth -= 1
+                if depth == 0:
+                    break
+                continue
+            if tok.type == "NEWLINE":
+                continue
+            tokens.append(tok)
+        if not tokens:
+            raise self.error("I expected an expression inside this block.", start_tok)
+        tokens.append(Token("EOF", None, tokens[-1].line, tokens[-1].column))
+        sub_parser = Parser(tokens)
+        return sub_parser.parse_expression()
 
     def parse_macro(self) -> ast_nodes.MacroDecl:
         start = self.consume("KEYWORD", "macro")
@@ -4043,6 +4413,8 @@ class Parser:
             "set",
             "query_text",
             "top_k",
+            "pipeline",
+            "question",
             "args",
             "input",
             "by",
@@ -4395,12 +4767,10 @@ class Parser:
                     field_token,
                 )
             if field_token.value == "kind":
-                if not self.match_value("KEYWORD", "is"):
-                    raise self.error(
-                        'kind "ai" is not supported. Write kind is "ai" instead.',
-                        field_token,
-                    )
-                kind_token = self.consume_any({"STRING", "IDENT", "KEYWORD"})
+                if self.match_value("KEYWORD", "is"):
+                    kind_token = self.consume_any({"STRING", "IDENT", "KEYWORD"})
+                else:
+                    kind_token = self.consume_any({"STRING", "IDENT", "KEYWORD"})
                 kind = kind_token.value
                 if kind == "db_get":
                     raise self.error(
@@ -4499,6 +4869,18 @@ class Parser:
                 else:
                     vs_tok = self.consume_string_value(field_token, "vector_store")
                 extra_params["vector_store"] = vs_tok.value
+            elif field_token.value == "pipeline":
+                if self.match_value("KEYWORD", "is"):
+                    pipe_tok = self.consume_any({"STRING", "IDENT", "KEYWORD"})
+                else:
+                    pipe_tok = self.consume_any({"STRING", "IDENT", "KEYWORD"})
+                extra_params["pipeline"] = pipe_tok.value
+            elif field_token.value == "question":
+                if self.match_value("KEYWORD", "is"):
+                    question_expr = self.parse_expression()
+                else:
+                    question_expr = self.parse_expression()
+                extra_params["question"] = question_expr
             elif field_token.value == "tools":
                 if self.match_value("KEYWORD", "is"):
                     mode_tok = self.consume_any({"STRING", "IDENT", "KEYWORD"})
@@ -4549,7 +4931,14 @@ class Parser:
                 extra_params["by_id"] = entries
                 self.optional_newline()
             elif field_token.value == "where":
-                extra_params[field_token.value] = self._parse_where_conditions()
+                if kind == "vector_index_frame":
+                    self.consume("COLON")
+                    self.consume("NEWLINE")
+                    self.consume("INDENT")
+                    extra_params[field_token.value] = self._parse_expression_block()
+                    self.optional_newline()
+                else:
+                    extra_params[field_token.value] = self._parse_where_conditions()
             elif field_token.value in {"values", "set", "args", "input"}:
                 self.consume("COLON")
                 self.consume("NEWLINE")
@@ -4715,6 +5104,8 @@ class Parser:
             raise self.error("N3L-963: Tool call step must specify a target tool.", step_name_token)
         if kind is None:
             raise self.error("Missing 'kind' in step", step_name_token)
+        if target is None and kind in {"vector_query", "vector_index_frame", "rag_query"}:
+            target = step_name_token.value or ""
         if target is None:
             raise self.error("Missing 'target' in step", step_name_token)
         return ast_nodes.FlowStepDecl(

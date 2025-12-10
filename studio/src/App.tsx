@@ -15,16 +15,16 @@ import AgentsDebuggerPanel from "./panels/AgentsDebuggerPanel";
 import { IDEPanel } from "./panels/IDEPanel";
 import { ApiClient } from "./api/client";
 
-const DEFAULT_CODE = `app "support":
-  entry_page "home"
-page "home":
-  route "/"
+const DEFAULT_CODE = `app is "support":
+  entry_page is "home"
+page is "home":
+  route is "/"
   section "hero":
     component "text":
       value "Welcome to Namel3ss"
 model "default":
   provider "openai:gpt-4.1-mini"
-ai "summarise":
+ai is "summarise":
   model "default"
   input from user_message
 `;

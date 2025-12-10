@@ -47,16 +47,15 @@ def test_parse_when_on_step():
             """
                 flow is "register_user":
                   step is "approve":
-                    when is state.age >= 18
-                    kind is "script"
-                    set state.status be "approved"
+                    if state.age is at least 18:
+                      set state.status be "approved"
                 """
             )
         )
     flow = next(d for d in module.declarations if isinstance(d, FlowDecl))
     step: FlowStepDecl = flow.steps[0]
-    assert step.when_expr is not None
-    assert isinstance(step.when_expr, Literal) or True  # ensure parsed
+    assert step.conditional_branches is not None
+    assert step.conditional_branches[0].condition is not None
 
 
 def test_runtime_when_true_false():
@@ -65,14 +64,12 @@ def test_runtime_when_true_false():
             """
                 flow is "register_user":
                   step is "approve":
-                    when is state.age >= 18
-                    kind is "script"
-                    set state.status be "approved"
+                    if state.age is at least 18:
+                      set state.status be "approved"
 
                   step is "reject":
-                    when is state.age < 18
-                    kind is "script"
-                    set state.status be "rejected"
+                    if state.age is less than 18:
+                      set state.status be "rejected"
                 """
             )
         )
@@ -94,9 +91,8 @@ def test_runtime_when_expression_error():
             """
                 flow is "f":
                   step is "bad":
-                    when is unknown_var
-                    kind is "script"
-                    set state.status be "ok"
+                    if unknown_var:
+                      set state.status be "ok"
                 """
             )
         )

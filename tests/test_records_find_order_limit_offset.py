@@ -41,8 +41,9 @@ def _build_engine(program: IRProgram):
 def _base_module() -> str:
     return (
         'frame is "users":\n'
-        '  backend "memory"\n'
-        '  table "users"\n'
+        '  source:\n'
+        '    backend is "memory"\n'
+        '    table is "users"\n'
         "\n"
         'record "User":\n'
         '  frame is "users"\n'

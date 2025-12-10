@@ -48,8 +48,9 @@ def _parse_program(source: str) -> IRProgram:
 def test_bulk_create_uses_state_list_and_returns_rows():
     source = (
         'frame is "users":\n'
-        '  backend "memory"\n'
-        '  table "users"\n'
+        '  source:\n'
+        '    backend is "memory"\n'
+        '    table is "users"\n'
         'record "User":\n'
         '  frame is "users"\n'
         "  fields:\n"
@@ -86,8 +87,9 @@ def test_bulk_create_uses_state_list_and_returns_rows():
 def test_bulk_create_uniqueness_violation_does_not_insert_rows():
     source = (
         'frame is "users":\n'
-        '  backend "memory"\n'
-        '  table "users"\n'
+        '  source:\n'
+        '    backend is "memory"\n'
+        '    table is "users"\n'
         'record "User":\n'
         '  frame is "users"\n'
         "  fields:\n"
@@ -120,8 +122,9 @@ def test_bulk_create_uniqueness_violation_does_not_insert_rows():
 def test_bulk_update_sets_field_for_matching_rows():
     source = (
         'frame is "orders":\n'
-        '  backend "memory"\n'
-        '  table "orders"\n'
+        '  source:\n'
+        '    backend is "memory"\n'
+        '    table is "orders"\n'
         'record "Order":\n'
         '  frame is "orders"\n'
         "  fields:\n"
@@ -165,8 +168,9 @@ def test_bulk_update_sets_field_for_matching_rows():
 def test_bulk_update_uniqueness_violation_aborts_updates():
     source = (
         'frame is "users":\n'
-        '  backend "memory"\n'
-        '  table "users"\n'
+        '  source:\n'
+        '    backend is "memory"\n'
+        '    table is "users"\n'
         'record "User":\n'
         '  frame is "users"\n'
         "  fields:\n"
@@ -209,8 +213,9 @@ def test_bulk_update_uniqueness_violation_aborts_updates():
 def test_bulk_delete_removes_matching_rows():
     source = (
         'frame is "users":\n'
-        '  backend "memory"\n'
-        '  table "users"\n'
+        '  source:\n'
+        '    backend is "memory"\n'
+        '    table is "users"\n'
         'record "User":\n'
         '  frame is "users"\n'
         "  fields:\n"
@@ -254,8 +259,9 @@ def test_bulk_delete_removes_matching_rows():
 def test_bulk_create_source_must_be_list():
     source = (
         'frame is "users":\n'
-        '  backend "memory"\n'
-        '  table "users"\n'
+        '  source:\n'
+        '    backend is "memory"\n'
+        '    table is "users"\n'
         'record "User":\n'
         '  frame is "users"\n'
         "  fields:\n"
@@ -280,8 +286,9 @@ def test_bulk_create_source_must_be_list():
 def test_parser_requires_from_clause_in_bulk_create():
     source = (
         'frame is "users":\n'
-        '  backend "memory"\n'
-        '  table "users"\n'
+        '  source:\n'
+        '    backend is "memory"\n'
+        '    table is "users"\n'
         'record "User":\n'
         '  frame is "users"\n'
         "  fields:\n"
@@ -299,8 +306,9 @@ def test_parser_requires_from_clause_in_bulk_create():
 def test_parser_requires_where_clause_in_bulk_delete():
     source = (
         'frame is "users":\n'
-        '  backend "memory"\n'
-        '  table "users"\n'
+        '  source:\n'
+        '    backend is "memory"\n'
+        '    table is "users"\n'
         'record "User":\n'
         '  frame is "users"\n'
         "  fields:\n"

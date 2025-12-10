@@ -101,9 +101,9 @@ Each block kind has required and optional fields aligned with the current IR:
   - required: `name`, `memory_type` (one of `conversation`, `user`, `global`)
 
 - **frame**
-  - required: `name`, `from file "<path>"`
-  - optional: `with delimiter ","`, `has headers`, `select col1, col2`, `where <expression>`
-  - semantics: loads CSV/tabular data lazily, applies optional `where` filters and `select` projections, and behaves like a list of record rows in expressions, filters/maps, aggregates, and loops.
+  - required: `frame is "name":` with a `source:` block using either `from file "path.csv"` **or** `backend is "memory" | "sqlite" | "postgres"` plus `table is "name"`.
+  - optional: `select:` with `columns are ["col1", "col2"]`; `where:` block using boolean expressions such as `row.status is "active"`.
+  - semantics: loads tabular data lazily, applies optional `where` filters and `select` projections, and behaves like a list of record rows in expressions, filters/maps, aggregates, and loops.
 - **macro**
   - required: `name`, `using ai "<model>"`, `description`
   - optional: `sample`, `parameters`
@@ -427,23 +427,126 @@ All of these surfaces honour the configured scopes, retention filtering, and PII
   - Top-level `settings:` with nested `env "name":` blocks containing `key be expr` entries. Duplicate envs raise `N3-6200`; duplicate keys inside an env raise `N3-6201`.
   - Optional `theme:` block: `<token> color be "<value>"` entries define UI theme tokens (e.g., `primary`, `accent`) for use in styling.
 - Frames (data sources):
-  - Legacy and English forms are equivalent:
-    - `frame "documents": backend "default_db" table "documents"`
-    - `frame is "documents": backend is "default_db" table is "documents"`
-  - Additional fields: `primary_key`, `select`, `where`, CSV options (`with delimiter ","`, `has headers`).
+  - English-only surface:
+    - File source: 
+      ```
+      frame is "documents":
+        source:
+          from file "documents.csv"
+          has headers
+          delimiter is ","
+        select:
+          columns are ["id", "title", "content"]
+        where:
+          row.title is not null
+      ```
+    - Backend source:
+      ```
+      frame is "orders":
+        source:
+          backend is "postgres"
+          url is env.DATABASE_URL
+          table is "orders"
+      ```
+  - Optional: `select:` to project specific columns; `where:` block must be boolean. Supported backends: memory, sqlite, postgres.
 - Vector stores (RAG foundations):
   - Declare a semantic index over a frame:
-    - `vector_store "kb": backend "default_vector" frame "documents" text_column "content" id_column "id" embedding_model "default_embedding"`
-    - or English style: `vector_store is "kb": backend is "default_vector" frame is "documents" text_column is "content" id_column is "id" embedding_model is "default_embedding"`
-  - The embedding model resolves through the multi-provider registry (must be an embedding model).
-  - Backends may be in-memory or external (e.g., pgvector) depending on configuration.
-  - Ingestion/indexing: `vector_index_frame` flow steps embed `text_column` from the attached frame (optionally filtered with `where`) and upsert vectors keyed by `id_column` into the vector backend. Both classic and English forms are equivalent:
-    - `kind "vector_index_frame" vector_store "kb" [where: ...]`
-    - `kind is "vector_index_frame" vector_store is "kb" [where: ...]`
-  - Retrieval (RAG query): `vector_query` flow steps embed a query, run similarity search, and return matches plus a concatenated `context` string you can pass to an AI step:
-    - `kind "vector_query" vector_store "kb" query_text state.question top_k 5`
-    - or English form: `kind is "vector_query" vector_store is "kb" query_text is state.question top_k 5`
-  - Typical pattern: index documents with `vector_index_frame`, then in a flow run `vector_query` and feed `step "retrieve" output.context` into an `ai` step alongside the user question.
+    ```
+    vector_store is "kb":
+      backend is "memory"  # or "pgvector"/"faiss"
+      frame is "documents"
+      text_column is "content"
+      id_column is "id"
+      embedding_model is "default_embedding"
+      metadata_columns are ["title"]
+    ```
+  - The embedding model must be an embedding-capable model. Supported backends: memory, pgvector, faiss.
+  - Ingestion/indexing: 
+    ```
+    step is "index":
+      kind is "vector_index_frame"
+      vector_store is "kb"
+      where:
+        row.category is "faq"
+    ```
+  - Retrieval (RAG query):
+    ```
+    step is "retrieve":
+      kind is "vector_query"
+      vector_store is "kb"
+      query_text is state.question
+      top_k is 5
+    ```
+    Returns `matches` and `context` you can pass to an AI step.
+- RAG pipelines (declarative retrieval flows):
+  - Top-level reusable pipeline:
+    ```
+    rag pipeline is "support_kb":
+      use vector_store "kb"
+      stage is "rewrite_query":
+        type is "ai_rewrite"
+        ai is "rewrite_ai"
+      stage is "retrieve":
+        type is "vector_retrieve"
+        top_k is 10
+      stage is "answer":
+        type is "ai_answer"
+        ai is "qa_ai"
+    ```
+  - Stage palette:
+    - `ai_rewrite` (requires `ai`), rewrites the incoming question.
+    - `multi_query` (requires `ai`, optional `max_queries`, default 4) generates alternate query strings; `vector_retrieve` will fan out across them.
+    - `query_decompose` (requires `ai`, optional `max_subquestions`, default 3) generates subquestions; `vector_retrieve` runs once per subquestion.
+    - `query_route` (requires `ai` and `choices are ["..."]`) chooses one or more vector stores; downstream `vector_retrieve` uses the routed stores when no explicit `vector_store` is set.
+    - `vector_retrieve` (requires `vector_store` or pipeline default, unless routed) with optional `top_k` (default 5) and optional `where:` metadata filter. When `queries`/`subquestions` are present, it retrieves for each and aggregates matches.
+    - `ai_rerank` (requires `ai`) with optional `top_k`.
+    - `fusion` (requires `from stages are ["retrieve_a", ...]`, optional `top_k`, default 5, optional `method is "rrf"`) merges matches from earlier retrieval stages.
+    - `context_compress` with optional `max_tokens`.
+    - `ai_answer` (requires `ai`) to produce the final answer.
+  - Invoke from a flow with `rag_query`:
+    ```
+    step is "answer":
+      kind is "rag_query"
+      pipeline is "support_kb"
+      question is state.question
+    ```
+    Missing `pipeline`, unknown pipelines, or non-string `question` values surface clear errors at validation or runtime.
+  - Advanced pipeline example with query expansion and fusion:
+    ```
+    rag pipeline is "fusion_kb":
+      use vector_store "kb"
+      stage is "expand":
+        type is "multi_query"
+        ai is "rewrite_ai"
+        max_queries is 4
+      stage is "retrieve":
+        type is "vector_retrieve"
+        top_k is 6
+      stage is "fusion":
+        type is "fusion"
+        from stages are ["retrieve"]
+        top_k is 5
+      stage is "answer":
+        type is "ai_answer"
+        ai is "qa_ai"
+    ```
+
+- RAG evaluation:
+  - Declare an evaluation that ties a pipeline to a dataset frame:
+    ```
+    rag evaluation is "support_eval":
+      pipeline is "support_kb"
+      dataset:
+        from frame "eval_questions"
+        question_column is "question"
+        answer_column is "expected_answer"
+      metrics:
+        - context_relevance
+        - answer_faithfulness
+        - answer_completeness
+    ```
+  - `dataset:` uses a frame for questions and optional expected answers. Metrics default to the three listed above if omitted.
+  - Run with `n3 rag-eval support_eval --file path/to/file.ai`; use `--limit N` to subset rows or `--output json` for machine-readable output.
 - UI pages & layout:
   - `page is "name" at "/route":` defines a UI page. Layout elements: `section`, `heading`, `text`, `image`, `use form`, `state`, `input`, `button`, `when ... show ... otherwise ...`.
   - Styling directives inside pages/sections/elements: `color is <token|string>`, `background color is ...`, `align is left|center|right`, `align vertically is top|middle|bottom`, `layout is row|column|two columns|three columns`, `padding|margin|gap is small|medium|large`.

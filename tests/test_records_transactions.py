@@ -49,16 +49,19 @@ def _parse_program(source: str):
 BASE_DEFS = dedent(
     """
     frame is "users":
-      backend "memory"
-      table "users"
+      source:
+        backend is "memory"
+        table is "users"
 
     frame is "orders":
-      backend "memory"
-      table "orders"
+      source:
+        backend is "memory"
+        table is "orders"
 
     frame is "logs":
-      backend "memory"
-      table "logs"
+      source:
+        backend is "memory"
+        table is "logs"
 
     record "User":
       frame is "users"

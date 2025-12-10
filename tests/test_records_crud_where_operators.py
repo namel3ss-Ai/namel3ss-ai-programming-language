@@ -41,8 +41,9 @@ def _build_engine(program: IRProgram):
 def test_where_operators_cover_comparisons_and_in():
     module = parse_source(
         'frame is "users":\n'
-        '  backend "memory"\n'
-        '  table "users"\n'
+        '  source:\n'
+        '    backend is "memory"\n'
+        '    table is "users"\n'
         "\n"
         'record "User":\n'
         '  frame is "users"\n'
@@ -157,8 +158,9 @@ def test_where_operators_cover_comparisons_and_in():
 def test_where_invalid_operator_has_clear_error():
     bad_source = (
         'frame is "users":\n'
-        '  backend "memory"\n'
-        '  table "users"\n'
+        '  source:\n'
+        '    backend is "memory"\n'
+        '    table is "users"\n'
         "\n"
         'record "User":\n'
         '  frame is "users"\n'

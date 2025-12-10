@@ -114,8 +114,9 @@ Frames load tabular data and behave like collections of records in pipelines:
 
 ```ai
 frame is "sales_data":
-  from file "data/sales.csv"
-  has headers
+  source:
+    from file "data/sales.csv"
+    has headers
 
 let be_customers be sales_data:
   keep rows where row.country is "BE"

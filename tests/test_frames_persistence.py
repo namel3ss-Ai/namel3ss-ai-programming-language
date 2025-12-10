@@ -41,20 +41,21 @@ def _build_engine(program: IRProgram):
 def test_parse_frame_and_steps():
     module = parse_source(
         'frame is "conversations":\n'
-        '  backend "memory"\n'
-        '  table "conversations"\n'
+        '  source:\n'
+        '    backend is "memory"\n'
+        '    table is "conversations"\n'
         '\n'
-        'flow is "log_and_load":\n'
-        '  step is "store":\n'
-        '    kind "frame_insert"\n'
-        '    frame is "conversations"\n'
-        '    values:\n'
-        '      message: "hi"\n'
-        '  step is "load":\n'
-        '    kind "frame_query"\n'
-        '    frame is "conversations"\n'
-        '    where:\n'
-        '      message: "hi"\n'
+'flow is "log_and_load":\n'
+'  step is "store":\n'
+'    kind is "frame_insert"\n'
+'    frame is "conversations"\n'
+'    values:\n'
+'      message: "hi"\n'
+'  step is "load":\n'
+'    kind is "frame_query"\n'
+'    frame is "conversations"\n'
+'    where:\n'
+'      message is "hi"\n'
     )
     flow = next(d for d in module.declarations if isinstance(d, ast_nodes.FlowDecl))
     step = flow.steps[0]
@@ -141,4 +142,5 @@ def test_runtime_filtered_query():
     engine, runtime_ctx = _build_engine(program)
     result = engine.run_flow(flow, runtime_ctx.execution_context, initial_state={})
     rows = result.state.get("last_output")
-    assert rows and rows[0]["user_id"] == 2 and rows[0]["message"] == "b"
+    assert isinstance(rows, dict)
+    assert rows.get("user_id") == 2 and rows.get("message") == "b"

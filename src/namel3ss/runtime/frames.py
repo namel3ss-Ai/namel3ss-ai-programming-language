@@ -13,6 +13,9 @@ from .expressions import EvaluationError, ExpressionEvaluator, VariableEnvironme
 class FrameSpec:
     name: str
     path: str | None = None
+    backend: str | None = None
+    url: Any | None = None
+    table: str | None = None
     delimiter: str | None = None
     has_headers: bool = False
     select_cols: list[str] | None = None
@@ -34,8 +37,8 @@ class FrameRegistry:
         if name not in self.frames:
             raise Namel3ssError("N3F-1100: frame not defined")
         frame = self.frames[name]
-        backend = getattr(frame, "backend", None) or ("file" if getattr(frame, "path", None) else "memory")
-        if backend != "file":
+        backend = getattr(frame, "backend", None) or getattr(frame, "source_kind", None) or ("file" if getattr(frame, "path", None) else "memory")
+        if backend != "file" and backend != "file_source":
             # Memory-backed frames live in the in-memory store and should reflect current values.
             return list(self._store.get(name, []))
         if name in self._cache:
@@ -47,7 +50,9 @@ class FrameRegistry:
     def _load_frame(self, frame: Any) -> List[Any]:
         path = getattr(frame, "path", None)
         if not path:
-            raise Namel3ssError("N3F-1000: frame source missing")
+            raise Namel3ssError(
+                f"Frame '{getattr(frame, 'name', '')}' needs a data source. Add a 'source:' block with 'from file \"...\"'."
+            )
         delimiter = getattr(frame, "delimiter", None) or ","
         try:
             with open(path, newline="", encoding="utf-8") as fh:
@@ -58,12 +63,15 @@ class FrameRegistry:
                     if select_cols:
                         for col in select_cols:
                             if col not in headers:
-                                raise Namel3ssError("N3F-1002: unknown column in select")
+                                available = ", ".join(headers)
+                                raise Namel3ssError(
+                                    f"N3F-1002: Frame '{getattr(frame, 'name', '')}' selects column '{col}', but that column does not exist in the source. Available columns are: {available}."
+                                )
                     rows: list[dict] = []
                     for raw in reader:
                         row = {k: self._coerce_value(v) for k, v in (raw or {}).items()}
                         if getattr(frame, "where", None) is not None:
-                            if not self._eval_where(frame.where, row):
+                            if not self._eval_where(frame.where, row, getattr(frame, "name", "")):
                                 continue
                         if select_cols:
                             row = {col: row.get(col) for col in select_cols}
@@ -75,9 +83,13 @@ class FrameRegistry:
                     for raw in reader:
                         values = [self._coerce_value(v) for v in raw]
                         if getattr(frame, "select_cols", None):
-                            raise Namel3ssError("N3F-1001: select requires headers")
+                            raise Namel3ssError(
+                                f"N3F-1001: Frame '{getattr(frame, 'name', '')}' selects columns but no headers are available. Add 'has headers' to use select."
+                            )
                         if getattr(frame, "where", None) is not None:
-                            raise Namel3ssError("N3F-1001: where requires headers")
+                            raise Namel3ssError(
+                                f"N3F-1001: Frame '{getattr(frame, 'name', '')}' cannot use a where clause without headers."
+                            )
                         rows.append(values)
                     return rows
         except Namel3ssError:
@@ -101,15 +113,24 @@ class FrameRegistry:
         frame = self.frames.get(name)
         if not frame:
             raise Namel3ssError(f"N3L-830: Frame '{name}' is not declared.")
-        backend = getattr(frame, "backend", None) or ("file" if getattr(frame, "path", None) else "memory")
-        conditions = self._normalize_conditions(filters)
+        backend = (
+            getattr(frame, "backend", None)
+            or getattr(frame, "source_kind", None)
+            or ("file" if getattr(frame, "path", None) else "memory")
+        )
+        use_expr_filter = filters is not None and not isinstance(filters, (dict, list))
+        conditions = None if use_expr_filter else self._normalize_conditions(filters)
         if backend == "file":
             rows = self.get_rows(name)
             if isinstance(rows, list) and rows and isinstance(rows[0], dict):
-                return [r for r in rows if self._row_matches(r, conditions)]
+                if use_expr_filter:
+                    return [r for r in rows if self._eval_where(filters, r, name)]
+                return [r for r in rows if self._row_matches(r, conditions or [])]
             return rows
         data = self._store.get(name, [])
-        return [r for r in data if self._row_matches(r, conditions)]
+        if use_expr_filter:
+            return [r for r in data if self._eval_where(filters, r, name)]
+        return [r for r in data if self._row_matches(r, conditions or [])]
 
     def update(self, name: str, filters: dict | None, updates: dict) -> int:
         frame = self.frames.get(name)
@@ -148,15 +169,25 @@ class FrameRegistry:
             return
         self._store = {name: [dict(row) for row in rows] for name, rows in snapshot.items()}
 
-    def _eval_where(self, expr: ast_nodes.Expr, row: dict) -> bool:
-        env = VariableEnvironment(dict(row))
-        evaluator = ExpressionEvaluator(env, resolver=lambda name: (True, row.get(name)))
+    def _eval_where(self, expr: ast_nodes.Expr, row: dict, frame_name: str) -> bool:
+        env = VariableEnvironment({"row": row, **dict(row)})
+        def _resolver(name: str):
+            if name == "row":
+                return True, row
+            if isinstance(row, dict) and name in row:
+                return True, row.get(name)
+            if env.has(name):
+                return True, env.resolve(name)
+            return False, None
+        evaluator = ExpressionEvaluator(env, resolver=_resolver)
         try:
             val = evaluator.evaluate(expr)
         except EvaluationError as exc:
             raise Namel3ssError(str(exc))
         if not isinstance(val, bool):
-            raise Namel3ssError("N3F-1003: where clause must be boolean")
+            raise Namel3ssError(
+                f"N3F-1003: The 'where' clause on frame '{frame_name}' must be a boolean expression."
+            )
         return bool(val)
 
     def _coerce_value(self, value: Any) -> Any:

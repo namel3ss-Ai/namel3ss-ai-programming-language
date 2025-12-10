@@ -84,7 +84,7 @@ Cross-reference: parser (app/page/ai/flow/UI) in `src/namel3ss/parser.py`; runti
 - **Flows:** Ordered steps; each step has a `kind` (`ai`, `set`, `db_*`, `vector_*`, `tool`, `auth_*`, etc.).
 - **AI Blocks:** Named models with `system` prompts, optional `memory` and `tools`.
 - **Memory:** Short-term chat history, long-term summaries, and profile facts.
-- **Data & RAG:** `frame` (table), `vector_store` (embeddings), `vector_index_frame` and `vector_query` steps.
+- **Data & RAG:** `frame` (source block pointing at file/backend), `vector_store` (embeddings), `vector_index_frame` and `vector_query` steps.
 - **Records & CRUD:** Typed records over frames plus `db_create/get/update/delete`.
 - **Tools:** Declare HTTP JSON tools; use `kind is "tool"` steps or allow AI tool-calling.
 - **Auth:** Configure user model; use `auth_register/login/logout`; access `user.*`.
@@ -690,7 +690,7 @@ Cross-reference: parser and runtime modules from earlier chapters; tests across 
 - **AI:** `ai is "name": model is "..."; system is "..."; input from <expr>; tools: ["tool_a"]; memory: ...; temperature/top_p if supported; streaming flags on steps.`
 - **Memory:** Declare `memory is "name": type is "conversation"`; in AI `memory: kinds: short_term/long_term/profile` with `window`, `store`, `scope`, `retention_days`, `pii_policy`, `pipeline`; `recall` list.
 - **Flows:** `flow is "name": step is "s": kind is "..."; when <expr>; for each <var> in <expr>: ...; on error: ...; let <local> be ...; set state.<field> be ...; read `step.<name>.output`.
-- **Data & RAG:** `frame is "name": backend/table`; `vector_store is "name": frame is "..."; text_column/id_column/embedding_model`; steps `vector_index_frame`, `vector_query`.
+- **Data & RAG:** `frame is "name": source:` with file/backend; `vector_store is "name": frame is "..."; text_column/id_column/embedding_model`; steps `vector_index_frame`, `vector_query`.
 - **Records & CRUD:** `record is "Name": frame is "..."; fields: <field>: type/primary_key/required/default`; steps `db_create`, `db_update`, `db_delete` with `values`, `by id`, `set`, and English `find <alias> where:` for querying with filters, ordering, and pagination.
 - **Tools:** `tool is "name": kind is "http_json"; method/url/query/headers/body`; flow step `kind is "tool"` with `input`; AI `tools` list for tool-calling.
 - **Auth:** `auth:` with `user_record`, `id_field`, `identifier_field`, `password_hash_field`; steps `auth_register/login/logout`; expressions under `user.*`.

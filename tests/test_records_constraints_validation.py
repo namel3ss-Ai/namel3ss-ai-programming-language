@@ -49,8 +49,9 @@ def _parse_program(source: str):
 BASE_DEFS = dedent(
     """
     frame is "products":
-      backend "memory"
-      table "products"
+      source:
+        backend is "memory"
+        table is "products"
 
     record "Product":
       frame is "products"
@@ -434,8 +435,9 @@ def test_ir_rejects_length_on_int_field():
     bad_source = dedent(
         """
         frame is "numbers":
-          backend "memory"
-          table "numbers"
+          source:
+            backend is "memory"
+            table is "numbers"
 
         record "Value":
           frame is "numbers"
@@ -458,8 +460,9 @@ def test_ir_rejects_empty_enum_list():
     bad_source = dedent(
         """
         frame is "statuses":
-          backend "memory"
-          table "statuses"
+          source:
+            backend is "memory"
+            table is "statuses"
 
         record "Status":
           frame is "statuses"
@@ -482,8 +485,9 @@ def test_ir_rejects_pattern_on_non_string():
     bad_source = dedent(
         """
         frame is "data":
-          backend "memory"
-          table "data"
+          source:
+            backend is "memory"
+            table is "data"
 
         record "Sample":
           frame is "data"

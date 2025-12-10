@@ -147,13 +147,13 @@ class MacroExpander:
             f"get_{slug}",
         ]
         for flow_name in flow_names:
-            lines.append(f'flow "{flow_name}":')
-            lines.append('  step "start":')
+            lines.append(f'flow is "{flow_name}":')
+            lines.append('  step is "start":')
             lines.append(f'    log info "{flow_name} step"')
             lines.append("")
 
         # Pages
-        lines.append(f'page "{plural}_list" at "/{plural}":')
+        lines.append(f'page is "{plural}_list" at "/{plural}":')
         lines.append("  layout is column")
         lines.append("  padding is medium")
         lines.append(f'  heading "{entity} List"')
@@ -165,7 +165,7 @@ class MacroExpander:
         lines.append("")
 
         # Create page
-        lines.append(f'page "create_{slug}" at "/{plural}/create":')
+        lines.append(f'page is "create_{slug}" at "/{plural}/create":')
         lines.append("  layout is column")
         lines.append("  padding is medium")
         lines.append(f'  heading "Create {entity}"')
@@ -182,7 +182,7 @@ class MacroExpander:
         lines.append("")
 
         # Edit page
-        lines.append(f'page "edit_{slug}" at "/{plural}/edit":')
+        lines.append(f'page is "edit_{slug}" at "/{plural}/edit":')
         lines.append("  layout is column")
         lines.append("  padding is medium")
         lines.append(f'  heading "Edit {entity}"')
@@ -200,7 +200,7 @@ class MacroExpander:
         lines.append("")
 
         # Detail page
-        lines.append(f'page "{slug}_detail" at "/{plural}/detail":')
+        lines.append(f'page is "{slug}_detail" at "/{plural}/detail":')
         lines.append("  layout is column")
         lines.append("  padding is medium")
         lines.append(f'  heading "{entity} Detail"')
@@ -212,7 +212,7 @@ class MacroExpander:
         lines.append("")
 
         # Delete confirm page
-        lines.append(f'page "delete_{slug}" at "/{plural}/delete":')
+        lines.append(f'page is "delete_{slug}" at "/{plural}/delete":')
         lines.append("  layout is column")
         lines.append("  padding is medium")
         lines.append(f'  heading "Delete {entity}"')

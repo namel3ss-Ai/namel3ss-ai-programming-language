@@ -1,8 +1,8 @@
-app "Simple App":
+app is "Simple App":
   entry_page "main"
   description "Minimal page with a welcome message."
 
-page "main":
+page is "main":
   route "/"
   title "Hello, Namel3ss"
   section "welcome":

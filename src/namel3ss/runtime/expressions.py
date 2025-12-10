@@ -289,6 +289,29 @@ class ExpressionEvaluator:
             if expr.key is None:
                 raise EvaluationError("has key ... on ... requires a key literal.")
             return expr.key in record_val
+        if isinstance(expr, ast_nodes.CollectionPipeline):
+            ir_steps = []
+            for step in expr.steps:
+                if isinstance(step, ast_nodes.CollectionKeepRowsStep):
+                    ir_steps.append(IRCollectionKeepRowsStep(condition=step.condition))
+                elif isinstance(step, ast_nodes.CollectionDropRowsStep):
+                    ir_steps.append(IRCollectionDropRowsStep(condition=step.condition))
+                elif isinstance(step, ast_nodes.CollectionGroupByStep):
+                    ir_steps.append(IRCollectionGroupByStep(key=step.key, body=getattr(step, "body", []) or []))
+                elif isinstance(step, ast_nodes.CollectionSortStep):
+                    ir_steps.append(
+                        IRCollectionSortStep(
+                            kind=getattr(step, "kind", "rows"),
+                            key=step.key,
+                            direction=getattr(step, "direction", "asc"),
+                        )
+                    )
+                elif isinstance(step, ast_nodes.CollectionTakeStep):
+                    ir_steps.append(IRCollectionTakeStep(count=step.count))
+                elif isinstance(step, ast_nodes.CollectionSkipStep):
+                    ir_steps.append(IRCollectionSkipStep(count=step.count))
+            ir_pipeline = IRCollectionPipeline(source=expr.source, steps=ir_steps)
+            return self._eval_collection_pipeline(ir_pipeline)
         if isinstance(expr, IRCollectionPipeline):
             return self._eval_collection_pipeline(expr)
         if isinstance(expr, ast_nodes.FilterExpression):

@@ -8,8 +8,9 @@
 Example (ingest + answer):
 ```ai
 frame is "docs":
-  backend is "memory"
-  table is "docs"
+  source:
+    backend is "memory"
+    table is "docs"
 
 vector_store is "kb":
   backend is "memory"

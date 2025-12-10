@@ -3,16 +3,19 @@ app is "transactions_demo":
   description "Demonstrates transaction: blocks for record writes."
 
 frame is "users":
-  backend "memory"
-  table "users"
+  source:
+    backend is "memory"
+    table is "users"
 
 frame is "orders":
-  backend "memory"
-  table "orders"
+  source:
+    backend is "memory"
+    table is "orders"
 
 frame is "audit_logs":
-  backend "memory"
-  table "audit_logs"
+  source:
+    backend is "memory"
+    table is "audit_logs"
 
 record "User":
   frame is "users"

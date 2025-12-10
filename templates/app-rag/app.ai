@@ -1,7 +1,7 @@
-app "docs":
+app is "docs":
   entry_page "home"
 
-page "home":
+page is "home":
   route "/"
   section "upload":
     component "file-upload":
@@ -13,11 +13,11 @@ page "home":
 model "default":
   provider "dummy"
 
-ai "rewrite":
+ai is "rewrite":
   model "default"
   input from user_input
 
-flow "answer":
+flow is "answer":
   step "rewrite":
     kind "ai"
     target "rewrite"

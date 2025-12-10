@@ -6,7 +6,7 @@ from namel3ss import parser
 from namel3ss.ast_nodes import FlowDecl
 from namel3ss.flows.engine import FlowEngine
 from namel3ss.flows.graph import FlowState
-from namel3ss.ir import ast_to_ir
+from namel3ss.ir import ast_to_ir, IRError
 from namel3ss.agent.engine import AgentRunner
 from namel3ss.ai.registry import ModelRegistry
 from namel3ss.ai.router import ModelRouter
@@ -29,7 +29,7 @@ flow is "index_filtered_documents":
     kind is "vector_index_frame"
     vector_store is "kb"
     where:
-      project_id: state.project_id
+      row.project_id is state.project_id
 '''
     )
     flows = [d for d in module.declarations if isinstance(d, FlowDecl)]
@@ -38,7 +38,7 @@ flow is "index_filtered_documents":
     assert f1.steps[0].kind == "vector_index_frame"
     assert f1.steps[0].params.get("vector_store") == "kb"
     assert f2.steps[0].kind == "vector_index_frame"
-    assert "project_id" in f2.steps[0].params.get("where", {})
+    assert f2.steps[0].params.get("where") is not None
 
 
 class FakeEmbeddingClient(EmbeddingClient):
@@ -71,8 +71,9 @@ def test_vector_index_flow_indexes_rows():
     module = parser.parse_source(
         '''
 frame is "docs":
-  backend "memory"
-  table "docs"
+  source:
+    backend is "memory"
+    table is "docs"
 
 vector_store is "kb":
   backend "memory"
@@ -100,7 +101,7 @@ flow is "index_docs":
     kind "vector_index_frame"
     vector_store is "kb"
     where:
-      project_id: 42
+      row.project_id is 42
 '''
     )
     ir = ast_to_ir(module)
@@ -109,7 +110,7 @@ flow is "index_docs":
 
     orig_build = engine._build_runtime_context
 
-    def patched_build(ctx):
+    def patched_build(ctx, stream_callback=None):
         runtime_ctx = orig_build(ctx)
         # share a deterministic backend and embedding client
         vec_registry: VectorStoreRegistry = runtime_ctx.vectorstores
@@ -139,8 +140,9 @@ def test_vector_index_unknown_store_errors():
     module = parser.parse_source(
         '''
 frame is "docs":
-  backend "memory"
-  table "docs"
+  source:
+    backend is "memory"
+    table is "docs"
 
 flow is "index_docs":
   step is "index":
@@ -153,3 +155,16 @@ flow is "index_docs":
         engine = _build_engine(ir)
         exec_ctx = ExecutionContext(app_name="test", request_id="req")
         engine.run_flow(ir.flows["index_docs"], exec_ctx, initial_state={})
+
+
+def test_vector_index_requires_vector_store_field():
+    module = parser.parse_source(
+        '''
+flow is "index_docs":
+  step is "index":
+    kind is "vector_index_frame"
+'''
+    )
+    with pytest.raises(IRError) as exc:
+        ast_to_ir(module)
+    assert "must specify a 'vector_store'" in str(exc.value)

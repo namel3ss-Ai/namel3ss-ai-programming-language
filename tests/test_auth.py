@@ -52,8 +52,9 @@ def _engine_and_context(program: IRProgram):
 def test_parse_auth_config():
     module = parse_source(
         'frame is "users":\n'
-        '  backend "memory"\n'
-        '  table "users"\n'
+        '  source:\n'
+        '    backend is "memory"\n'
+        '    table is "users"\n'
         "\n"
         'record "User":\n'
         '  frame is "users"\n'

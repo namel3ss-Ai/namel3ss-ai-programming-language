@@ -1,7 +1,9 @@
 frame is "sales_data":
-  from file "sales.csv"
-  has headers
-  select region, revenue, country
+  source:
+    from file "sales.csv"
+    has headers
+  select:
+    columns are ["region", "revenue", "country"]
 
 flow is "be_revenue":
   step is "filter":
@@ -12,7 +14,7 @@ flow is "be_revenue":
     repeat for each row in be_sales:
       set total be total + row.revenue
 
-    log info "Total BE revenue" with { total: total }
+    log info "Total BE revenue"
 
     repeat for each row in be_sales:
-      log info "Row" with { region: row.region, revenue: row.revenue }
+      log info "Row for " + row.region

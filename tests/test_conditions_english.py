@@ -85,6 +85,7 @@ def test_runtime_condition_branch_selection_and_trace():
     ir_prog = ast_to_ir(module)
     tracer = Tracer()
     ctx = ExecutionContext(app_name="test", request_id="req-1", tracer=tracer)
+    ctx.variables.update({"result": {"category": "billing"}})
     engine = _make_engine(ir_prog)
     flow = ir_prog.flows["support_flow"]
     result = engine.run_flow(flow, ctx, initial_state={"result": {"category": "billing"}})
@@ -106,13 +107,14 @@ def test_when_runs_single_branch():
         '  the personality is "polite"\n'
         'flow is "vip_flow":\n'
         '  step is "maybe_escalate":\n'
-        '    when user.is_vip is "true":\n'
+        '    if user.is_vip is "true":\n'
         '      do agent "vip_agent"\n'
     )
     module = parse_source(source)
     ir_prog = ast_to_ir(module)
     tracer = Tracer()
     ctx = ExecutionContext(app_name="test", request_id="req-2", tracer=tracer)
+    ctx.variables.update({"user": {"is_vip": "true"}})
     engine = _make_engine(ir_prog)
     flow = ir_prog.flows["vip_flow"]
     engine.run_flow(flow, ctx, initial_state={"user": {"is_vip": "true"}})

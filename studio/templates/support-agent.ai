@@ -4,21 +4,21 @@ memory "support_memory":
 model "support-llm":
   provider "openai"
 
-ai "classify_issue":
+ai is "classify_issue":
   model "support-llm"
   input from "user_input"
   description "Classify the user's support request."
 
-ai "kb_reader":
+ai is "kb_reader":
   model "support-llm"
   input from "user_input"
   description "Suggest a KB snippet or next action."
 
-agent "support_agent":
+agent is "support_agent":
   goal "Assist users by classifying issues, retrieving KB snippets, and advising next steps."
   personality "reassuring and efficient"
 
-flow "support_flow":
+flow is "support_flow":
   description "Classify the request, check ticket status, consult KB, and respond."
   step "categorize":
     kind "ai"
@@ -34,11 +34,11 @@ flow "support_flow":
     kind "agent"
     target "support_agent"
 
-app "support_app":
+app is "support_app":
   entry_page "support"
   description "AI support assistant with tool calls and KB lookup."
 
-page "support":
+page is "support":
   route "/support"
   title "Support Assistant"
   section "intro":

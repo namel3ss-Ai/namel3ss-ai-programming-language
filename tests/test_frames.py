@@ -1,7 +1,7 @@
 import pytest
 
 from namel3ss.errors import Namel3ssError
-from namel3ss.ir import ast_to_ir
+from namel3ss.ir import ast_to_ir, IRError
 from namel3ss.parser import parse_source
 from namel3ss.runtime.expressions import ExpressionEvaluator, VariableEnvironment
 from namel3ss.runtime.frames import FrameRegistry
@@ -18,7 +18,8 @@ def _resolver_from_env(env: VariableEnvironment):
 def test_parse_frame_minimal():
     src = (
         'frame is "sales":\n'
-        f'  from file "{FIXTURE_PATH}"\n'
+        "  source:\n"
+        f'    from file "{FIXTURE_PATH}"\n'
     )
     module = parse_source(src)
     frame = next(d for d in module.declarations if isinstance(d, ast_nodes.FrameDecl))
@@ -32,11 +33,14 @@ def test_parse_frame_minimal():
 def test_parse_frame_full_config():
     src = (
         'frame is "sales":\n'
-        f'  from file "{FIXTURE_PATH}"\n'
-        '  with delimiter ","\n'
-        "  has headers\n"
-        "  select region, revenue, country\n"
-        '  where country is "BE"\n'
+        "  source:\n"
+        f'    from file "{FIXTURE_PATH}"\n'
+        '    has headers\n'
+        '    delimiter is ","\n'
+        "  select:\n"
+        '    columns are ["region", "revenue", "country"]\n'
+        "  where:\n"
+        '    row.country is \"BE\"\n'
     )
     module = parse_source(src)
     frame = next(d for d in module.declarations if isinstance(d, ast_nodes.FrameDecl))
@@ -46,13 +50,39 @@ def test_parse_frame_full_config():
     assert isinstance(frame.where, ast_nodes.Expr)
 
 
+def test_frame_missing_source_errors():
+    src = (
+        'frame is "missing_source":\n'
+        "  select:\n"
+        '    columns are ["id"]\n'
+    )
+    with pytest.raises(IRError) as exc:
+        ast_to_ir(parse_source(src))
+    assert "needs a data source" in str(exc.value)
+
+
+def test_frame_rejects_unsupported_backend():
+    src = (
+        'frame is "bad_backend":\n'
+        "  source:\n"
+        '    backend is "oracle"\n'
+        '    table is "t1"\n'
+    )
+    with pytest.raises(IRError) as exc:
+        ast_to_ir(parse_source(src))
+    assert "not supported" in str(exc.value)
+
+
 def test_frame_loading_and_aggregate_sum():
     src = (
         'frame is "sales_data":\n'
-        f'  from file "{FIXTURE_PATH}"\n'
-        "  has headers\n"
-        "  select region, revenue, country\n"
-        '  where country is "BE"\n'
+        "  source:\n"
+        f'    from file \"{FIXTURE_PATH}\"\n'
+        "    has headers\n"
+        "  select:\n"
+        '    columns are ["region", "revenue", "country"]\n'
+        "  where:\n"
+        '    row.country is \"BE\"\n'
     )
     program = ast_to_ir(parse_source(src))
     registry = FrameRegistry(program.frames)
@@ -89,8 +119,9 @@ def test_all_expression_with_frame_where():
     let_stmt = flow.steps[0].statements[0]
     program = ast_to_ir(parse_source(
         'frame is "sales_data":\n'
-        f'  from file "{FIXTURE_PATH}"\n'
-        "  has headers\n"
+        "  source:\n"
+        f'    from file "{FIXTURE_PATH}"\n'
+        "    has headers\n"
     ))
     registry = FrameRegistry(program.frames)
     rows = registry.get_rows("sales_data")
@@ -104,9 +135,11 @@ def test_all_expression_with_frame_where():
 def test_unknown_select_column_raises():
     src = (
         'frame is "bad":\n'
-        f'  from file "{FIXTURE_PATH}"\n'
-        "  has headers\n"
-        "  select missing\n"
+        "  source:\n"
+        f'    from file "{FIXTURE_PATH}"\n'
+        "    has headers\n"
+        "  select:\n"
+        '    columns are ["missing"]\n'
     )
     program = ast_to_ir(parse_source(src))
     registry = FrameRegistry(program.frames)
@@ -118,9 +151,11 @@ def test_unknown_select_column_raises():
 def test_where_clause_must_be_boolean():
     src = (
         'frame is "bad_where":\n'
-        f'  from file "{FIXTURE_PATH}"\n'
-        "  has headers\n"
-        "  where revenue plus 1\n"
+        "  source:\n"
+        f'    from file "{FIXTURE_PATH}"\n'
+        "    has headers\n"
+        "  where:\n"
+        "    revenue plus 1\n"
     )
     program = ast_to_ir(parse_source(src))
     registry = FrameRegistry(program.frames)

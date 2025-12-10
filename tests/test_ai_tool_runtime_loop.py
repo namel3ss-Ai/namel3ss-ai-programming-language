@@ -43,6 +43,7 @@ class StubProvider(ModelProvider):
 class StubRegistry:
     def __init__(self, provider):
         self.provider = provider
+        self.provider_status = {}
 
     def get_model_config(self, name):
         class Cfg:
@@ -59,6 +60,15 @@ class StubRegistry:
     def get_provider_for_model(self, name):
         return self.provider
 
+    def resolve_provider_for_ai(self, ai_call):
+        """
+        Minimal stub matching ModelRegistry.resolve_provider_for_ai.
+        Returns the stub provider, the model name, and provider name.
+        """
+        model_name = getattr(ai_call, "model_name", None) or ""
+        provider_name = getattr(ai_call, "provider", None) or "stub"
+        return self.provider, model_name, provider_name
+
 
 class StubRouter:
     def select_model(self, logical_name=None):
@@ -71,7 +81,8 @@ class StubRouter:
         return Sel(logical_name or "stub-model")
 
 
-def test_ai_tool_loop_happy_path():
+def test_ai_tool_loop_happy_path(monkeypatch):
+    monkeypatch.setenv("OPENAI_API_KEY", "test")
     code = dedent(
         """
         model "gpt-4.1-mini":
@@ -118,7 +129,8 @@ def test_ai_tool_loop_happy_path():
     assert json.loads(tool_msg["content"]) == {"temp_c": 21, "condition": "Sunny"}
 
 
-def test_ai_tool_loop_unknown_tool_errors():
+def test_ai_tool_loop_unknown_tool_errors(monkeypatch):
+    monkeypatch.setenv("OPENAI_API_KEY", "test")
     code = dedent(
         """
         model "gpt-4.1-mini":

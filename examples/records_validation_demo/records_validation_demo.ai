@@ -3,12 +3,14 @@ app is "records_validation_demo":
   description "Demonstrates English-first field validations on records."
 
 frame is "products":
-  backend "memory"
-  table "products"
+  source:
+    backend is "memory"
+    table is "products"
 
 frame is "audit_logs":
-  backend "memory"
-  table "audit_logs"
+  source:
+    backend is "memory"
+    table is "audit_logs"
 
 record "Product":
   frame is "products"
@@ -57,7 +59,7 @@ flow is "seed_valid_product":
       status: "draft"
       slug: "valid-product"
       tags: ["featured", "launch"]
-      metadata: { origin: "seed" }
+      metadata: "seed"
 
 flow is "create_bad_price":
   description "Fails because price is negative and violates must be at least 0."

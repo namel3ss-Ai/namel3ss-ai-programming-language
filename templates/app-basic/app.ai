@@ -1,7 +1,7 @@
-app "hello":
+app is "hello":
   entry_page "home"
 
-page "home":
+page is "home":
   route "/"
   section "hero":
     component "text":
@@ -12,11 +12,11 @@ page "home":
 model "default":
   provider "dummy"
 
-ai "greet":
+ai is "greet":
   model "default"
   input from user_input
 
-flow "pipeline":
+flow is "pipeline":
   step "call":
     kind "ai"
     target "greet"

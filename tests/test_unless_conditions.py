@@ -104,6 +104,7 @@ def test_flow_unless_runtime_and_trace():
     tracer = Tracer()
     engine = _make_engine(ir_prog)
     ctx = ExecutionContext(app_name="app", request_id="r1", tracer=tracer)
+    ctx.variables.update({"result": {"priority": "high"}})
     flow = ir_prog.flows["f"]
     engine.run_flow(flow, ctx, initial_state={"result": {"priority": "high"}})
     # agent should run because condition false -> unless true
@@ -125,6 +126,7 @@ def test_flow_unless_skips_when_condition_true():
     ir_prog = ast_to_ir(parse_source(source))
     engine = _make_engine(ir_prog)
     ctx = ExecutionContext(app_name="app", request_id="r3")
+    ctx.variables.update({"result": {"priority": "low"}})
     flow = ir_prog.flows["f"]
     engine.run_flow(flow, ctx, initial_state={"result": {"priority": "low"}})
     assert engine._agent_runner_stub.calls == []

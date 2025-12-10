@@ -49,6 +49,15 @@ def test_runtime_includes_system_message_first():
         system_prompt="You are a helper.",
     )
     ctx = ExecutionContext(app_name="test", request_id="req-1", user_input=None)
+    # Stub provider to avoid real network calls
+    class StubProvider:
+        def __init__(self):
+            self.default_model = "stub"
+
+        def generate(self, messages, **kwargs):
+            return {"messages": messages, "result": "ok"}
+
+    registry.resolve_provider_for_ai = lambda ai: (StubProvider(), ai.model_name, "stub")
     result = execute_ai_call_with_registry(ai_call, registry, router, ctx)
     provider_result = result["provider_result"]
     messages = provider_result["messages"]

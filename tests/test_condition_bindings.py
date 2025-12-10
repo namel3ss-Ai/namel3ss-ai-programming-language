@@ -54,7 +54,7 @@ def test_parser_allows_binding_variants():
         '    otherwise:\n'
         '      do agent "other"\n'
         '  step is "w":\n'
-        '    when score > 0.8 as high:\n'
+        '    if score is greater than 0.8 as high:\n'
         '      do agent "vip"\n'
         '  step is "u":\n'
         '    unless flag is "off" as fl:\n'
@@ -79,7 +79,7 @@ def test_parser_binding_errors():
         parse_source(
             'flow is "f":\n'
             '  step is "s":\n'
-            '    when result is "x" as 123:\n'
+            '    if result is "x" as 123:\n'
             '      do agent "a"\n'
         )
     with pytest.raises(Exception):
@@ -105,6 +105,7 @@ def test_flow_runtime_binding_and_trace():
     tracer = Tracer()
     engine = _make_engine(ir_prog)
     ctx = ExecutionContext(app_name="app", request_id="r1", tracer=tracer)
+    ctx.variables.update({"result": {"category": "billing"}})
     flow = ir_prog.flows["f"]
     engine.run_flow(flow, ctx, initial_state={"result": {"category": "billing"}})
     assert engine._runner_stub.calls == ["billing"]

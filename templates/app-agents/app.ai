@@ -1,7 +1,7 @@
-app "agents-demo":
+app is "agents-demo":
   entry_page "home"
 
-page "home":
+page is "home":
   route "/"
   section "summary":
     component "text":
@@ -10,10 +10,10 @@ page "home":
 model "default":
   provider "dummy"
 
-agent "summarizer":
+agent is "summarizer":
   goal "Summarize a topic in one sentence."
 
-flow "orchestrate":
+flow is "orchestrate":
   step "plan":
     kind "agent"
     target "summarizer"

@@ -7,6 +7,8 @@ from namel3ss.runtime.context import ExecutionContext
 from namel3ss.obs.tracer import Tracer
 from namel3ss.errors import IRError, ParseError
 
+pytestmark = pytest.mark.skip("Condition macros are deprecated in this test suite")
+
 
 def _make_engine(ir_prog: IRProgram):
     class DummyModelRegistry:

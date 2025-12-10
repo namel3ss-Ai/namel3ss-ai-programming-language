@@ -4,19 +4,19 @@ memory "debate_memory":
 model "debate-llm":
   provider "openai"
 
-agent "pro_agent":
+agent is "pro_agent":
   goal "Argue in favor of the topic with concise reasoning."
   personality "optimistic and evidence-focused"
 
-agent "con_agent":
+agent is "con_agent":
   goal "Argue against the topic highlighting risks or gaps."
   personality "skeptical and pragmatic"
 
-agent "judge_agent":
+agent is "judge_agent":
   goal "Listen to both sides and deliver a balanced verdict."
   personality "neutral and structured"
 
-flow "debate_flow":
+flow is "debate_flow":
   description "Coordinate a short debate with pro, con, and judge roles."
   step "pro_turn":
     kind "agent"
@@ -28,11 +28,11 @@ flow "debate_flow":
     kind "agent"
     target "judge_agent"
 
-app "debate_app":
+app is "debate_app":
   entry_page "debate"
   description "Multi-agent debate system with a judge rendering verdicts."
 
-page "debate":
+page is "debate":
   route "/debate"
   title "Debate Console"
   section "context":

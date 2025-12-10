@@ -3,8 +3,9 @@ app is "records_queries_demo":
   description "Demo app for English find queries with ordering and pagination."
 
 frame is "users":
-  backend "memory"
-  table "users"
+  source:
+    backend is "memory"
+    table is "users"
 
 record "User":
   frame is "users"
@@ -74,8 +75,8 @@ flow is "list_active_users":
     offset users by 0
 
   step is "log_active":
-    repeat for each { id, name, country, created_at } in step.query.output:
-      log info "Active user" with { id: id, name: name, country: country, created_at: created_at }
+    repeat for each user in step.query.output:
+      log info "Active user " + user.name
 
 flow is "be_or_nl_users":
   description "Filter by country using 'is one of' and demonstrate offset pagination."
@@ -88,8 +89,8 @@ flow is "be_or_nl_users":
     limit users to 2
 
   step is "log_results":
-    repeat for each { id, name, country, created_at } in step.query.output:
-      log info "Benelux user" with { id: id, name: name, country: country, created_at: created_at }
+    repeat for each user in step.query.output:
+      log info "Benelux user " + user.name
 
 page is "home" at "/records-demo":
   section "about":

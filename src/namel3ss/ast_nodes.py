@@ -260,6 +260,7 @@ class FrameDecl:
 
     name: str
     backend: str | None = None
+    url: "Expr | None" = None
     table: str | None = None
     primary_key: str | None = None
     source_kind: str | None = None
@@ -419,6 +420,7 @@ class VectorStoreDecl:
     text_column: str | None = None
     id_column: str | None = None
     embedding_model: str | None = None
+    metadata_columns: list[str] = field(default_factory=list)
     options: Dict[str, Any] = field(default_factory=dict)
     span: Optional[Span] = None
 
@@ -834,6 +836,43 @@ class CollectionTakeStep(CollectionPipelineStep):
 @dataclass
 class CollectionSkipStep(CollectionPipelineStep):
     count: Expr | None = None
+
+
+# RAG pipelines
+@dataclass
+class RagPipelineStageDecl:
+    name: str
+    type: str
+    ai: str | None = None
+    vector_store: str | None = None
+    top_k: Expr | None = None
+    where: Expr | None = None
+    max_tokens: Expr | None = None
+    choices: list[str] | None = None
+    max_queries: Expr | None = None
+    max_subquestions: Expr | None = None
+    from_stages: list[str] | None = None
+    method: str | None = None
+    span: Optional[Span] = None
+
+
+@dataclass
+class RagPipelineDecl:
+    name: str
+    default_vector_store: str | None = None
+    stages: list[RagPipelineStageDecl] = field(default_factory=list)
+    span: Optional[Span] = None
+
+
+@dataclass
+class RagEvaluationDecl:
+    name: str
+    pipeline: str
+    dataset_frame: str
+    question_column: str
+    answer_column: str | None = None
+    metrics: list[str] | None = None
+    span: Optional[Span] = None
 
 
 @dataclass

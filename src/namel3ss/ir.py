@@ -715,6 +715,7 @@ class IRFrame:
     source_kind: str = "file"
     path: str | None = None
     backend: str | None = None
+    url: ast_nodes.Expr | None = None
     table: str | None = None
     primary_key: str | None = None
     delimiter: str | None = None
@@ -731,7 +732,42 @@ class IRVectorStore:
     text_column: str
     id_column: str
     embedding_model: str
+    metadata_columns: list[str] = field(default_factory=list)
     options: dict[str, str] = field(default_factory=dict)
+
+
+@dataclass
+class IRRagPipelineStage:
+    name: str
+    type: str
+    ai: str | None = None
+    vector_store: str | None = None
+    top_k: ast_nodes.Expr | None = None
+    where: ast_nodes.Expr | None = None
+    max_tokens: ast_nodes.Expr | None = None
+    choices: list[str] | None = None
+    max_queries: ast_nodes.Expr | None = None
+    max_subquestions: ast_nodes.Expr | None = None
+    from_stages: list[str] | None = None
+    method: str | None = None
+
+
+@dataclass
+class IRRagPipeline:
+    name: str
+    default_vector_store: str | None = None
+    stages: list[IRRagPipelineStage] = field(default_factory=list)
+
+
+@dataclass
+class IRRagEvaluation:
+    name: str
+    pipeline: str
+    dataset_frame: str
+    question_column: str
+    answer_column: str | None = None
+    metrics: list[str] = field(default_factory=list)
+    span: ast_nodes.Span | None = None
 
 
 @dataclass
@@ -893,6 +929,8 @@ class IRProgram:
     records: Dict[str, IRRecord] = field(default_factory=dict)
     auth: IRAuth | None = None
     vector_stores: Dict[str, IRVectorStore] = field(default_factory=dict)
+    rag_pipelines: Dict[str, "IRRagPipeline"] = field(default_factory=dict)
+    rag_evaluations: Dict[str, "IRRagEvaluation"] = field(default_factory=dict)
     flows: Dict[str, IRFlow] = field(default_factory=dict)
     plugins: Dict[str, "IRPlugin"] = field(default_factory=dict)
     rulegroups: Dict[str, Dict[str, ast_nodes.Expr]] = field(default_factory=dict)
@@ -1848,6 +1886,7 @@ def ast_to_ir(module: ast_nodes.Module) -> IRProgram:
             "frame_delete",
             "vector_index_frame",
             "vector_query",
+            "rag_query",
             "db_create",
             "db_update",
             "db_delete",
@@ -1873,14 +1912,52 @@ def ast_to_ir(module: ast_nodes.Module) -> IRProgram:
         if step.kind in {"vector_index_frame", "vector_query"}:
             vector_store_name = (step.params or {}).get("vector_store") or step.target
             if not vector_store_name:
-                raise IRError("N3L-930: vector step must specify a 'vector_store'.", step.span and step.span.line)
+                raise IRError(
+                    f"Step '{step.name}' must specify a 'vector_store'. Add 'vector_store is \"kb\"' to the step.",
+                    step.span and step.span.line,
+                )
             if vector_store_name not in program.vector_stores:
                 raise IRError(
-                    f"N3L-931: Vector store '{vector_store_name}' is not declared.",
+                    f"Step '{step.name}' refers to vector_store '{vector_store_name}', but no such vector store is declared.",
                     step.span and step.span.line,
                 )
             if step.kind == "vector_query" and "query_text" not in (step.params or {}):
-                raise IRError("N3L-941: vector_query step must define 'query_text'.", step.span and step.span.line)
+                raise IRError(
+                    f"Step '{step.name}' must define 'query_text'. Add 'query_text is ...' inside the step.",
+                    step.span and step.span.line,
+                )
+            if step.kind == "vector_query":
+                top_k_val = (step.params or {}).get("top_k")
+                if isinstance(top_k_val, ast_nodes.Literal):
+                    try:
+                        top_k_int = int(top_k_val.value)
+                    except Exception:
+                        raise IRError(
+                            f"Top_k for step '{step.name}' must be a positive integer (for example, 3, 5, or 10).",
+                            step.span and step.span.line,
+                        )
+                    if top_k_int < 1:
+                        raise IRError(
+                            f"Top_k for step '{step.name}' must be a positive integer (for example, 3, 5, or 10).",
+                            step.span and step.span.line,
+                        )
+        if step.kind == "rag_query":
+            if "pipeline" not in (step.params or {}):
+                raise IRError(
+                    f"Step '{step.name}' must specify a 'pipeline'. Add 'pipeline is \"...\"' to the step.",
+                    step.span and step.span.line,
+                )
+            pipeline_name = (step.params or {}).get("pipeline")
+            if pipeline_name not in program.rag_pipelines:
+                raise IRError(
+                    f"Step '{step.name}' refers to RAG pipeline '{pipeline_name}', but no such pipeline is declared.",
+                    step.span and step.span.line,
+                )
+            if "question" not in (step.params or {}):
+                raise IRError(
+                    f"Step '{step.name}' must define 'question'. Add 'question is ...' inside the step.",
+                    step.span and step.span.line,
+                )
             return IRFlowStep(
                 name=step.name,
                 alias=getattr(step, "alias", None),
@@ -1981,6 +2058,16 @@ def ast_to_ir(module: ast_nodes.Module) -> IRProgram:
         if expr is None:
             return None, None
         if isinstance(expr, ast_nodes.VarRef):
+            if expr.root in rulegroups and not expr.path:
+                return ast_nodes.RuleGroupRefExpr(group_name=expr.root), None
+            if expr.root in rulegroups and expr.path:
+                cond_name = ".".join(expr.path)
+                if cond_name not in rulegroups[expr.root]:
+                    raise IRError(
+                        f"Condition '{cond_name}' does not exist in rulegroup '{expr.root}'.",
+                        expr.span and expr.span.line,
+                    )
+                return ast_nodes.RuleGroupRefExpr(group_name=expr.root, condition_name=cond_name), None
             return expr, None
         if isinstance(expr, ast_nodes.CollectionPipeline):
             source_expr, _ = transform_expr(expr.source)
@@ -2148,7 +2235,11 @@ def ast_to_ir(module: ast_nodes.Module) -> IRProgram:
         new_params: dict[str, object] = {}
         for key, value in (params or {}).items():
             if key == "where":
-                new_params[key] = transform_condition(value)
+                if isinstance(value, ast_nodes.Expr):
+                    transformed, _ = transform_expr(value)
+                    new_params[key] = transformed or value
+                else:
+                    new_params[key] = transform_condition(value)
             elif key == "query" and isinstance(value, ast_nodes.RecordQuery):
                 new_params[key] = transform_record_query(value)
             elif key == "bulk_create" and isinstance(value, ast_nodes.BulkCreateSpec):
@@ -2684,18 +2775,49 @@ def ast_to_ir(module: ast_nodes.Module) -> IRProgram:
                 raise IRError(
                     f"Duplicate frame '{decl.name}'", decl.span and decl.span.line
                 )
-            if not (decl.source_path or decl.backend):
-                raise IRError("N3F-1000: frame source not specified", decl.span and decl.span.line)
-            if decl.backend and decl.backend not in {"memory", "sqlite", "postgres"}:
+            source_kind = decl.source_kind or ("file" if decl.source_path else None)
+            backend = decl.backend
+            if not (decl.source_path or (backend and decl.table)):
                 raise IRError(
-                    f"Unsupported frame backend '{decl.backend}'", decl.span and decl.span.line
+                    f"Frame '{decl.name}' needs a data source. Add a 'source:' block with either 'from file \"...\"' or 'backend is \"...\"' and 'table is \"...\"'.",
+                    decl.span and decl.span.line,
+                )
+            if source_kind == "file" and not decl.source_path:
+                raise IRError(
+                    f"Frame '{decl.name}' needs a file path. Add 'from file \"...\"' inside the source block.",
+                    decl.span and decl.span.line,
+                )
+            if backend:
+                if backend.lower() == "postgresql":
+                    backend = "postgres"
+                if backend not in {"memory", "sqlite", "postgres"}:
+                    raise IRError(
+                        f"Frame '{decl.name}' uses backend '{backend}', which is not supported. Supported backends are: memory, sqlite, postgres.",
+                        decl.span and decl.span.line,
+                    )
+                if backend in {"sqlite", "postgres"} and not decl.url:
+                    raise IRError(
+                        f"Frame '{decl.name}' needs a connection url for backend '{backend}'. Add 'url is ...' inside the source block.",
+                        decl.span and decl.span.line,
+                    )
+                if backend and not decl.table:
+                    raise IRError(
+                        f"Frame '{decl.name}' must set 'table is \"...\"' when using backend '{backend}'.",
+                        decl.span and decl.span.line,
+                    )
+            if decl.select_cols and decl.source_path and not decl.has_headers:
+                raise IRError(
+                    f"Frame '{decl.name}' selects columns, but no headers are available. Add 'has headers' in the source block.",
+                    decl.span and decl.span.line,
                 )
             where_expr, _ = transform_expr(decl.where)
+            url_expr, _ = transform_expr(decl.url) if getattr(decl, "url", None) else (None, None)
             program.frames[decl.name] = IRFrame(
                 name=decl.name,
-                source_kind=decl.source_kind or decl.backend or "file",
+                source_kind=source_kind or backend or ("file" if decl.source_path else "memory"),
                 path=decl.source_path,
-                backend=decl.backend,
+                backend=backend,
+                url=url_expr,
                 table=decl.table,
                 primary_key=decl.primary_key,
                 delimiter=decl.delimiter,
@@ -2941,33 +3063,186 @@ def ast_to_ir(module: ast_nodes.Module) -> IRProgram:
             )
         elif isinstance(decl, ast_nodes.VectorStoreDecl):
             if decl.name in program.vector_stores:
-                raise IRError(f"Duplicate vector_store '{decl.name}'", decl.span and decl.span.line)
-            if not decl.backend:
-                raise IRError(f"N3L-900: Vector store '{decl.name}' must specify a backend.", decl.span and decl.span.line)
-            if not decl.frame:
-                raise IRError(f"N3L-901: Vector store '{decl.name}' must reference a frame.", decl.span and decl.span.line)
-            if decl.frame not in program.frames:
+                raise IRError(f"There is already a vector_store named '{decl.name}'. Vector store names must be unique.", decl.span and decl.span.line)
+            missing_fields: list[str] = []
+            for key, value in {
+                "backend": decl.backend,
+                "frame": decl.frame,
+                "text_column": decl.text_column,
+                "id_column": decl.id_column,
+                "embedding_model": decl.embedding_model,
+            }.items():
+                if value in {None, ""}:
+                    missing_fields.append(key)
+            if missing_fields:
                 raise IRError(
-                    f"N3L-901: Vector store '{decl.name}' references unknown frame '{decl.frame}'.",
+                    f"Vector store '{decl.name}' is missing required fields. It needs: backend, frame, text_column, id_column, and embedding_model.",
                     decl.span and decl.span.line,
                 )
-            if not decl.embedding_model:
+            backend = (decl.backend or "").lower()
+            if backend == "postgresql":
+                backend = "pgvector"
+            supported_backends = {"memory", "pgvector", "faiss", "default_vector"}
+            if backend not in supported_backends:
                 raise IRError(
-                    f"N3L-902: Vector store '{decl.name}' must specify an embedding_model.", decl.span and decl.span.line
+                    f"Vector store '{decl.name}' uses backend '{backend}', which is not supported. Supported backends are: memory, pgvector, faiss.",
+                    decl.span and decl.span.line,
                 )
-            if not decl.text_column or not decl.id_column:
+            frame_name = decl.frame or ""
+            if frame_name not in program.frames:
                 raise IRError(
-                    f"N3L-903: Vector store '{decl.name}' must specify text_column and id_column.",
+                    f"Vector store '{decl.name}' refers to frame '{frame_name}', but that frame is not declared.",
+                    decl.span and decl.span.line,
+                )
+            if decl.embedding_model in program.models:
+                raise IRError(
+                    f"Vector store '{decl.name}' uses embedding_model '{decl.embedding_model}', which is not an embedding model. Use an embedding model such as 'text-embedding-ada-002' or 'default_embedding'.",
                     decl.span and decl.span.line,
                 )
             program.vector_stores[decl.name] = IRVectorStore(
                 name=decl.name,
-                backend=decl.backend,
-                frame=decl.frame,
-                text_column=decl.text_column,
-                id_column=decl.id_column,
-                embedding_model=decl.embedding_model,
+                backend=backend,
+                frame=frame_name,
+                text_column=decl.text_column or "",
+                id_column=decl.id_column or "",
+                embedding_model=decl.embedding_model or "",
+                metadata_columns=decl.metadata_columns or [],
                 options=decl.options or {},
+            )
+        elif isinstance(decl, ast_nodes.RagPipelineDecl):
+            if decl.name in program.rag_pipelines:
+                raise IRError(
+                    f"There is already a rag pipeline named '{decl.name}'. Pipeline names must be unique.",
+                    decl.span and decl.span.line,
+                )
+            if not decl.stages:
+                raise IRError(
+                    f"RAG pipeline '{decl.name}' has no stages. Add at least an 'ai_rewrite', 'vector_retrieve', or 'ai_answer' stage.",
+                    decl.span and decl.span.line,
+                )
+            seen_stage_names: set[str] = set()
+            stages: list[IRRagPipelineStage] = []
+            stage_type_map: dict[str, str] = {}
+            supported_stage_types = {
+                "ai_rewrite",
+                "vector_retrieve",
+                "ai_rerank",
+                "context_compress",
+                "ai_answer",
+                "query_route",
+                "multi_query",
+                "query_decompose",
+                "fusion",
+            }
+            for stage in decl.stages:
+                if stage.name in seen_stage_names:
+                    raise IRError(
+                        f"Stage name '{stage.name}' is duplicated in pipeline '{decl.name}'. Stage names must be unique within a pipeline.",
+                        stage.span and stage.span.line,
+                    )
+                seen_stage_names.add(stage.name)
+                if not stage.type:
+                    raise IRError(
+                        f"Stage '{stage.name}' in pipeline '{decl.name}' must set type is \"...\".",
+                        stage.span and stage.span.line,
+                    )
+                st_type = stage.type or ""
+                if st_type not in supported_stage_types:
+                    allowed_list = ", ".join(sorted(supported_stage_types))
+                    raise IRError(
+                        f"Stage type '{st_type}' is not supported in RAG pipelines. Supported types are: {allowed_list}.",
+                        stage.span and stage.span.line,
+                    )
+                stage_type_map[stage.name] = st_type
+                top_k_expr, _ = transform_expr(stage.top_k) if stage.top_k else (None, None)
+                where_expr, _ = transform_expr(stage.where) if stage.where else (None, None)
+                max_tokens_expr, _ = transform_expr(stage.max_tokens) if stage.max_tokens else (None, None)
+                choices_list = list(stage.choices) if stage.choices else None
+                from_stages = list(stage.from_stages) if stage.from_stages else None
+                max_queries_expr, _ = transform_expr(stage.max_queries) if stage.max_queries else (None, None)
+                max_sub_expr, _ = transform_expr(stage.max_subquestions) if stage.max_subquestions else (None, None)
+                if st_type == "vector_retrieve" and top_k_expr is None:
+                    top_k_expr = ast_nodes.Literal(value=5)
+                if st_type == "fusion" and top_k_expr is None:
+                    top_k_expr = ast_nodes.Literal(value=5)
+                if st_type == "multi_query" and max_queries_expr is None:
+                    max_queries_expr = ast_nodes.Literal(value=4)
+                if st_type == "query_decompose" and max_sub_expr is None:
+                    max_sub_expr = ast_nodes.Literal(value=3)
+                stages.append(
+                    IRRagPipelineStage(
+                        name=stage.name,
+                        type=st_type,
+                        ai=stage.ai,
+                        vector_store=stage.vector_store,
+                        top_k=top_k_expr,
+                        where=where_expr,
+                        max_tokens=max_tokens_expr,
+                        choices=choices_list,
+                        max_queries=max_queries_expr,
+                        max_subquestions=max_sub_expr,
+                        from_stages=from_stages,
+                        method=stage.method,
+                    )
+                )
+            program.rag_pipelines[decl.name] = IRRagPipeline(
+                name=decl.name,
+                default_vector_store=decl.default_vector_store,
+                stages=stages,
+            )
+        elif isinstance(decl, ast_nodes.RagEvaluationDecl):
+            if decl.name in program.rag_evaluations:
+                raise IRError(
+                    f"There is already a rag evaluation named '{decl.name}'. Evaluation names must be unique.",
+                    decl.span and decl.span.line,
+                )
+            if not decl.pipeline:
+                raise IRError(
+                    f"Rag evaluation '{decl.name}' must specify a pipeline. Add 'pipeline is \"...\"'.",
+                    decl.span and decl.span.line,
+                )
+            if decl.pipeline not in program.rag_pipelines:
+                raise IRError(
+                    f"RAG evaluation '{decl.name}' refers to pipeline '{decl.pipeline}', but that pipeline is not declared.",
+                    decl.span and decl.span.line,
+                )
+            if not decl.dataset_frame:
+                raise IRError(
+                    f"RAG evaluation '{decl.name}' must specify a dataset frame. Add 'from frame \"...\"' inside the dataset block.",
+                    decl.span and decl.span.line,
+                )
+            if decl.dataset_frame not in program.frames:
+                raise IRError(
+                    f"RAG evaluation '{decl.name}' refers to frame '{decl.dataset_frame}', but that frame is not declared.",
+                    decl.span and decl.span.line,
+                )
+            if not decl.question_column:
+                raise IRError(
+                    f"RAG evaluation '{decl.name}' must set 'question_column'.",
+                    decl.span and decl.span.line,
+                )
+            frame_spec = program.frames[decl.dataset_frame]
+            available_columns = getattr(frame_spec, "select_cols", None) or []
+            if available_columns:
+                if decl.question_column not in available_columns:
+                    raise IRError(
+                        f"Frame '{decl.dataset_frame}' does not have a column '{decl.question_column}'. Available columns are: {', '.join(available_columns)}.",
+                        decl.span and decl.span.line,
+                    )
+                if decl.answer_column and decl.answer_column not in available_columns:
+                    raise IRError(
+                        f"Frame '{decl.dataset_frame}' does not have a column '{decl.answer_column}'. Available columns are: {', '.join(available_columns)}.",
+                        decl.span and decl.span.line,
+                    )
+            metrics = decl.metrics or ["context_relevance", "answer_faithfulness", "answer_completeness"]
+            program.rag_evaluations[decl.name] = IRRagEvaluation(
+                name=decl.name,
+                pipeline=decl.pipeline,
+                dataset_frame=decl.dataset_frame,
+                question_column=decl.question_column,
+                answer_column=decl.answer_column,
+                metrics=metrics,
+                span=decl.span,
             )
         elif isinstance(decl, ast_nodes.ToolDeclaration):
             if decl.name in program.tools:
@@ -3154,18 +3429,46 @@ def ast_to_ir(module: ast_nodes.Module) -> IRProgram:
             )
 
     # Validate configured memory stores for AI memory configs.
-    if memory_store_refs:
-        cfg = load_config()
-        configured_stores = set((cfg.memory_stores or {}).keys())
-        if "default_memory" not in configured_stores:
-            configured_stores.add("default_memory")
-        for ai_name, store_name in memory_store_refs:
-            resolved_store = store_name or "default_memory"
-            if resolved_store not in configured_stores:
+        if memory_store_refs:
+            cfg = load_config()
+            configured_stores = set((cfg.memory_stores or {}).keys())
+            if "default_memory" not in configured_stores:
+                configured_stores.add("default_memory")
+            for ai_name, store_name in memory_store_refs:
+                resolved_store = store_name or "default_memory"
+                if resolved_store not in configured_stores:
+                    raise IRError(
+                        f"N3L-1201: AI '{ai_name}' refers to memory store '{resolved_store}', but that store is not configured. Add it to your configuration file, or change the store name to one of the configured stores.",
+                        None,
+                        )
+
+    def _known_frame_columns(frame: IRFrame) -> list[str]:
+        cols: set[str] = set(frame.select_cols or [])
+        for record in program.records.values():
+            if record.frame == frame.name:
+                cols.update(record.fields.keys())
+        return sorted(cols)
+
+    for vec in program.vector_stores.values():
+        frame = program.frames.get(vec.frame)
+        if not frame:
+            continue
+        available_cols = _known_frame_columns(frame)
+
+        def _check_column(col_name: str | None, label: str) -> None:
+            if not col_name:
+                return
+            if available_cols and col_name not in available_cols:
+                available_msg = f" Available columns are: {', '.join(available_cols)}." if available_cols else ""
                 raise IRError(
-                    f"N3L-1201: AI '{ai_name}' refers to memory store '{resolved_store}', but that store is not configured. Add it to your configuration file, or change the store name to one of the configured stores.",
+                    f"Vector store '{vec.name}' uses {label} '{col_name}', but frame '{frame.name}' does not have that column.{available_msg}",
                     None,
-                    )
+                )
+
+        _check_column(vec.text_column, "text_column")
+        _check_column(vec.id_column, "id_column")
+        for meta_col in vec.metadata_columns or []:
+            _check_column(meta_col, "metadata column")
 
     program.rulegroups = rulegroups
     providers_cfg = getattr(load_config(), "providers_config", None)
@@ -3276,6 +3579,8 @@ def ast_to_ir(module: ast_nodes.Module) -> IRProgram:
             elif step.kind == "goto_flow":
                 continue
 
+    _validate_rag_pipelines(program)
+    _validate_rag_evaluations(program)
     _validate_flow_scopes(program)
     _resolve_record_constraints(program)
     _resolve_relationship_joins(program)
@@ -3527,7 +3832,17 @@ def _validate_flow_scopes(program: IRProgram) -> None:
             elif isinstance(item, IRTransactionBlock):
                 _walk_flow_items(item.body, scope, flow_name, all_steps, steps_seen)
             else:
-                for expr in _iter_exprs(item.params):
+                # allow row.* inside where filters for frame/vector steps
+                params_to_iterate = item.params
+                if item.kind in {"vector_index_frame"}:
+                    where_expr = item.params.get("where")
+                    if isinstance(where_expr, ast_nodes.Expr):
+                        filter_scope = scope.copy()
+                        filter_scope.locals.add("row")
+                        _walk_expr(where_expr, filter_scope, flow_name, all_steps, steps_seen)
+                        params_to_iterate = {k: v for k, v in item.params.items() if k != "where"}
+
+                for expr in _iter_exprs(params_to_iterate):
                     _walk_expr(expr, scope, flow_name, all_steps, steps_seen)
                 if item.when_expr:
                     _walk_expr(item.when_expr, scope, flow_name, all_steps, steps_seen)
@@ -3542,6 +3857,189 @@ def _validate_flow_scopes(program: IRProgram) -> None:
         scope = _FlowScope(locals=set(), active_loops=set(), all_loop_vars=loop_vars)
         steps_seen: set[str] = set()
         _walk_flow_items(flow.steps, scope, flow.name, all_steps, steps_seen)
+
+
+def _validate_rag_pipelines(program: IRProgram) -> None:
+    for pipeline in program.rag_pipelines.values():
+        if pipeline.default_vector_store and pipeline.default_vector_store not in program.vector_stores:
+            raise IRError(
+                f"RAG pipeline '{pipeline.name}' refers to default vector_store '{pipeline.default_vector_store}', but no such vector store is declared.",
+                None,
+            )
+        if not pipeline.stages:
+            raise IRError(
+                f"RAG pipeline '{pipeline.name}' has no stages. Add at least an 'ai_rewrite', 'vector_retrieve', or 'ai_answer' stage.",
+                None,
+            )
+        seen_stage_names: set[str] = set()
+        stage_types: dict[str, str] = {}
+        has_router = any(st.type == "query_route" for st in pipeline.stages)
+        for stage in pipeline.stages:
+            if stage.name in seen_stage_names:
+                raise IRError(
+                    f"Stage name '{stage.name}' is duplicated in pipeline '{pipeline.name}'. Stage names must be unique within a pipeline.",
+                    None,
+                )
+            seen_stage_names.add(stage.name)
+            st_type = stage.type or ""
+            stage_types[stage.name] = st_type
+            if st_type in {"ai_rewrite", "ai_rerank", "ai_answer", "query_route", "multi_query", "query_decompose"}:
+                if not stage.ai:
+                    raise IRError(
+                        f"Stage '{stage.name}' in pipeline '{pipeline.name}' must specify an AI. Add 'ai is \"...\"' to the stage.",
+                        None,
+                    )
+                if stage.ai not in program.ai_calls:
+                    raise IRError(
+                        f"Stage '{stage.name}' in pipeline '{pipeline.name}' refers to AI '{stage.ai}', but that AI is not declared.",
+                        None,
+                    )
+            if st_type == "vector_retrieve":
+                vs_name = stage.vector_store or pipeline.default_vector_store
+                if not vs_name and not has_router:
+                    raise IRError(
+                        f"Stage '{stage.name}' in pipeline '{pipeline.name}' must specify a 'vector_store' or set a default with 'use vector_store \"...\"'.",
+                        None,
+                    )
+                if vs_name and vs_name not in program.vector_stores:
+                    raise IRError(
+                        f"Stage '{stage.name}' in pipeline '{pipeline.name}' refers to vector_store '{vs_name}', but no such vector store is declared.",
+                        None,
+                    )
+                if isinstance(stage.top_k, ast_nodes.Literal):
+                    try:
+                        top_k_int = int(stage.top_k.value)
+                    except Exception:
+                        raise IRError(
+                            f"Top_k for stage '{stage.name}' in pipeline '{pipeline.name}' must be a positive integer (for example, 3, 5, or 10).",
+                            None,
+                        )
+                    if top_k_int < 1:
+                        raise IRError(
+                            f"Top_k for stage '{stage.name}' in pipeline '{pipeline.name}' must be a positive integer (for example, 3, 5, or 10).",
+                            None,
+                        )
+            if st_type == "ai_rerank" and isinstance(stage.top_k, ast_nodes.Literal):
+                try:
+                    top_k_int = int(stage.top_k.value)
+                except Exception:
+                    raise IRError(
+                        f"Top_k for stage '{stage.name}' in pipeline '{pipeline.name}' must be a positive integer (for example, 3, 5, or 10).",
+                        None,
+                    )
+                if top_k_int < 1:
+                    raise IRError(
+                        f"Top_k for stage '{stage.name}' in pipeline '{pipeline.name}' must be a positive integer (for example, 3, 5, or 10).",
+                        None,
+                    )
+            if st_type == "context_compress" and isinstance(stage.max_tokens, ast_nodes.Literal):
+                try:
+                    max_tokens_int = int(stage.max_tokens.value)
+                except Exception:
+                    raise IRError(
+                        f"Max_tokens for stage '{stage.name}' in pipeline '{pipeline.name}' must be a positive integer.",
+                        None,
+                    )
+                if max_tokens_int < 1:
+                    raise IRError(
+                        f"Max_tokens for stage '{stage.name}' in pipeline '{pipeline.name}' must be a positive integer.",
+                        None,
+                    )
+            if st_type == "query_route":
+                if not stage.choices:
+                    raise IRError(
+                        f"Stage '{stage.name}' in pipeline '{pipeline.name}' must declare routing choices. Add 'choices are [\"...\"]' to the stage.",
+                        None,
+                    )
+                for choice in stage.choices or []:
+                    if choice not in program.vector_stores:
+                        raise IRError(
+                            f"Stage '{stage.name}' in pipeline '{pipeline.name}' lists choice '{choice}', but no such vector store is declared.",
+                            None,
+                        )
+            if st_type == "multi_query" and isinstance(stage.max_queries, ast_nodes.Literal):
+                try:
+                    max_q_int = int(stage.max_queries.value)
+                except Exception:
+                    raise IRError(
+                        f"Max_queries for stage '{stage.name}' in pipeline '{pipeline.name}' must be a positive integer.",
+                        None,
+                    )
+                if max_q_int < 1:
+                    raise IRError(
+                        f"Max_queries for stage '{stage.name}' in pipeline '{pipeline.name}' must be a positive integer.",
+                        None,
+                    )
+            if st_type == "query_decompose" and isinstance(stage.max_subquestions, ast_nodes.Literal):
+                try:
+                    max_sub_int = int(stage.max_subquestions.value)
+                except Exception:
+                    raise IRError(
+                        f"Max_subquestions for stage '{stage.name}' in pipeline '{pipeline.name}' must be a positive integer.",
+                        None,
+                    )
+                if max_sub_int < 1:
+                    raise IRError(
+                        f"Max_subquestions for stage '{stage.name}' in pipeline '{pipeline.name}' must be a positive integer.",
+                        None,
+                    )
+            if st_type == "fusion":
+                if not stage.from_stages:
+                    raise IRError(
+                        f"Stage '{stage.name}' in pipeline '{pipeline.name}' must declare which stages to fuse. Add 'from stages are [\"...\"]'.",
+                        None,
+                    )
+                for ref in stage.from_stages or []:
+                    if ref not in stage_types:
+                        raise IRError(
+                            f"Stage '{stage.name}' in pipeline '{pipeline.name}' refers to unknown stage '{ref}' in fusion.",
+                            None,
+                        )
+                    if stage_types.get(ref) != "vector_retrieve":
+                        raise IRError(
+                            f"Stage '{stage.name}' in pipeline '{pipeline.name}' can only fuse vector_retrieve stages. '{ref}' is type '{stage_types.get(ref)}'.",
+                            None,
+                        )
+                if isinstance(stage.top_k, ast_nodes.Literal):
+                    try:
+                        fuse_top = int(stage.top_k.value)
+                    except Exception:
+                        raise IRError(
+                            f"Top_k for stage '{stage.name}' in pipeline '{pipeline.name}' must be a positive integer (for example, 3, 5, or 10).",
+                            None,
+                        )
+                    if fuse_top < 1:
+                        raise IRError(
+                            f"Top_k for stage '{stage.name}' in pipeline '{pipeline.name}' must be a positive integer (for example, 3, 5, or 10).",
+                            None,
+                        )
+
+
+def _validate_rag_evaluations(program: IRProgram) -> None:
+    for eval_cfg in program.rag_evaluations.values():
+        if eval_cfg.pipeline not in program.rag_pipelines:
+            raise IRError(
+                f"RAG evaluation '{eval_cfg.name}' refers to pipeline '{eval_cfg.pipeline}', but that pipeline is not declared.",
+                None,
+            )
+        if eval_cfg.dataset_frame not in program.frames:
+            raise IRError(
+                f"RAG evaluation '{eval_cfg.name}' refers to frame '{eval_cfg.dataset_frame}', but that frame is not declared.",
+                None,
+            )
+        frame_spec = program.frames[eval_cfg.dataset_frame]
+        available_columns = getattr(frame_spec, "select_cols", None) or []
+        if available_columns:
+            if eval_cfg.question_column not in available_columns:
+                raise IRError(
+                    f"Frame '{eval_cfg.dataset_frame}' does not have a column '{eval_cfg.question_column}'. Available columns are: {', '.join(available_columns)}.",
+                    None,
+                )
+            if eval_cfg.answer_column and eval_cfg.answer_column not in available_columns:
+                raise IRError(
+                    f"Frame '{eval_cfg.dataset_frame}' does not have a column '{eval_cfg.answer_column}'. Available columns are: {', '.join(available_columns)}.",
+                    None,
+                )
 
 
 def _resolve_record_constraints(program: IRProgram) -> None:

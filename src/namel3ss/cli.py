@@ -35,6 +35,7 @@ from .version import __version__
 from .memory.inspection import describe_memory_plan, describe_memory_state, inspect_memory_state
 from .migration import naming as naming_migration
 from .migration import data_pipelines as data_migration
+from .rag.eval import run_rag_evaluation
 
 
 def build_cli_parser() -> argparse.ArgumentParser:
@@ -139,6 +140,12 @@ def build_cli_parser() -> argparse.ArgumentParser:
 
     meta_cmd = register("meta", help="Show program metadata")
     meta_cmd.add_argument("--file", type=Path, required=True, help="Path to .ai file")
+
+    rag_eval_cmd = register("rag-eval", help="Run a RAG evaluation defined in the .ai file")
+    rag_eval_cmd.add_argument("evaluation", help="Name of the rag evaluation to run")
+    rag_eval_cmd.add_argument("--file", type=Path, required=True, help="Path to .ai file")
+    rag_eval_cmd.add_argument("--limit", type=int, help="Only evaluate the first N rows")
+    rag_eval_cmd.add_argument("--output", choices=["json"], help="Use 'json' for machine-readable output")
 
     job_flow_cmd = register("job-flow", help="Enqueue a flow job")
     job_flow_cmd.add_argument("--file", type=Path, required=True)
@@ -565,6 +572,35 @@ def main(argv: list[str] | None = None) -> None:
         engine = _load_engine(args.file)
         result = engine.execute_flow(args.flow)
         print(json.dumps(result, indent=2))
+        return
+
+    if args.command == "rag-eval":
+        engine = _load_engine(args.file)
+        eval_cfg = engine.program.rag_evaluations.get(args.evaluation)
+        if not eval_cfg:
+            raise SystemExit(
+                f"RAG evaluation '{args.evaluation}' is not declared. Declare it with 'rag evaluation is \"{args.evaluation}\":'."
+            )
+        result = run_rag_evaluation(engine.program, eval_cfg, engine.flow_engine, limit=getattr(args, "limit", None))
+        if getattr(args, "output", None) == "json":
+            print(json.dumps(asdict(result), indent=2))
+            return
+        print(f"RAG evaluation: {result.name}")
+        print(f"Pipeline: {result.pipeline}")
+        print(f"Dataset: frame \"{result.dataset_frame}\" ({len(result.rows)} rows)")
+        if result.aggregates:
+            print("\nMetrics (averages):")
+            for name, agg in result.aggregates.items():
+                mean = agg.get("mean", 0)
+                count = agg.get("count", 0)
+                print(f"  - {name}: {mean:.2f} ({count} scored rows)")
+        if result.rows:
+            print("\nSample rows:")
+            for idx, row in enumerate(result.rows[: min(3, len(result.rows))], start=1):
+                metrics = ", ".join(f"{k}: {v:.2f}" for k, v in row.metrics.items() if v is not None)
+                print(f"  [{idx}] question: {row.question}")
+                if metrics:
+                    print(f"      metrics: {metrics}")
         return
 
     if args.command == "memory-inspect":

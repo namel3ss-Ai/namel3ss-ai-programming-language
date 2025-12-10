@@ -6,8 +6,9 @@ Records give names, types, defaults, and required flags to tabular rows. The Eng
 
 ```
 frame is "users":
-  backend "memory"
-  table "users"
+  source:
+    backend is "memory"
+    table is "users"
 
 record "User":
   frame is "users"

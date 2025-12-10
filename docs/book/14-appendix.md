@@ -7,7 +7,7 @@
 - **AI:** `ai is "name": model is "..."; system is "..."; input from <expr>; tools: ["tool_a"]; memory: ...; streaming flags on steps.`
 - **Memory:** Declare `memory is "name": type is "conversation"`; in AI `memory: kinds: short_term/long_term/profile` with `window`, `store`, `scope`, `retention_days`, `pii_policy`, `pipeline`; `recall` list.
 - **Flows:** `flow is "name": step is "s": kind is "..."; when <expr>; for each <var> in <expr>: ...; on error: ...; let <local> be ...; set state.<field> be ...; read step.<name>.output`.
-- **Data & RAG:** `frame is "name": backend/table`; `vector_store is "name": frame is "..."; text_column/id_column/embedding_model`; steps `vector_index_frame`, `vector_query`.
+- **Data & RAG:** `frame is "name": source: backend/url/table or from file`; `vector_store is "name": frame is "..."; text_column/id_column/embedding_model`; steps `vector_index_frame`, `vector_query`.
 - **Records & CRUD:** `record is "Name": frame is "..."; fields: <field>: type/primary_key/required/default`; steps `db_create`, `db_update`, `db_delete` with `values`, `by id`, `set`, and English queries with `find <alias> where:` plus `order`, `limit`, `offset`.
 - **Tools:** `tool is "name": kind is "http_json"; method/url/query/headers/body`; flow step `kind is "tool"` with `input`; AI `tools` list for tool-calling.
 - **Auth:** `auth:` with `user_record`, `id_field`, `identifier_field`, `password_hash_field`; steps `auth_register/login/logout`; expressions under `user.*`.

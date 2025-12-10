@@ -18,6 +18,7 @@ class VectorStoreConfig:
     text_column: str
     id_column: str
     embedding_model: str
+    metadata_columns: list[str]
     options: Dict[str, str]
 
 
@@ -86,9 +87,13 @@ class VectorStoreRegistry:
                 text_column=cfg.text_column,
                 id_column=cfg.id_column,
                 embedding_model=cfg.embedding_model,
+                metadata_columns=getattr(cfg, "metadata_columns", []) or [],
                 options=cfg.options,
             )
-        self.backends: Dict[str, VectorBackend] = {"memory": InMemoryVectorBackend(), "default_vector": InMemoryVectorBackend()}
+        self.backends: Dict[str, VectorBackend] = {
+            "memory": InMemoryVectorBackend(),
+            "default_vector": InMemoryVectorBackend(),
+        }
         self.secrets = secrets or get_default_secrets_manager()
         self.embedding_client = EmbeddingClient(secrets=self.secrets)
 
@@ -98,10 +103,14 @@ class VectorStoreRegistry:
         return self.configs[name]
 
     def backend_for(self, cfg: VectorStoreConfig) -> VectorBackend:
-        backend = cfg.backend or "memory"
+        backend = (cfg.backend or "memory").lower()
+        if backend in {"pgvector", "faiss"} and backend not in self.backends:
+            raise Namel3ssError(
+                f"Vector store '{cfg.name}' cannot connect to backend '{backend}'. Check your DSN/URL and database configuration."
+            )
         if backend not in self.backends:
             raise Namel3ssError(
-                f"N3F-910: Vector store '{cfg.name}' is not configured correctly (backend '{backend}' unavailable)."
+                f"Vector store '{cfg.name}' uses backend '{backend}', which is not supported. Supported backends are: memory, pgvector, faiss.",
             )
         return self.backends[backend]
 

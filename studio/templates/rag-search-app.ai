@@ -1,22 +1,22 @@
 model "retriever":
   provider "openai"
 
-ai "rewrite_query":
+ai is "rewrite_query":
   model "retriever"
   input from "user_input"
   description "Rewrite the query to be concise and retrieval-friendly."
 
-ai "fetch_context":
+ai is "fetch_context":
   model "retriever"
   input from "user_input"
   description "Identify relevant snippets for the rewritten query."
 
-ai "compose_answer":
+ai is "compose_answer":
   model "retriever"
   input from "user_input"
   description "Compose a short answer based on retrieved snippets."
 
-flow "rag_query_flow":
+flow is "rag_query_flow":
   description "Rewrite the query, retrieve context, and compose an answer."
   step "rewrite":
     kind "ai"
@@ -28,11 +28,11 @@ flow "rag_query_flow":
     kind "ai"
     target "compose_answer"
 
-app "rag_search_app":
+app is "rag_search_app":
   entry_page "search"
   description "RAG pipeline answering questions over a small note."
 
-page "search":
+page is "search":
   route "/rag"
   title "RAG Knowledge Search"
   section "query":

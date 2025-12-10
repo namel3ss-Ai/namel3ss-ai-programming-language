@@ -9,19 +9,19 @@ page is "home" at "/":
 model "default":
   provider "dummy"
 
-agent "writer":
+agent is "writer":
   goal "Write a short statement about a topic."
 
 flow is "orchestrate":
   step is "branch":
-    kind "ai"
-    target "decide"
+    kind is "ai"
+    target is "decide"
   step is "fanout":
-    kind "agent"
-    target "writer"
+    kind is "agent"
+    target is "writer"
   step is "join":
-    kind "tool"
-    target "echo"
+    kind is "tool"
+    target is "echo"
 
 ai is "decide":
   model "default"

@@ -9,7 +9,7 @@ ai is "classify_issue":
   input from "user_input"
   description "Classify the user's support request."
 
-agent "support_agent":
+agent is "support_agent":
   goal "Provide helpful support answers using the classification and history."
   personality "patient and pragmatic"
 
@@ -17,13 +17,13 @@ flow is "support_flow":
   description "Classify the request, respond, and log the interaction."
   step is "classify":
     kind is "ai"
-    target "classify_issue"
+    target is "classify_issue"
   step is "respond":
     kind is "agent"
-    target "support_agent"
+    target is "support_agent"
   step is "log":
     kind is "tool"
-    target "echo"
+    target is "echo"
     message "User request was processed and logged."
 
 app is "support_bot_app":

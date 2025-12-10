@@ -1,3 +1,5 @@
+import pytest
+
 from namel3ss import parser
 from namel3ss.agent.engine import AgentRunner
 from namel3ss.ai.registry import ModelRegistry
@@ -6,13 +8,15 @@ from namel3ss.flows.engine import FlowEngine
 from namel3ss.ir import ast_to_ir
 from namel3ss.runtime.context import ExecutionContext
 from namel3ss.tools.registry import ToolRegistry
+from namel3ss.errors import Namel3ssError
 
 
 def test_vector_query_runtime_builds_context(monkeypatch):
     source = '''
 frame is "docs":
-  backend "memory"
-  table "docs"
+  source:
+    backend is "memory"
+    table is "docs"
 
 vector_store is "kb":
   backend "memory"
@@ -59,3 +63,39 @@ flow is "index_and_query":
     assert output
     assert output.get("matches")
     assert "Document" in (output.get("context") or "")
+
+
+def test_vector_query_rejects_bad_top_k(monkeypatch):
+    source = '''
+frame is "docs":
+  source:
+    backend is "memory"
+    table is "docs"
+
+vector_store is "kb":
+  backend "memory"
+  frame is "docs"
+  text_column "content"
+  id_column "id"
+  embedding_model "fake"
+
+flow is "index_and_query":
+  step is "insert":
+    kind "frame_insert"
+    frame is "docs"
+    values:
+      id: "1"
+      content: "hello world"
+  step is "index":
+    kind "vector_index_frame"
+    vector_store is "kb"
+  step is "retrieve":
+    kind "vector_query"
+    vector_store is "kb"
+    query_text "hello"
+    top_k "bad"
+'''
+    mod = parser.parse_source(source)
+    with pytest.raises(Namel3ssError) as excinfo:
+        ast_to_ir(mod)
+    assert "Top_k for step 'retrieve'" in str(excinfo.value)

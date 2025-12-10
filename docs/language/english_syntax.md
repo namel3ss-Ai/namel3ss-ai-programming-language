@@ -11,34 +11,34 @@ remember conversation as "support_history"
 
 use model "support-llm" provided by "openai"
 
-ai "classify_issue":
+ai is "classify_issue":
   when called:
     use model "support-llm"
     input comes from user_input
     describe task as "Classify the user's support request."
 
-agent "support_agent":
+agent is "support_agent":
   the goal is "Provide a clear, helpful support answer."
   the personality is "patient, concise, calm"
 
-flow "support_flow":
+flow is "support_flow":
   this flow will:
 
     first step "classify request":
-      do ai "classify_issue"
+      do ai is "classify_issue"
 
     then step "respond to user":
-      do agent "support_agent"
+      do agent is "support_agent"
 
     finally step "log interaction":
       do tool "echo" with message:
         "User request was processed and logged."
 
-app "support_bot_app":
-  starts at page "support_home"
+app is "support_bot_app":
+  starts at page is "support_home"
   description "A simple support assistant with memory and classification."
 
-page "support_home":
+page is "support_home":
   found at route "/support"
   titled "Support Assistant"
 
@@ -55,18 +55,18 @@ page "support_home":
 
 - `remember conversation as "name"` → conversation memory declaration.
 - `use model "name" provided by "provider"` → model definition.
-- `ai "name": when called: ...` → AI block with `model`, `input`, and optional `description`.
-- `agent "name": the goal is "..."; the personality is "..."` → agent definition.
-- `flow "name": this flow will: ... do ai/agent/tool ...` → flow with ordered steps; `first/then/finally` are readability sugar. Use `find <alias> where:` for record queries.
-- `app "name": starts at page "home"` → app entry page + description.
-- `page "name": found at route "/"; titled "..."` → page declaration; `show text:` / `show form asking:` map to text/form components.
+- `ai is "name": when called: ...` → AI block with `model`, `input`, and optional `description`.
+- `agent is "name": the goal is "..."; the personality is "..."` → agent definition.
+- `flow is "name": this flow will: ... do ai/agent/tool ...` → flow with ordered steps; `first/then/finally` are readability sugar. Use `find <alias> where:` for record queries.
+- `app is "name": starts at page is "home"` → app entry page + description.
+- `page is "name": found at route "/"; titled "..."` → page declaration; `show text:` / `show form asking:` map to text/form components.
 
 ## System prompts
 
 Inside an `ai` (or `agent`) block you may set exactly one system prompt:
 
 ```ai
-ai "bot":
+ai is "bot":
   model "gpt-4.1"
   system "You are a helpful assistant."
   input from user_text
@@ -79,7 +79,7 @@ Only one `system` line is allowed per block, and it must appear inside `ai`/`age
 Grant an AI access to specific tools/functions by listing them in the block:
 
 ```ai
-ai "support_bot":
+ai is "support_bot":
   model "gpt-4.1-mini"
   system "You are a helpful support assistant."
   tools:
@@ -132,7 +132,7 @@ set state.ok be true
 Flows can branch at runtime using `if` with an optional `else`:
 
 ```ai
-flow "check":
+flow is "check":
   step "grade":
     kind "script"
     let score = step.test.output
@@ -150,7 +150,7 @@ Conditions can read locals, state, literals, and previous step outputs. The `els
 Catch runtime errors and keep your flow alive:
 
 ```ai
-flow "safe_call":
+flow is "safe_call":
   step "s":
     kind "script"
     try:
@@ -168,7 +168,7 @@ The identifier after `catch` (e.g., `err`) holds a simple error object with `mes
 Iterate over a list and bind each element to a loop variable:
 
 ```ai
-flow "process_items":
+flow is "process_items":
   let items be state.items
 
   for each item in items:
@@ -186,7 +186,7 @@ memory "support_chat":
   type "conversation"
   retention "30 days"  # optional hint
 
-ai "support_bot":
+ai is "support_bot":
   model "gpt-4.1-mini"
   system "You are a helpful support assistant."
   memory "support_chat"
@@ -280,11 +280,12 @@ If a recall rule mentions `episodic` but the AI does not define it under `kinds:
 Declare a named frame that maps to real storage (memory/sqlite/postgres) and use it from flows:
 
 ```ai
-frame "conversations":
-  backend "memory"
-  table "conversations"
+frame is "conversations":
+  source:
+    backend is "memory"
+    table is "conversations"
 
-flow "store_and_load":
+flow is "store_and_load":
   step "insert":
     kind "frame_insert"
     frame "conversations"
@@ -329,9 +330,10 @@ step "remove":
 Build typed models on top of frames and use first-class CRUD steps:
 
 ```ai
-frame "documents":
-  backend "memory"
-  table "documents"
+frame is "documents":
+  source:
+    backend is "memory"
+    table is "documents"
 
 record "Document":
   frame "documents"
@@ -349,7 +351,7 @@ record "Document":
       type "datetime"
       default "now"
 
-flow "manage_document":
+flow is "manage_document":
   step "create":
     kind "db_create"
     record "Document"
@@ -396,18 +398,18 @@ Use whichever style fits your team; new projects are encouraged to adopt the Eng
 Flow steps can branch using English-style `if / otherwise` chains or simple `when` checks:
 
 ```ai
-flow "support_flow":
+flow is "support_flow":
   step "route to handler":
     if result.category is "billing":
-      do agent "billing_agent"
+      do agent is "billing_agent"
     otherwise if result.category is "technical":
-      do agent "technical_agent"
+      do agent is "technical_agent"
     otherwise:
-      do agent "general_agent"
+      do agent is "general_agent"
 
   step "maybe escalate":
     when result.priority is "high":
-      do agent "escalation_agent"
+      do agent is "escalation_agent"
 ```
 
 See `docs/language/conditions.md` for the full set of supported operators, macros, rulegroups, patterns, bindings, and flow redirection.
@@ -420,16 +422,16 @@ Inside a flow step (including inside condition branches), you can jump to anothe
 flow is "main_flow":
   step is "route":
     if result.category is "billing":
-      go to flow "billing_flow"
+      go to flow is "billing_flow"
     otherwise:
-      go to flow "fallback_flow"
+      go to flow is "fallback_flow"
 
 flow is "billing_flow":
   step is "finish":
     do tool "echo"
 ```
 
-`go to flow "name"` ends the current flow and continues execution in the target flow. When used inside a conditional branch, only the selected branch's redirect runs, and subsequent steps in the current flow are skipped. Traces include a `flow.goto` event showing the source step and destination flow.
+`go to flow is "name"` ends the current flow and continues execution in the target flow. When used inside a conditional branch, only the selected branch's redirect runs, and subsequent steps in the current flow are skipped. Traces include a `flow.goto` event showing the source step and destination flow.
 
 ## Variables and Expressions (Phase 1)
 
@@ -438,14 +440,14 @@ Use `let <name> be <expression>` to declare variables and `set <name> be|to <exp
 Example:
 
 ```ai
-flow "scoring":
+flow is "scoring":
   step "compute":
     let base be 10
     let bonus be 5
     let total be base plus bonus
 
     if total is greater than 10:
-      do agent "notify"
+      do agent is "notify"
 ```
 
 Boolean expressions use `and`, `or`, and `not`, and parentheses are available for grouping. Redeclaring a variable in the same scope or assigning to an undefined variable produces a diagnostic.
@@ -515,7 +517,7 @@ Loop counts must be numeric and non-negative; for-each requires a list value.
 
 ### Example flow
 ```ai
-flow "scoring":
+flow is "scoring":
   step "compute":
     let base be 10
     let bonus be 5
@@ -527,7 +529,7 @@ flow "scoring":
       set total to total + s
 
     if total is greater than 30:
-      do agent "notify"
+      do agent is "notify"
 ```
 
 ## Strings & Built-ins (Phase 3)
@@ -562,11 +564,11 @@ Use `match` to branch on values:
 ```ai
 match user.intent:
   when "billing":
-    do agent "billing_agent"
+    do agent is "billing_agent"
   when "technical":
-    do agent "technical_agent"
+    do agent is "technical_agent"
   otherwise:
-    do agent "fallback_agent"
+    do agent is "fallback_agent"
 ```
 
 Handle result shapes explicitly:
@@ -574,9 +576,9 @@ Handle result shapes explicitly:
 ```ai
 match result:
   when success as value:
-    do agent "handle_success" with data: value
+    do agent is "handle_success" with data: value
   when error as err:
-    do agent "handle_failure" with error: err
+    do agent is "handle_failure" with error: err
 ```
 
 ## User Input, Logging, and Observability (Phase 5)
@@ -662,28 +664,31 @@ retry up to 3 times with backoff:
 Declare reusable tabular data and query it in English:
 
 ```ai
-frame "sales_data":
-  from file "sales.csv"
-  has headers
-  select region, revenue, country
+frame is "sales_data":
+  source:
+    from file "sales.csv"
+    has headers
+  select:
+    columns are ["region", "revenue", "country"]
 
-flow "be_revenue":
-  step "filter":
-    let be_sales be all row from sales_data where row.country is "BE"
+flow is "be_revenue":
+  step is "filter":
+    let be_sales be sales_data:
+      keep rows where row.country is "BE"
     let total be sum of all row.revenue from be_sales
 
     repeat for each row in be_sales:
-      log info "Row" with { region: row.region, revenue: row.revenue }
+      log info "Row in BE: " + row.region
 ```
 
-Frames load lazily from CSV files, optionally apply `where` filters and `select` projections, and behave like lists of records in expressions, filters/maps, aggregates, and loops.
+Frames load lazily from CSV files or backend sources, optionally apply `where` filters and `select` projections, and behave like lists of records in expressions, filters/maps, aggregates, and loops.
 
 ## AI-Assisted Macros
 
 Define high-level instructions that an AI expands into Namel3ss code:
 
 ```ai
-macro "greet_user" using ai "codegen":
+macro "greet_user" using ai is "codegen":
   description "Generate a greeting flow."
 
 use macro "greet_user"
@@ -692,7 +697,7 @@ use macro "greet_user"
 Parameterized macros accept arguments:
 
 ```ai
-macro "crud_for_entity" using ai "codegen":
+macro "crud_for_entity" using ai is "codegen":
   description "Generate CRUD flows for an entity."
   parameters entity, fields
 
@@ -720,11 +725,11 @@ The macro produces flows (list/create/update/delete/detail), a form, and UI page
 Declare static UI pages with headings, text, images, sections, and embedded forms:
 
 ```ai
-page "home" at "/":
+page is "home" at "/":
   heading "Welcome"
   text "Select an option below"
 
-page "signup" at "/signup":
+page is "signup" at "/signup":
   section "form_section":
     heading "Create your account"
     use form "Signup Form"
@@ -737,7 +742,7 @@ Pages require a name, a route beginning with `/`, and at least one layout elemen
 Reactive state, inputs, buttons, and conditional visibility:
 
 ```ai
-page "signup" at "/signup":
+page is "signup" at "/signup":
   state name is ""
 
   heading "Create your account"
@@ -745,9 +750,9 @@ page "signup" at "/signup":
 
   button "Continue":
     on click:
-      do flow "register_user" with name: name
+      do flow is "register_user" with name: name
 
-page "hello" at "/hello":
+page is "hello" at "/hello":
   state name is ""
 
   input "Your name" as name
@@ -776,7 +781,7 @@ settings:
 - Styles on elements (indent under the element) or at the container level:
 
 ```ai
-page "home" at "/":
+page is "home" at "/":
   layout is column
   padding is large
 
@@ -811,10 +816,10 @@ component "PrimaryButton":
 Use components inside pages:
 
 ```ai
-page "welcome" at "/":
+page is "welcome" at "/":
   PrimaryButton "Get Started":
     action:
-      navigate to page "signup"
+      navigate to page is "signup"
 ```
 
 ## UI Rendering & Fullstack Integration (Phase UI-4)
@@ -886,7 +891,7 @@ The UI tab now renders a live preview of your pages:
 ## Studio Phase 8 — Navigation & Routing
 
 - Pages expose routes from the manifest; preview now maintains a local router with back/forward controls and route display.
-- Buttons with `navigate to page "name"` navigate between pages in Preview Mode; Inspector Mode prevents navigation.
+- Buttons with `navigate to page is "name"` navigate between pages in Preview Mode; Inspector Mode prevents navigation.
 - Route selection respects page routes, and history stacks allow quick multi-page simulation without touching the browser URL.
 
 ## Studio Phase 9 — Editable Inspector Properties

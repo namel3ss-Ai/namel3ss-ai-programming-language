@@ -81,18 +81,21 @@ def _relationship_source(include_missing_user: bool = False, include_tenant: boo
         )
     parts = [
         'frame is "users":\n',
-        '  backend "memory"\n',
-        '  table "users"\n',
+        '  source:\n',
+        '    backend is "memory"\n',
+        '    table is "users"\n',
         'frame is "orders":\n',
-        '  backend "memory"\n',
-        '  table "orders"\n',
+        '  source:\n',
+        '    backend is "memory"\n',
+        '    table is "orders"\n',
     ]
     if include_tenant:
         parts.extend(
             [
                 'frame is "tenants":\n',
-                '  backend "memory"\n',
-                '  table "tenants"\n',
+                '  source:\n',
+                '    backend is "memory"\n',
+                '    table is "tenants"\n',
             ]
         )
     parts.append("\n")
@@ -230,11 +233,13 @@ def test_missing_related_row_results_in_null_attachment():
 def test_parser_rejects_unknown_base_alias():
     source = (
         'frame is "users":\n'
-        '  backend "memory"\n'
-        '  table "users"\n'
+        '  source:\n'
+        '    backend is "memory"\n'
+        '    table is "users"\n'
         'frame is "orders":\n'
-        '  backend "memory"\n'
-        '  table "orders"\n'
+        '  source:\n'
+        '    backend is "memory"\n'
+        '    table is "orders"\n'
         'record "User":\n'
         '  frame is "users"\n'
         "  fields:\n"
@@ -263,11 +268,13 @@ def test_parser_rejects_unknown_base_alias():
 def test_ir_error_when_via_field_missing():
     source = (
         'frame is "users":\n'
-        '  backend "memory"\n'
-        '  table "users"\n'
+        '  source:\n'
+        '    backend is "memory"\n'
+        '    table is "users"\n'
         'frame is "orders":\n'
-        '  backend "memory"\n'
-        '  table "orders"\n'
+        '  source:\n'
+        '    backend is "memory"\n'
+        '    table is "orders"\n'
         'record "User":\n'
         '  frame is "users"\n'
         "  fields:\n"
@@ -295,11 +302,13 @@ def test_ir_error_when_via_field_missing():
 def test_ir_error_when_field_not_foreign_key():
     source = (
         'frame is "users":\n'
-        '  backend "memory"\n'
-        '  table "users"\n'
+        '  source:\n'
+        '    backend is "memory"\n'
+        '    table is "users"\n'
         'frame is "orders":\n'
-        '  backend "memory"\n'
-        '  table "orders"\n'
+        '  source:\n'
+        '    backend is "memory"\n'
+        '    table is "orders"\n'
         'record "User":\n'
         '  frame is "users"\n'
         "  fields:\n"

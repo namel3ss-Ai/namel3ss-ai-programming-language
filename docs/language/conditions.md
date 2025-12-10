@@ -5,23 +5,23 @@ Conditions are indentation-based—no braces, no closing keywords.
 ## Flow Conditions
 
 ```ai
-flow "support_flow":
+flow is "support_flow":
   this flow will:
 
     step "classify request":
-      do ai "classify_issue"
+      do ai is "classify_issue"
 
     step "route to handler":
       if result.category is "billing":
-        do agent "billing_agent"
+        do agent is "billing_agent"
       otherwise if result.category is "technical":
-        do agent "technical_agent"
+        do agent is "technical_agent"
       otherwise:
-        do agent "general_agent"
+        do agent is "general_agent"
 
     step "maybe escalate":
       when result.priority is "high":
-        do agent "escalation_agent"
+        do agent is "escalation_agent"
 ```
 
 Rules:
@@ -42,10 +42,10 @@ Examples:
 
 ```ai
 if score > 0.8 and user.is_vip:
-  do agent "vip_agent"
+  do agent is "vip_agent"
 
 when not user.is_logged_in:
-  do agent "login_helper"
+  do agent is "login_helper"
 ```
 
 Identifiers can be dotted (e.g., `result.category`) and resolve against the flow state.
@@ -58,12 +58,12 @@ Flow:
 ```ai
 step "check_priority":
   unless result.priority is "low":
-    do agent "handle_high_priority"
+    do agent is "handle_high_priority"
 ```
 
 Agent:
 ```ai
-agent "review_agent":
+agent is "review_agent":
   unless ticket.status is "closed":
     do tool "send_notification"
 ```
@@ -81,13 +81,13 @@ Flow:
 ```ai
 step "route":
   if result.category is "billing" as cat:
-    do ai "billing_classifier" with message:
+    do ai is "billing_classifier" with message:
       cat
 ```
 
 Agent:
 ```ai
-agent "triage_agent":
+agent is "triage_agent":
   if user.score > 0.8 as high:
     do tool "send_alert" with message:
       high
@@ -105,7 +105,7 @@ You can match shallow structures inside conditions:
 
 ```ai
 if result matches { category: "billing", priority: high } as details:
-  do agent "billing_handler" with details: details
+  do agent is "billing_handler" with details: details
 ```
 
 Rules:
@@ -130,7 +130,7 @@ Use the whole group (all rules must pass):
 
 ```ai
 if vip_rules:
-  do agent "vip_handler"
+  do agent is "vip_handler"
 ```
 
 Or an individual rule:
@@ -155,7 +155,7 @@ when vip_rules.age_ok:
 You can use the same English `if / otherwise` chains or `when` blocks directly inside an agent:
 
 ```ai
-agent "support_agent":
+agent is "support_agent":
   the goal is "Provide helpful answers."
 
   when user_intent is "billing":
@@ -171,7 +171,7 @@ agent "support_agent":
 Or with a chain:
 
 ```ai
-agent "triage_agent":
+agent is "triage_agent":
   if user_intent is "billing":
     do tool "create_billing_ticket"
   otherwise if user_intent is "technical":
@@ -184,15 +184,15 @@ Semantics match flows: first true branch runs; `when` is a single-branch check; 
 
 ## Flow Redirection
 
-Inside a flow step or a conditional branch, you can jump to another flow using `go to flow "name"`:
+Inside a flow step or a conditional branch, you can jump to another flow using `go to flow is "name"`:
 
 ```ai
-flow "router":
+flow is "router":
   step "route":
     if result.category is "billing":
-      go to flow "billing_flow"
+      go to flow is "billing_flow"
     otherwise:
-      go to flow "fallback_flow"
+      go to flow is "fallback_flow"
 ```
 
 `go to flow` stops the current flow and starts the target flow immediately. When used inside a conditional branch, only the chosen branch's redirect runs. Traces include a `flow.goto` event showing the source and destination flows.
@@ -205,10 +205,10 @@ You can define reusable condition macros and use them anywhere a normal conditio
 define condition "is_vip" as:
   user.age > 25 and user.value > 10000
 
-flow "router":
+flow is "router":
   step "route":
     if is_vip:
-      do agent "vip_handler"
+      do agent is "vip_handler"
 ```
 
 Rules:
