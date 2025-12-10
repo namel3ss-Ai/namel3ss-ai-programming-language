@@ -78,8 +78,8 @@ def _format_decl(decl: ast_nodes.Declaration, level: int) -> List[str]:
     if isinstance(decl, ast_nodes.ModelDecl):
         body: List[str] = []
         if decl.provider:
-            body.append(_indent(level + 1, f"provider {_q(decl.provider)}"))
-        return [_indent(level, f"model {_q(decl.name)}:")] + body
+            body.append(_indent(level + 1, f"provider is {_q(decl.provider)}"))
+        return [_indent(level, f"model is {_q(decl.name)}:")] + body
     if isinstance(decl, ast_nodes.AICallDecl):
         body: List[str] = []
         if decl.model_name:

@@ -65,8 +65,8 @@ flow is "chat_turn":
 ai is "bot":
   model is "dummy"
 
-model "dummy":
-  provider "openai:gpt-4.1-mini"
+model is "dummy":
+  provider is "openai_default"
 """
     response = client.post(
         "/api/ui/flow/stream",

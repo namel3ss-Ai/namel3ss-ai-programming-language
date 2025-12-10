@@ -85,8 +85,8 @@ def test_ai_tool_loop_happy_path(monkeypatch):
     monkeypatch.setenv("OPENAI_API_KEY", "test")
     code = dedent(
         """
-        model "gpt-4.1-mini":
-          provider "openai:gpt-4.1-mini"
+        model is "gpt-4.1-mini":
+          provider is "openai:gpt-4.1-mini"
 
         tool is "get_weather":
           kind is "http_json"
@@ -133,8 +133,8 @@ def test_ai_tool_loop_unknown_tool_errors(monkeypatch):
     monkeypatch.setenv("OPENAI_API_KEY", "test")
     code = dedent(
         """
-        model "gpt-4.1-mini":
-          provider "openai:gpt-4.1-mini"
+        model is "gpt-4.1-mini":
+          provider is "openai:gpt-4.1-mini"
 
         tool is "get_weather":
           kind is "http_json"

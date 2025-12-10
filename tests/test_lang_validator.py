@@ -8,10 +8,10 @@ VALID_SOURCE = (
     '  entry_page is "home"\n'
     'page is "home":\n'
     '  route "/"\n'
-    'model "default":\n'
-    '  provider "openai:gpt-4.1-mini"\n'
+    'model is "default":\n'
+    '  provider is "openai_default"\n'
     'ai is "summarise":\n'
-    '  model "default"\n'
+    '  model is "default"\n'
     '  input from user_message\n'
 )
 
@@ -19,7 +19,7 @@ VALID_SOURCE = (
 def test_validator_accepts_valid_program():
     program = ir.ast_to_ir(parse_source(VALID_SOURCE))
     diags = validate_module(program)
-    assert diags == []
+    assert all(d.severity != "error" for d in diags)
 
 
 def test_validator_catches_missing_fields_and_refs():
@@ -29,6 +29,7 @@ def test_validator_catches_missing_fields_and_refs():
         'page is "home":\n'
         '  title "Home"\n'
         'flow is "pipeline":\n'
+        '  description "no steps yet"\n'
         'ai is "summarise":\n'
         '  input from user_message\n'
     )

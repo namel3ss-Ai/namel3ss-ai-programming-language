@@ -9,10 +9,10 @@ from namel3ss.server import create_app
 
 
 PROGRAM = (
-    'model "default":\n'
-    '  provider "openai:gpt-4.1-mini"\n'
+    'model is "default":\n'
+    '  provider is "openai:gpt-4.1-mini"\n'
     'ai is "support_bot":\n'
-    '  model "default"\n'
+    '  model is "default"\n'
     "  memory:\n"
     "    kinds:\n"
     "      short_term:\n"

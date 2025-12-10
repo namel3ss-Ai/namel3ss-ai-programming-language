@@ -11,10 +11,10 @@ PROGRAM_TEXT = (
     '  title "Home"\n'
     '  route "/"\n'
     '  agent "helper"\n'
-    'model "default":\n'
-    '  provider "openai:gpt-4.1-mini"\n'
+    'model is "default":\n'
+    '  provider is "openai_default"\n'
     'ai is "summarise_message":\n'
-    '  model "default"\n'
+    '  model is "default"\n'
     '  input from user_message\n'
     'agent is "helper":\n'
     '  goal "Assist"\n'
@@ -67,12 +67,12 @@ def test_cli_run_flow(tmp_path, capsys):
     flow_program = (
         'flow is "pipeline":\n'
         '  step is "call":\n'
-        '    kind "ai"\n'
-        '    target "summarise_message"\n'
-        'model "default":\n'
-        '  provider "openai:gpt-4.1-mini"\n'
+        '    kind is "ai"\n'
+        '    target is "summarise_message"\n'
+        'model is "default":\n'
+        '  provider is "openai_default"\n'
         'ai is "summarise_message":\n'
-        '  model "default"\n'
+        '  model is "default"\n'
     )
     program_file = tmp_path / "flow.ai"
     program_file.write_text(flow_program, encoding="utf-8")

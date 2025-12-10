@@ -6,18 +6,18 @@ from namel3ss.server import create_app
 PROGRAM = (
     'flow is "pipeline":\n'
     '  step is "call":\n'
-    '    kind "ai"\n'
+    '    kind is "ai"\n'
     '    target "summarise_message"\n'
-    'page is "home":\n'
+    'page is "home" at "/":\n'
     '  title "Home"\n'
     '  section "hero":\n'
     '    component "form":\n'
     '      value "name!"\n'
-    '      target "pipeline"\n'
-    'model "default":\n'
-    '  provider "openai:gpt-4.1-mini"\n'
+    '      target is "pipeline"\n'
+    'model is "default":\n'
+    '  provider is "openai_default"\n'
     'ai is "summarise_message":\n'
-    '  model "default"\n'
+    '  model is "default"\n'
 )
 
 

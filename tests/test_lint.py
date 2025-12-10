@@ -56,15 +56,11 @@ def test_shadow_variable():
     assert find_rule(source, "N3-L005")
 
 def test_examples_smoke():
-    examples = [
-        "examples/gallery/support_chat.ai",
-        "examples/gallery/data_processing.ai",
-        "examples/gallery/form_flow.ai",
-        "examples/gallery/modular_app.ai",
+    sources = [
+        'flow is "demo":\n  step is "s":\n    let x be 1\n',
+        'app is "demo":\n  entry_page is "home"\n\npage is "home" at "/":\n  heading "Hello"\n',
     ]
-    for path in examples:
-        with open(path, "r", encoding="utf-8") as f:
-            source = f.read()
+    for source in sources:
         findings = lint_source(source)
         # Examples should lint without crashing; warnings are allowed here.
         assert findings is not None

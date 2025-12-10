@@ -6,11 +6,11 @@ from namel3ss.parser import ParseError, parse_source
 
 ENGLISH_PROGRAM = '''
 remember conversation as "support_history"
-use model "support-llm" provided by "openai"
+use model is "support-llm" provided by "openai"
 
 ai is \"classify_issue":
   when called:
-    use model "support-llm"
+    use model is "support-llm"
     input comes from user_input
     describe task as "Classify the user's support request."
 

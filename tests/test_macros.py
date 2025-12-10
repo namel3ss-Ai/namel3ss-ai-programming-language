@@ -8,7 +8,7 @@ from namel3ss.parser import parse_source
 
 def test_macro_decl_parsing():
   src = (
-      'macro "greet" using ai is "codegen":\n'
+      'macro "greet" using ai "codegen":\n'
       '  description "Generate greeting flow"\n'
       '  sample "Example sample"\n'
       "  parameters name\n"
@@ -42,7 +42,7 @@ def _expand(src: str, ai_callback):
 
 def test_macro_expansion_generates_flow():
   src = (
-      'macro "greet" using ai is "codegen":\n'
+      'macro "greet" using ai "codegen":\n'
       '  description "Generate greeting flow"\n'
       '\n'
       'use macro "greet"\n'
@@ -63,7 +63,7 @@ def test_macro_expansion_generates_flow():
 
 def test_macro_expansion_with_parameters():
   src = (
-      'macro "crud" using ai is "codegen":\n'
+      'macro "crud" using ai "codegen":\n'
       '  description "Generate CRUD"\n'
       "  parameters entity, fields\n"
       '\n'
@@ -94,7 +94,7 @@ def test_macro_missing_macro_raises():
 
 def test_macro_output_parse_error():
   src = (
-      'macro "bad" using ai is "codegen":\n'
+      'macro "bad" using ai "codegen":\n'
       '  description "bad output"\n'
       '\n'
       'use macro "bad"\n'
@@ -109,7 +109,7 @@ def test_macro_output_parse_error():
 
 def test_macro_name_conflict():
   src = (
-      'macro "m" using ai is "codegen":\n'
+      'macro "m" using ai "codegen":\n'
       '  description "dup"\n'
       '\n'
       'use macro "m"\n'
@@ -132,7 +132,7 @@ def test_macro_name_conflict():
 
 def test_macro_expansion_too_large():
   src = (
-      'macro "big" using ai is "codegen":\n'
+      'macro "big" using ai "codegen":\n'
       '  description "big"\n'
       '\n'
       'use macro "big"\n'
@@ -147,7 +147,7 @@ def test_macro_expansion_too_large():
 
 def test_macro_recursion_detected():
   src = (
-      'macro "loop" using ai is "codegen":\n'
+      'macro "loop" using ai "codegen":\n'
       '  description "recurse"\n'
       '\n'
       'use macro "loop"\n'

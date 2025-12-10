@@ -15,8 +15,8 @@ def test_parse_ai_streaming_true():
             ai is "support_bot":
               model is "gpt-4.1-mini"
 
-            model "gpt-4.1-mini":
-              provider "openai:gpt-4.1-mini"
+            model is "gpt-4.1-mini":
+              provider is "openai:gpt-4.1-mini"
 
             flow is "chat_turn":
               step is "answer":
@@ -40,8 +40,8 @@ def test_parse_ai_streaming_default_false():
             ai is "support_bot":
               model is "gpt-4.1-mini"
 
-            model "gpt-4.1-mini":
-              provider "openai:gpt-4.1-mini"
+            model is "gpt-4.1-mini":
+              provider is "openai:gpt-4.1-mini"
 
             flow is "chat_turn":
               step is "answer":
@@ -64,8 +64,8 @@ def test_parse_ai_streaming_metadata_fields():
             ai is "support_bot":
               model is "gpt-4.1-mini"
 
-            model "gpt-4.1-mini":
-              provider "openai:gpt-4.1-mini"
+            model is "gpt-4.1-mini":
+              provider is "openai:gpt-4.1-mini"
 
             flow is "chat_turn":
               step is "answer":
@@ -97,8 +97,8 @@ def test_invalid_streaming_literal_raises():
                 ai is "support_bot":
                   model is "gpt-4.1-mini"
 
-                model "gpt-4.1-mini":
-                  provider "openai:gpt-4.1-mini"
+                model is "gpt-4.1-mini":
+                  provider is "openai:gpt-4.1-mini"
 
                 flow is "chat_turn":
                   step is "answer":
@@ -118,8 +118,8 @@ def test_invalid_stream_mode_diagnostic():
                 ai is "support_bot":
                   model is "gpt-4.1-mini"
 
-                model "gpt-4.1-mini":
-                  provider "openai:gpt-4.1-mini"
+                model is "gpt-4.1-mini":
+                  provider is "openai:gpt-4.1-mini"
 
                 flow is "chat_turn":
                   step is "answer":

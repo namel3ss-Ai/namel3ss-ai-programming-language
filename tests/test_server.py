@@ -9,15 +9,15 @@ from namel3ss.server import create_app
 PROGRAM_TEXT = (
     'app is "support_portal":\n'
     '  entry_page is "home"\n'
-    'page is "home":\n'
+    'page is "home" at "/":\n'
     '  title "Home"\n'
     '  ai_call "summarise_message"\n'
     '  agent "helper"\n'
     '  memory "short_term"\n'
-    'model "default":\n'
-    '  provider "openai:gpt-4.1-mini"\n'
+    'model is "default":\n'
+    '  provider is "openai_default"\n'
     'ai is "summarise_message":\n'
-    '  model "default"\n'
+    '  model is "default"\n'
     'agent is "helper":\n'
     '  goal "Assist"\n'
     'memory "short_term":\n'
@@ -72,12 +72,12 @@ def test_run_flow_endpoint():
     flow_program = (
         'flow is "pipeline":\n'
         '  step is "call":\n'
-        '    kind "ai"\n'
+        '    kind is "ai"\n'
         '    target "summarise_message"\n'
-        'model "default":\n'
-        '  provider "openai:gpt-4.1-mini"\n'
+        'model is "default":\n'
+        '  provider is "openai_default"\n'
         'ai is "summarise_message":\n'
-        '  model "default"\n'
+        '  model is "default"\n'
     )
     client = TestClient(create_app())
     response = client.post(
@@ -93,12 +93,10 @@ def test_run_flow_endpoint():
 
 def test_pages_endpoint_lists_pages():
     code = (
-        'page is "home":\n'
+        'page is "home" at "/":\n'
         '  title "Home"\n'
-        '  route "/"\n'
-        'page is "about":\n'
+        'page is "about" at "/about":\n'
         '  title "About"\n'
-        '  route "/about"\n'
     )
     client = TestClient(create_app())
     response = client.post("/api/pages", json={"code": code}, headers={"X-API-Key": "viewer-key"})
@@ -109,9 +107,8 @@ def test_pages_endpoint_lists_pages():
 
 def test_page_ui_endpoint_returns_sections():
     code = (
-        'page is "home":\n'
+        'page is "home" at "/":\n'
         '  title "Home"\n'
-        '  route "/"\n'
         '  section "hero":\n'
         '    component "text":\n'
         '      value "Welcome"\n'
@@ -144,17 +141,16 @@ def test_metrics_and_studio_endpoints():
 
 def test_diagnostics_and_bundle_endpoints():
     code = (
-        'page is "home":\n'
+        'page is "home" at "/":\n'
         '  title "Home"\n'
-        '  route "/"\n'
         'flow is "pipeline":\n'
         '  step is "call":\n'
-        '    kind "ai"\n'
+        '    kind is "ai"\n'
         '    target "summarise_message"\n'
-        'model "default":\n'
-        '  provider "openai:gpt-4.1-mini"\n'
+        'model is "default":\n'
+        '  provider is "openai_default"\n'
         'ai is "summarise_message":\n'
-        '  model "default"\n'
+        '  model is "default"\n'
     )
     tmp = Path(tempfile.mkdtemp())
     program_file = tmp / "program.ai"

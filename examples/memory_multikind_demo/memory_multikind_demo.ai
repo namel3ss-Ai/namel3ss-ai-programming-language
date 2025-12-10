@@ -18,8 +18,8 @@ memory profile is "shared_conversation":
       pii_policy is "strip-email-ip"
       extract_facts is true
 
-model "gpt-4.1-mini":
-  provider "dummy"
+model is "gpt-4.1-mini":
+  provider is "dummy"
 
 ai is "travel_planner":
   model is "gpt-4.1-mini"

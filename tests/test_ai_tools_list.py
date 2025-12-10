@@ -17,8 +17,8 @@ def test_ai_with_tools_list_parses_and_validates():
           query:
             city: input.city
 
-        model "gpt-4.1-mini":
-          provider "openai:gpt-4.1-mini"
+        model is "gpt-4.1-mini":
+          provider is "openai:gpt-4.1-mini"
 
         ai is "assistant_with_tools":
           model is "gpt-4.1-mini"
@@ -46,8 +46,8 @@ def test_ai_with_tool_alias_parses():
           method is "GET"
           url is "https://api.example.com/weather"
 
-        model "gpt-4.1-mini":
-          provider "openai:gpt-4.1-mini"
+        model is "gpt-4.1-mini":
+          provider is "openai:gpt-4.1-mini"
 
         ai is "assistant_with_tools":
           model is "gpt-4.1-mini"
@@ -69,8 +69,8 @@ def test_ai_with_tool_alias_parses():
 def test_ai_with_unknown_tool_errors():
     code = dedent(
         """
-        model "gpt-4.1-mini":
-          provider "openai:gpt-4.1-mini"
+        model is "gpt-4.1-mini":
+          provider is "openai:gpt-4.1-mini"
 
         ai is "assistant_with_tools":
           model is "gpt-4.1-mini"
@@ -97,8 +97,8 @@ def test_ai_with_duplicate_alias_errors():
           method is "POST"
           url is "https://api.example.com/tickets"
 
-        model "gpt-4.1-mini":
-          provider "openai:gpt-4.1-mini"
+        model is "gpt-4.1-mini":
+          provider is "openai:gpt-4.1-mini"
 
         ai is "assistant_with_tools":
           model is "gpt-4.1-mini"

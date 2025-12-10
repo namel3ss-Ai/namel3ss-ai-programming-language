@@ -15,10 +15,10 @@ PROGRAM_TEXT = (
     '  entry_page is "home"\n'
     'page is "home":\n'
     '  title "Home"\n'
-    'model "default":\n'
-    '  provider "openai:gpt-4.1-mini"\n'
+    'model is "default":\n'
+    '  provider is "openai:gpt-4.1-mini"\n'
     'ai is "summarise_message":\n'
-    '  model "default"\n'
+    '  model is "default"\n'
     'agent is "helper":\n'
     '  goal "Assist"\n'
 )

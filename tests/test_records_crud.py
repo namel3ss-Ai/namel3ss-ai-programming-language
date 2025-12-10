@@ -52,19 +52,19 @@ def _build_engine(program: IRProgram):
 def test_parse_record_decl_fields():
     module = parse_source(
         'frame is "documents":\n'
-        '  backend "memory"\n'
-        '  table "documents"\n'
+        '  backend is "memory"\n'
+        '  table is "documents"\n'
         '\n'
-        'record "Document":\n'
+        'record is "Document":\n'
         '  frame is "documents"\n'
         "  fields:\n"
         '    id:\n'
-        '      type "uuid"\n'
-        '      primary_key true\n'
+        '      type is "uuid"\n'
+        '      primary_key is true\n'
         '    title:\n'
-        '      type "string"\n'
-        '      required true\n'
-        '      default "Untitled"\n'
+        '      type is "string"\n'
+        '      required is true\n'
+        '      default is "Untitled"\n'
     )
     records = [d for d in module.declarations if isinstance(d, ast_nodes.RecordDecl)]
     assert records and records[0].frame == "documents"

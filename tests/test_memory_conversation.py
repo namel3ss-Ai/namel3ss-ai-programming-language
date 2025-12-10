@@ -18,7 +18,7 @@ def test_parse_memory_and_ai_reference():
         '  retention "30 days"\n'
         '\n'
         'ai is "bot":\n'
-        '  model "default"\n'
+        '  model is "default"\n'
         '  memory "support_chat"\n'
     )
     memories = [d for d in module.declarations if isinstance(d, ast_nodes.MemoryDecl)]

@@ -28,10 +28,10 @@ Namel3ss V3 is an AI-native programming language and runtime that treats AI mode
   - Models are logical names bound to providers; `ai` blocks define callable prompts/inputs.
   - Example:
     ```ai
-    model "default":
-      provider "openai:gpt-4.1-mini"
+    model is "default":
+      provider is "openai:gpt-4.1-mini"
     ai "summarise":
-      model "default"
+      model is "default"
       input from "user_input"
     ```
 - **agent + Agent Teams**

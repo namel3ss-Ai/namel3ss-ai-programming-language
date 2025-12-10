@@ -8,11 +8,11 @@ page is "home" at "/":
   section "query":
     text "Use Studio to run flows manually; UI wiring is kept minimal for stability."
 
-model "default":
-  provider "dummy"
+model is "default":
+  provider is "dummy"
 
 ai is "rewrite":
-  model "default"
+  model is "default"
   input from "user_input"
 
 flow is "answer":

@@ -545,8 +545,8 @@ All of these surfaces honour the configured scopes, retention filtering, and PII
         - answer_faithfulness
         - answer_completeness
     ```
-  - `dataset:` uses a frame for questions and optional expected answers. Metrics default to the three listed above if omitted.
-  - Run with `n3 rag-eval support_eval --file path/to/file.ai`; use `--limit N` to subset rows or `--output json` for machine-readable output.
+  - `dataset:` uses a frame for questions and optional expected answers. Metrics default to the three listed above when `metrics` is omitted.
+  - Run with `n3 rag-eval support_eval --file path/to/file.ai`; use `--limit N` to subset rows or `--output json` to see full row metrics.
 - UI pages & layout:
   - `page is "name" at "/route":` defines a UI page. Layout elements: `section`, `heading`, `text`, `image`, `use form`, `state`, `input`, `button`, `when ... show ... otherwise ...`.
   - Styling directives inside pages/sections/elements: `color is <token|string>`, `background color is ...`, `align is left|center|right`, `align vertically is top|middle|bottom`, `layout is row|column|two columns|three columns`, `padding|margin|gap is small|medium|large`.

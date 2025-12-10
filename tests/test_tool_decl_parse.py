@@ -8,10 +8,10 @@ from namel3ss import ast_nodes
 def test_parse_tool_with_query_and_url_expr():
     code = dedent(
         '''
-        tool is \"get_weather":
-          kind "http_json"
-          method "GET"
-          url "https://api.example.com/weather"
+        tool is "get_weather":
+          kind is "http_json"
+          method is "GET"
+          url is "https://api.example.com/weather"
           query:
             city: input.city
         '''

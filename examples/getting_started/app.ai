@@ -6,11 +6,11 @@ page is "home" at "/":
     heading "Getting Started with Namel3ss"
     text "This page uses the modern English-style DSL."
 
-model "default":
-  provider "dummy"
+model is "default":
+  provider is "dummy"
 
 ai is "greet":
-  model "default"
+  model is "default"
   input from "user_input"
 
 flow is "pipeline":

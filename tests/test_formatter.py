@@ -34,7 +34,7 @@ def test_format_source_formats_and_idempotent():
 def test_format_source_with_flow_and_ai():
     source = (
         'ai is "greet":\n'
-        ' model "m"\n'
+        ' model is "m"\n'
         ' input from user\n'
         '\n'
         'flow is "pipeline":\n'
@@ -43,11 +43,11 @@ def test_format_source_with_flow_and_ai():
         '  kind "ai"\n'
     )
     expected = (
-        'ai "greet":\n'
-        '  model "m"\n'
+        'ai is "greet":\n'
+        '  model is "m"\n'
         '  input from "user"\n'
         '\n'
-        'flow "pipeline":\n'
+        'flow is "pipeline":\n'
         '  step "s":\n'
         '    kind "ai"\n'
         '    target "greet"\n'

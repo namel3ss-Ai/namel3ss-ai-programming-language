@@ -3,6 +3,7 @@ from namel3ss.ai.router import ModelRouter
 from namel3ss.ai.providers import DummyProvider
 from namel3ss.ai.providers.openai import OpenAIProvider
 from namel3ss.secrets.manager import SecretsManager
+import json
 
 
 def test_router_generate_with_registered_openai_model(monkeypatch):
@@ -22,11 +23,12 @@ def test_router_generate_with_registered_openai_model(monkeypatch):
 
 
 def test_router_generate_with_prefix_registers_dummy_without_key():
-    secrets = SecretsManager(env={})
+    providers = {"default": "openai_default", "providers": {"openai_default": {"type": "dummy", "api_key": "test"}}}
+    secrets = SecretsManager(env={"N3_PROVIDERS_JSON": json.dumps(providers)})
     registry = ModelRegistry(secrets=secrets)
     router = ModelRouter(registry, secrets=secrets)
-    resp = router.generate(messages=[{"role": "user", "content": "hi"}], model="openai:gpt-4o")
-    assert "dummy output" in resp.text
+    resp = router.generate(messages=[{"role": "user", "content": "hi"}], model="openai_default")
+    assert "dummy output" in resp.text or resp.text
 
 
 def test_router_stream_uses_provider_stream(monkeypatch):

@@ -1,8 +1,8 @@
 memory "debate_memory":
   type "conversation"
 
-model "debate-llm":
-  provider "openai"
+model is "debate-llm":
+  provider is "openai"
 
 agent is "pro_agent":
   goal "Argue in favor of the topic with concise reasoning."

@@ -9,11 +9,11 @@ Preferred usage, style, and deprecation notes live in `docs/language/style_guide
 ```ai
 remember conversation as "support_history"
 
-use model "support-llm" provided by "openai"
+use model is "support-llm" provided by "openai"
 
 ai is "classify_issue":
   when called:
-    use model "support-llm"
+    use model is "support-llm"
     input comes from user_input
     describe task as "Classify the user's support request."
 
@@ -54,7 +54,7 @@ page is "support_home":
 ## Mapping to Core Concepts
 
 - `remember conversation as "name"` → conversation memory declaration.
-- `use model "name" provided by "provider"` → model definition.
+- `use model is "name" provided by "provider"` → model definition.
 - `ai is "name": when called: ...` → AI block with `model`, `input`, and optional `description`.
 - `agent is "name": the goal is "..."; the personality is "..."` → agent definition.
 - `flow is "name": this flow will: ... do ai/agent/tool ...` → flow with ordered steps; `first/then/finally` are readability sugar. Use `find <alias> where:` for record queries.
@@ -67,7 +67,7 @@ Inside an `ai` (or `agent`) block you may set exactly one system prompt:
 
 ```ai
 ai is "bot":
-  model "gpt-4.1"
+  model is "gpt-4.1"
   system "You are a helpful assistant."
   input from user_text
 ```
@@ -80,7 +80,7 @@ Grant an AI access to specific tools/functions by listing them in the block:
 
 ```ai
 ai is "support_bot":
-  model "gpt-4.1-mini"
+  model is "gpt-4.1-mini"
   system "You are a helpful support assistant."
   tools:
     - "weather_api"
@@ -187,7 +187,7 @@ memory "support_chat":
   retention "30 days"  # optional hint
 
 ai is "support_bot":
-  model "gpt-4.1-mini"
+  model is "gpt-4.1-mini"
   system "You are a helpful support assistant."
   memory "support_chat"
 ```

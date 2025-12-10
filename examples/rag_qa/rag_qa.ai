@@ -1,16 +1,21 @@
-model "retriever":
-  provider "openai_default"
+model is "retriever":
+  provider is "openai_default"
 
 ai is "rewrite_question":
-  model "retriever"
+  model is "retriever"
 
 ai is "compose_answer":
-  model "retriever"
+  model is "retriever"
 
 frame is "documents":
   source:
     backend is "memory"
     table is "documents"
+
+frame is "eval_questions":
+  source:
+    from file "examples/rag_qa/data/eval_questions.csv"
+    has headers
 
 vector_store is "kb":
   backend is "memory"
@@ -31,6 +36,17 @@ rag pipeline is "kb_qa":
   stage is "answer":
     type is "ai_answer"
     ai is "compose_answer"
+
+rag evaluation is "support_eval":
+  pipeline is "kb_qa"
+  dataset:
+    from frame "eval_questions"
+    question_column is "question"
+    answer_column is "expected_answer"
+  metrics:
+    - context_relevance
+    - answer_faithfulness
+    - answer_completeness
 
 flow is "ingest_documents":
   description "Seed a couple of docs and build the vector index."

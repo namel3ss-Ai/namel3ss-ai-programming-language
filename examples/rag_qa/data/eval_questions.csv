@@ -1,0 +1,4 @@
+question,expected_answer
+What is Namel3ss?,"Namel3ss is an English-first programming language with AI, flows, and data features."
+What are frames used for?,"Frames load tabular data and can be indexed for retrieval."
+Where is the knowledge base stored?,"The vector store 'kb' indexes the documents frame."

@@ -23,7 +23,7 @@ vector_store is "kb":
   frame is "docs"
   text_column "content"
   id_column "id"
-  embedding_model "fake"
+  embedding_model is "fake"
 
 flow is "index_and_query":
   step is "insert":
@@ -77,7 +77,7 @@ vector_store is "kb":
   frame is "docs"
   text_column "content"
   id_column "id"
-  embedding_model "fake"
+  embedding_model is "fake"
 
 flow is "index_and_query":
   step is "insert":

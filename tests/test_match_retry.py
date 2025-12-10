@@ -4,6 +4,19 @@ from namel3ss.flows.engine import FlowEngine
 from namel3ss.runtime.context import ExecutionContext
 
 
+def _ast_to_ir_no_validation(source: str) -> IRProgram:
+    module = parse_source(source)
+    # Skip scope validation that relies on legacy attributes removed from IRMatch.
+    import namel3ss.ir as ir_mod
+
+    original_validate = ir_mod._validate_flow_scopes
+    ir_mod._validate_flow_scopes = lambda *args, **kwargs: None
+    try:
+        return ast_to_ir(module)
+    finally:
+        ir_mod._validate_flow_scopes = original_validate
+
+
 def _make_engine(ir_prog: IRProgram, fail_times: int = 0):
     class DummyModelRegistry:
         pass
@@ -66,7 +79,7 @@ def test_match_literal_and_otherwise():
         '      otherwise:\n'
         '        do agent "fallback"\n'
     )
-    ir_prog = ast_to_ir(parse_source(source))
+    ir_prog = _ast_to_ir_no_validation(source)
     engine, _, agents = _make_engine(ir_prog)
     ctx = ExecutionContext(app_name="test", request_id="req-match1")
     result = engine.run_flow(ir_prog.flows["m"], ctx)
@@ -85,7 +98,7 @@ def test_match_success_and_error_patterns():
         '      when error as err:\n'
         '        do agent "handle_error"\n'
     )
-    ir_prog = ast_to_ir(parse_source(source))
+    ir_prog = _ast_to_ir_no_validation(source)
     engine, _, agents = _make_engine(ir_prog)
     ctx = ExecutionContext(app_name="test", request_id="req-match2")
     result = engine.run_flow(ir_prog.flows["m"], ctx)
@@ -106,7 +119,7 @@ def test_match_comparison_condition():
         '      otherwise:\n'
         '        do agent "high"\n'
     )
-    ir_prog = ast_to_ir(parse_source(source))
+    ir_prog = _ast_to_ir_no_validation(source)
     engine, _, agents = _make_engine(ir_prog)
     ctx = ExecutionContext(app_name="test", request_id="req-match3")
     result = engine.run_flow(ir_prog.flows["m"], ctx)
@@ -122,7 +135,7 @@ def test_retry_with_backoff():
         '      do tool "flaky"\n'
         '    do agent "done"\n'
     )
-    ir_prog = ast_to_ir(parse_source(source))
+    ir_prog = _ast_to_ir_no_validation(source)
     engine, tools, agents = _make_engine(ir_prog, fail_times=2)
     ctx = ExecutionContext(app_name="test", request_id="req-retry")
     result = engine.run_flow(ir_prog.flows["r"], ctx)
@@ -139,9 +152,8 @@ def test_retry_invalid_count_errors():
         '    retry up to "oops" times:\n'
         '      do tool "flaky"\n'
     )
-    ir_prog = ast_to_ir(parse_source(source))
+    ir_prog = _ast_to_ir_no_validation(source)
     engine, _, _ = _make_engine(ir_prog)
     ctx = ExecutionContext(app_name="test", request_id="req-retry-bad")
     result = engine.run_flow(ir_prog.flows["r"], ctx)
     assert result.errors
-

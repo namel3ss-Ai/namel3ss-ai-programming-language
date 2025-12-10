@@ -988,8 +988,8 @@ def test_time_decay_prefers_recent_timestamp():
 
 
 MODEL_BLOCK = (
-    'model "gpt-4.1-mini":\n'
-    '  provider "dummy"\n'
+    'model is "gpt-4.1-mini":\n'
+    '  provider is "dummy"\n'
     "\n"
 )
 def test_memory_pipeline_unknown_type(monkeypatch):

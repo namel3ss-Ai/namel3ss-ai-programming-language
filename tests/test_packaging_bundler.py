@@ -16,10 +16,10 @@ PROGRAM_TEXT = (
     '  goal "Assist"\n'
     'plugin "stripe":\n'
     '  description "payments"\n'
-    'model "default":\n'
-    '  provider "openai:gpt-4.1-mini"\n'
+    'model is "default":\n'
+    '  provider is "openai:gpt-4.1-mini"\n'
     'ai is "summarise_message":\n'
-    '  model "default"\n'
+    '  model is "default"\n'
 )
 
 

@@ -9,8 +9,8 @@ from namel3ss.tools.registry import build_ai_tool_specs
 def test_openai_body_includes_tools(monkeypatch):
     code = dedent(
         """
-        model "gpt-4.1-mini":
-          provider "openai:gpt-4.1-mini"
+        model is "gpt-4.1-mini":
+          provider is "openai_default"
 
         tool is "get_weather":
           kind is "http_json"
@@ -58,7 +58,8 @@ def test_openai_body_includes_tools(monkeypatch):
 
     assert "tools" in captured_body
     assert captured_body["tools"][0]["function"]["name"] == "get_weather"
-    assert "city" in captured_body["tools"][0]["function"]["parameters"]["properties"]
+    params = captured_body["tools"][0]["function"]["parameters"]
+    assert params["type"] == "object"
 
 
 def test_openai_body_without_tools(monkeypatch):

@@ -115,6 +115,29 @@ These primitives are the foundation for future RAG pipelines. Examples have been
   ```
   Ingest data with `vector_index_frame`, then reuse `rag_query` anywhere you need retrieval-augmented answers.
 
+# Phase R4 — RAG Evaluation
+
+- **RAG evaluations** tie a pipeline to a dataset frame for offline scoring:
+  ```ai
+  frame is "eval_questions":
+    source:
+      from file "examples/rag_qa/data/eval_questions.csv"
+      has headers
+
+  rag evaluation is "support_eval":
+    pipeline is "support_kb"
+    dataset:
+      from frame "eval_questions"
+      question_column is "question"
+      answer_column is "expected_answer"
+    metrics:
+      - context_relevance
+      - answer_faithfulness
+      - answer_completeness
+  ```
+  Metrics default to the three listed above when omitted.
+- **Run from the CLI**: `n3 rag-eval support_eval --file path/to/file.ai` prints averages per metric; add `--limit N` to sample rows or `--output json` for machine-readable results.
+
 # Phase R3 — Query Intelligence & Routing
 
 - **New stage types** bring smarter retrieval without changing flow code:

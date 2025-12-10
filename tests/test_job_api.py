@@ -8,12 +8,12 @@ from namel3ss.server import create_app
 FLOW_PROGRAM = (
     'flow is "pipeline":\n'
     '  step is "call":\n'
-    '    kind "ai"\n'
-    '    target "summarise_message"\n'
-    'model "default":\n'
-    '  provider "openai:gpt-4.1-mini"\n'
+    '    kind is "ai"\n'
+    '    target is "summarise_message"\n'
+    'model is "default":\n'
+    '  provider is "openai_default"\n'
     'ai is "summarise_message":\n'
-    '  model "default"\n'
+    '  model is "default"\n'
 )
 
 

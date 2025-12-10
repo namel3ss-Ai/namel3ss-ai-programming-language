@@ -6,8 +6,8 @@ page is "home" at "/":
     heading "Agents + Flows demo"
     text "Run the orchestrate flow to see AI + agent steps executed."
 
-model "default":
-  provider "dummy"
+model is "default":
+  provider is "dummy"
 
 agent is "writer":
   goal "Write a short statement about a topic."
@@ -24,5 +24,5 @@ flow is "orchestrate":
     target is "echo"
 
 ai is "decide":
-  model "default"
+  model is "default"
   input from "user_input"

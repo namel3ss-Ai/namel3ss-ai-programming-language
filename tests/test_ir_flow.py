@@ -13,10 +13,10 @@ PROGRAM_TEXT = (
     '  step is "assign_helper":\n'
     '    kind "agent"\n'
     '    target "helper"\n'
-    'model "default":\n'
-    '  provider "openai:gpt-4.1-mini"\n'
+    'model is "default":\n'
+    '  provider is "openai:gpt-4.1-mini"\n'
     'ai is "classify_ticket":\n'
-    '  model "default"\n'
+    '  model is "default"\n'
     'agent is "helper":\n'
     '  goal "Assist"\n'
 )

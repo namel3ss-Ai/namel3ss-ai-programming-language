@@ -19,7 +19,7 @@ def test_lex_app_block_with_indentation():
     types = [t.type for t in tokens]
     assert "INDENT" in types
     assert "DEDENT" in types
-    assert types[:4] == ["KEYWORD", "STRING", "COLON", "NEWLINE"]
+    assert types[:5] == ["KEYWORD", "KEYWORD", "STRING", "COLON", "NEWLINE"]
     # Ensure nested fields are recognized
     assert any(t.value == "description" for t in tokens)
     assert any(t.value == "entry_page" for t in tokens)
@@ -27,14 +27,14 @@ def test_lex_app_block_with_indentation():
 
 def test_lex_model_provider():
     source = (
-        'model "default":\n'
-        '  provider "openai:gpt-4.1-mini"\n'
+        'model is "default":\n'
+        '  provider is "openai_default"\n'
     )
     tokens = Lexer(source).tokenize()
     values = [t.value for t in tokens if t.value]
     assert "model" in values
     assert "provider" in values
-    assert "openai:gpt-4.1-mini" in values
+    assert "openai_default" in values
 
 
 def test_lex_agent_and_memory_keywords():

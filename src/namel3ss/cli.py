@@ -35,7 +35,7 @@ from .version import __version__
 from .memory.inspection import describe_memory_plan, describe_memory_state, inspect_memory_state
 from .migration import naming as naming_migration
 from .migration import data_pipelines as data_migration
-from .rag.eval import run_rag_evaluation
+from .rag.eval import run_rag_evaluation_by_name
 
 
 def build_cli_parser() -> argparse.ArgumentParser:
@@ -576,18 +576,18 @@ def main(argv: list[str] | None = None) -> None:
 
     if args.command == "rag-eval":
         engine = _load_engine(args.file)
-        eval_cfg = engine.program.rag_evaluations.get(args.evaluation)
-        if not eval_cfg:
-            raise SystemExit(
-                f"RAG evaluation '{args.evaluation}' is not declared. Declare it with 'rag evaluation is \"{args.evaluation}\":'."
+        try:
+            result = run_rag_evaluation_by_name(
+                engine.program, engine.flow_engine, args.evaluation, limit=getattr(args, "limit", None)
             )
-        result = run_rag_evaluation(engine.program, eval_cfg, engine.flow_engine, limit=getattr(args, "limit", None))
+        except Exception as exc:
+            raise SystemExit(str(exc))
         if getattr(args, "output", None) == "json":
             print(json.dumps(asdict(result), indent=2))
             return
         print(f"RAG evaluation: {result.name}")
         print(f"Pipeline: {result.pipeline}")
-        print(f"Dataset: frame \"{result.dataset_frame}\" ({len(result.rows)} rows)")
+        print(f"Dataset: frame \"{result.dataset_frame}\" ({result.num_rows} rows)")
         if result.aggregates:
             print("\nMetrics (averages):")
             for name, agg in result.aggregates.items():
@@ -597,7 +597,9 @@ def main(argv: list[str] | None = None) -> None:
         if result.rows:
             print("\nSample rows:")
             for idx, row in enumerate(result.rows[: min(3, len(result.rows))], start=1):
-                metrics = ", ".join(f"{k}: {v:.2f}" for k, v in row.metrics.items() if v is not None)
+                metrics = ", ".join(
+                    f"{k}: {v:.2f}" for k, v in row.metrics.items() if isinstance(v, (int, float))
+                )
                 print(f"  [{idx}] question: {row.question}")
                 if metrics:
                     print(f"      metrics: {metrics}")

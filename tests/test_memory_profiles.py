@@ -18,8 +18,8 @@ def _install_dummy_provider(monkeypatch):
 
 MODEL_BLOCK = dedent(
     """
-    model "gpt-4.1-mini":
-      provider "dummy"
+    model is "gpt-4.1-mini":
+      provider is "dummy"
 
     """
 )

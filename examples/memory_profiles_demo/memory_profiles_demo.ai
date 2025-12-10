@@ -2,8 +2,8 @@
   kinds:
     short_term
 
-model "gpt-4.1-mini":
-  provider "dummy"
+model is "gpt-4.1-mini":
+  provider is "dummy"
 
 ai is "support_agent":
   model is "gpt-4.1-mini"

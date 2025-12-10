@@ -28,14 +28,11 @@ def test_did_open_and_diagnostics_clean():
     server = LanguageServer(output=io.BytesIO())
     doc = (
         'app is "hello":\n'
-        '  entry_page is "home"\n\n'
-        'page is "home":\n'
-        '  route "/"\n'
-        '  section "hero":\n'
-        '    component "text":\n'
-        '      value "Welcome to Namel3ss"\n'
-        '    component "form":\n'
-        '      value "Enter your name"\n'
+        '  entry_page is "home"\n'
+        "\n"
+        'page is "home" at "/":\n'
+        '  heading "Welcome to Namel3ss"\n'
+        '  text "Enter your name"\n'
     )
     server.handle_request(
         {
@@ -73,8 +70,8 @@ def test_formatting_returns_full_document_edit_and_idempotent():
         'app is "foo":\n'
         '  entry_page is "home"\n'
         "\n"
-        'page is "home":\n'
-        '  route "/"  \n'
+        'page is "home" at "/":\n'
+        '  heading  "Welcome"\n'
     )
     server.handle_request(
         {
@@ -108,7 +105,13 @@ def test_formatting_returns_full_document_edit_and_idempotent():
 
 def test_did_change_updates_diagnostics():
     server = LanguageServer(output=io.BytesIO())
-    doc = "app foo { page home { title = \"Ok\" } }\n"
+    doc = (
+        'app is "foo":\n'
+        '  entry_page is "home"\n'
+        "\n"
+        'page is "home" at "/":\n'
+        '  heading "Ok"\n'
+    )
     server.handle_request(
         {
             "jsonrpc": "2.0",
@@ -116,7 +119,7 @@ def test_did_change_updates_diagnostics():
             "params": {"textDocument": {"uri": "file:///change.ai", "text": doc, "version": 1}},
         }
     )
-    broken = "app foo {\n  page home { title = \"Ok\"\n"
+    broken = 'app is "foo":\n\npage is "home" at "/":\n  heading "Ok"\n    text "Extra"\n'
     server.handle_request(
         {
             "jsonrpc": "2.0",

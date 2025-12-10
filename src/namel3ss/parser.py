@@ -480,7 +480,13 @@ class Parser:
 
     def parse_model(self) -> ast_nodes.ModelDecl:
         start = self.consume("KEYWORD", "model")
-        name = self.consume("STRING")
+        if self.match_value("KEYWORD", "is"):
+            name = self.consume("STRING")
+        else:
+            tok = self.peek()
+            if tok.type == "STRING":
+                raise self.error(f'model "{tok.value}": is not supported. Use model is "{tok.value}": instead.', tok)
+            raise self.error("Expected 'is' after 'model'", tok)
         self.consume("COLON")
         self.consume("NEWLINE")
         self.consume("INDENT")
@@ -489,8 +495,16 @@ class Parser:
         while not self.check("DEDENT"):
             field_token = self.consume("KEYWORD")
             if field_token.value == "provider":
-                provider_token = self.consume("STRING")
-                provider = provider_token.value
+                if self.match_value("KEYWORD", "is"):
+                    provider_token = self.consume("STRING")
+                    provider = provider_token.value
+                else:
+                    tok = self.peek()
+                    if tok.type == "STRING":
+                        raise self.error(
+                            f'provider "{tok.value}" is not supported. Use provider is "{tok.value}" instead.', tok
+                        )
+                    raise self.error("Expected 'is' after 'provider'", tok)
             else:
                 raise self.error(
                     f"Unexpected field '{field_token.value}' in model block",

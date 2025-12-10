@@ -12,7 +12,7 @@ from namel3ss.runtime.context import ExecutionContext, execute_ai_call_with_regi
 def test_ai_block_with_system_prompt_parses():
     module = parse_source(
         'ai is "bot":\n'
-        '  model "default"\n'
+        '  model is "default"\n'
         '  system "You are helpful."\n'
         '  input from user_question\n'
     )
@@ -32,7 +32,7 @@ def test_duplicate_system_prompt_rejected():
     with pytest.raises(ParseError):
         parse_source(
             'ai is "bot":\n'
-            '  model "default"\n'
+            '  model is "default"\n'
             '  system "first"\n'
             '  system "second"\n'
         )

@@ -13,8 +13,9 @@ def test_frame_is_syntax_parses():
     mod = parse_module(
         '''
 frame is "documents":
-  backend is "default_db"
-  table is "docs"
+  source:
+    backend is "default_db"
+    table is "docs"
 '''
     )
     frame = mod.declarations[0]
@@ -27,15 +28,16 @@ def test_vector_store_both_syntaxes():
     mod = parse_module(
         '''
 frame is "documents":
-  backend "memory"
-  table "docs"
+  source:
+    backend is "memory"
+    table is "docs"
 
 vector_store is "kb":
-  backend "default_vector"
+  backend is "default_vector"
   frame is "documents"
-  text_column "content"
-  id_column "id"
-  embedding_model "default_embedding"
+  text_column is "content"
+  id_column is "id"
+  embedding_model is "default_embedding"
 
 vector_store is "kb2":
   backend is "default_vector"
@@ -57,14 +59,15 @@ def test_vector_store_missing_backend_errors():
     mod = parse_module(
         '''
 frame is "docs":
-  backend "memory"
-  table "docs"
+  source:
+    backend is "memory"
+    table is "docs"
 
 vector_store is "kb":
   frame is "docs"
-  text_column "content"
-  id_column "id"
-  embedding_model "default_embedding"
+  text_column is "content"
+  id_column is "id"
+  embedding_model is "default_embedding"
 '''
     )
     with pytest.raises(Exception):

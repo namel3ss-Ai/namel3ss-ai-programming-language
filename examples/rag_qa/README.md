@@ -17,6 +17,17 @@ Flows:
 - `ingest_documents` seeds two rows and runs `vector_index_frame`.
 - `ask` calls a single `rag_query` step against `kb_qa`.
 
+## Evaluation block
+```ai
+rag evaluation is "support_eval":
+  pipeline is "kb_qa"
+  dataset:
+    from frame "eval_questions"
+    question_column is "question"
+    answer_column is "expected_answer"
+```
+The dataset lives in `data/eval_questions.csv` and is intentionally tiny for quick demos.
+
 ## Run with the CLI
 ```bash
 # seed data + index
@@ -24,6 +35,9 @@ n3 flow run ingest_documents --example rag_qa
 
 # ask a question (requires OPENAI_API_KEY or compatible provider)
 n3 flow run ask --example rag_qa --set question="What is Namel3ss?"
+
+# run the evaluation (after ingesting)
+n3 rag-eval support_eval --example rag_qa --limit 3
 ```
 
 ## Load in Studio

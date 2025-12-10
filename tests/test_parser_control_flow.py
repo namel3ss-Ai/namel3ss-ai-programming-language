@@ -84,16 +84,18 @@ def test_retry_and_loops_parse():
     assert module
 
 
-def test_legacy_kind_without_is_errors():
+def test_kind_without_is_still_parses():
     source = (
         'flow is "f":\n'
         '  step is "s":\n'
         '    kind "ai"\n'
         '    target is "bot"\n'
     )
-    with pytest.raises(ParseError) as excinfo:
-        parse_source(source)
-    assert "kind \"ai\" is not supported" in str(excinfo.value)
+    module = parse_source(source)
+    flow = next(d for d in module.declarations if isinstance(d, ast_nodes.FlowDecl))
+    step = flow.steps[0]
+    assert step.kind == "ai"
+    assert step.target == "bot"
 
 
 def test_legacy_headers_error():
@@ -105,6 +107,16 @@ def test_legacy_headers_error():
     with pytest.raises(ParseError) as excinfo:
         parse_source(source)
     assert "flow \"f\": is not supported" in str(excinfo.value)
+
+
+def test_legacy_model_header_errors():
+    source = (
+        'model "legacy":\n'
+        '  provider "openai_default"\n'
+    )
+    with pytest.raises(ParseError) as excinfo:
+        parse_source(source)
+    assert 'Use model is "legacy": instead.' in str(excinfo.value)
 
 
 def test_inline_ternary_rejected():

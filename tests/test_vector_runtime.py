@@ -25,7 +25,7 @@ vector_store is "kb":
   frame is "docs"
   text_column "content"
   id_column "id"
-  embedding_model "fake"
+  embedding_model is "fake"
 '''
     )
     ir = ast_to_ir(mod)

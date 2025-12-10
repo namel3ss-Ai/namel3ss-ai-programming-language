@@ -18,10 +18,10 @@ PROGRAM_TEXT = (
     '  personality "friendly"\n'
     'memory "short_term":\n'
     '  type "conversation"\n'
-    'model "default":\n'
-    '  provider "openai:gpt-4.1-mini"\n'
+    'model is "default":\n'
+    '  provider is "openai:gpt-4.1-mini"\n'
     'ai is "summarise_message":\n'
-    '  model "default"\n'
+    '  model is "default"\n'
     '  input from user_message\n'
 )
 

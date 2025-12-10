@@ -80,7 +80,7 @@ vector_store is "kb":
   frame is "docs"
   text_column "content"
   id_column "id"
-  embedding_model "default_embedding"
+  embedding_model is "default_embedding"
 
 flow is "index_docs":
   step is "insert_one":

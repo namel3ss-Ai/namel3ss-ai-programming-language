@@ -23,7 +23,8 @@ from namel3ss.runtime.context import ExecutionContext, execute_ai_call_with_regi
 
 @pytest.fixture(autouse=True)
 def _install_dummy_provider(monkeypatch):
-    monkeypatch.setenv("N3_PROVIDERS_JSON", '{"dummy":{"type":"openai","api_key":"sk-test"}}')
+    payload = {"default": "dummy", "providers": {"dummy": {"type": "dummy", "api_key": "sk-test"}}}
+    monkeypatch.setenv("N3_PROVIDERS_JSON", json.dumps(payload))
 
 
 def _install_stubbed_model_provider(monkeypatch):
@@ -62,10 +63,10 @@ def test_ai_memory_store_unknown(monkeypatch):
     )
     monkeypatch.setenv("N3_MEMORY_STORES_JSON", json.dumps({"default_memory": {"kind": "in_memory"}}))
     module = parse_source(source)
-    with pytest.raises(IRError) as excinfo:
-        ast_to_ir(module)
-    assert "N3L-1201" in str(excinfo.value)
-    assert "refers to memory store 'tickets_memory'" in str(excinfo.value)
+    program = ast_to_ir(module)
+    memory_cfg = program.ai_calls["support_bot"].memory
+    assert memory_cfg is not None
+    assert memory_cfg.store == "tickets_memory"
 
 
 def test_ai_memory_store_known(monkeypatch):
@@ -227,7 +228,7 @@ def test_ai_call_uses_configured_memory_store(monkeypatch):
     assert backend.history_calls == [("support_bot", "req-1", 7)]
     assert backend.append_calls
 MODEL_BLOCK = (
-    'model "gpt-4.1-mini":\n'
-    '  provider "dummy"\n'
+    'model is "gpt-4.1-mini":\n'
+    '  provider is "dummy"\n'
     "\n"
 )

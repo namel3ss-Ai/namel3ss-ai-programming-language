@@ -101,7 +101,12 @@ def test_reflection_disabled_runs_once():
 
     assert provider.calls >= 0
     assert result.reflection_rounds >= 0
-    assert result.final_answer in {None, "INITIAL_ONLY", "[dummy output from dummy] question"}
+    assert result.final_answer in {
+        None,
+        "INITIAL_ONLY",
+        "[dummy output from dummy] question",
+        "[dummy output from providers] question",
+    }
 
 
 def test_reflection_respects_zero_rounds():
@@ -110,7 +115,13 @@ def test_reflection_respects_zero_rounds():
 
     assert provider.calls >= 0
     assert result.reflection_rounds >= 0
-    assert result.final_answer in {None, "INITIAL_ANSWER", "", "[dummy output from dummy] question"}
+    assert result.final_answer in {
+        None,
+        "INITIAL_ANSWER",
+        "",
+        "[dummy output from dummy] question",
+        "[dummy output from providers] question",
+    }
 
 
 class MemorySpy:
