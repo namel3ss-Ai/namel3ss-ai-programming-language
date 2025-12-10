@@ -296,8 +296,9 @@ flow "manage_document":
       id: state.doc_id
 ```
 
-- `record` declarations tie a typed schema to an existing frame. Field types supported in this phase: `string`, `text`, `int`, `float`, `bool`, `uuid`, and `datetime`. One field must be marked `primary_key`.
+- `record` declarations tie a typed schema to an existing frame. Field types supported in this phase: `string`, `text`, `int`, `float`, `decimal`, `bool`, `uuid`, `datetime`, `array`, and `json`. One field must be marked `primary_key`.
 - `db_create` requires a `values` block. Required (or primary-key) fields must be present unless a default is defined. Defaults can be literals or `"now"` for datetime columns.
+- Field validations use plain English: `must be present`, `must be at least / at most <expr>`, `must have length at least / at most <expr>`, `must be one of [...]`, and `must match pattern "..."`. Validation clauses are enforced on create, update, bulk helpers, and inside `transaction:` blocks.
 - `db_update` and `db_delete` operate on a single record via the `by id:` block. `db_update` returns the updated record; `db_delete` reports `{ ok: true, deleted: 1 }` when a row was removed.
 - Queries use the English `find <alias> where:` surface with operators like `is`, `is not`, `is greater than`, `is at least`, `is one of`, `is null`, and `is not null`. Add `order <alias> by field [ascending|descending]`, `limit <alias> to N`, and `offset <alias> by N` for sorting and pagination.
 

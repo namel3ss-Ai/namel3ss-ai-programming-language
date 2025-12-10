@@ -1,0 +1,139 @@
+app is "transactions_demo":
+  entry_page "overview"
+  description "Demonstrates transaction: blocks for record writes."
+
+frame is "users":
+  backend "memory"
+  table "users"
+
+frame is "orders":
+  backend "memory"
+  table "orders"
+
+frame is "audit_logs":
+  backend "memory"
+  table "audit_logs"
+
+record "User":
+  frame is "users"
+  fields:
+    id:
+      type "string"
+      primary_key true
+    email:
+      type "string"
+      must be unique
+    name:
+      type "string"
+
+record "Order":
+  frame is "orders"
+  fields:
+    id:
+      type "string"
+      primary_key true
+    user_id:
+      type "string"
+      references "User"
+    total:
+      type "number"
+
+record "AuditLog":
+  frame is "audit_logs"
+  fields:
+    id:
+      type "string"
+      primary_key true
+    message:
+      type "string"
+
+flow is "seed_existing_user":
+  description "Inserts a baseline user to demonstrate duplicate transactions."
+  step is "existing_user":
+    kind is "db_create"
+    record "User"
+    values:
+      id: "existing-user"
+      email: "duplicate@example.com"
+      name: "Dana Duplicate"
+
+flow is "signup_new_customer":
+  description "Creates a user and a welcome order as a single transaction."
+  transaction:
+    step is "create_user":
+      kind is "db_create"
+      record "User"
+      values:
+        id: "user-200"
+        email: "customer@example.com"
+        name: "Casey Customer"
+    step is "welcome_order":
+      kind is "db_create"
+      record "Order"
+      values:
+        id: "order-200"
+        user_id: "user-200"
+        total: 25
+  on error:
+    step is "log_failure":
+      kind is "db_create"
+      record "AuditLog"
+      values:
+        id: "log-success-flow"
+        message: "Unexpected failure while signing up a customer."
+
+flow is "signup_invalid_order":
+  description "Shows rollback when a later step violates a foreign key."
+  transaction:
+    step is "create_user":
+      kind is "db_create"
+      record "User"
+      values:
+        id: "user-bad-order"
+        email: "fk@example.com"
+        name: "Frank ForeignKey"
+    step is "broken_order":
+      kind is "db_create"
+      record "Order"
+      values:
+        id: "order-bad"
+        user_id: "missing-user"
+        total: 99
+  on error:
+    step is "record_fk_error":
+      kind is "db_create"
+      record "AuditLog"
+      values:
+        id: "log-fk"
+        message: "Rolled back signup_invalid_order because the welcome order referenced a missing user."
+
+flow is "signup_duplicate_email":
+  description "Second step collides with email uniqueness which rolls back the entire transaction."
+  transaction:
+    step is "create_unique_user":
+      kind is "db_create"
+      record "User"
+      values:
+        id: "user-dup-sequence"
+        email: "temp-dup@example.com"
+        name: "Delilah Duplicate"
+    step is "conflicting_clone":
+      kind is "db_create"
+      record "User"
+      values:
+        id: "user-dup-sequence-2"
+        email: "temp-dup@example.com"
+        name: "Duplicated Email"
+  on error:
+    step is "record_duplicate_error":
+      kind is "db_create"
+      record "AuditLog"
+      values:
+        id: "log-duplicate"
+        message: "signup_duplicate_email rolled back because two steps shared the same email address."
+
+page is "overview" at "/transactions-demo":
+  section "intro":
+    heading "Transactions Demo"
+    text "Run seed_existing_user to create an initial record, then call signup_new_customer to insert a user and welcome order atomically."
+    text "Run signup_invalid_order or signup_duplicate_email to see rollback behavior and the audit log entries produced by the on error block."

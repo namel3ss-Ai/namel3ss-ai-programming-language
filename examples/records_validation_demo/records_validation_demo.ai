@@ -1,0 +1,113 @@
+app is "records_validation_demo":
+  entry_page "overview"
+  description "Demonstrates English-first field validations on records."
+
+frame is "products":
+  backend "memory"
+  table "products"
+
+frame is "audit_logs":
+  backend "memory"
+  table "audit_logs"
+
+record "Product":
+  frame is "products"
+  fields:
+    id:
+      type "string"
+      primary_key true
+    price:
+      type "float"
+      must be at least 0
+      must be at most 10000
+    discount_rate:
+      type "decimal"
+      must be at least 0
+      must be at most 1
+    status:
+      type "string"
+      must be one of ["draft", "published", "archived"]
+    slug:
+      type "string"
+      must match pattern "^[a-z0-9-]+$"
+    tags:
+      type "array"
+      must have length at most 3
+    metadata:
+      type "json"
+
+record "AuditLog":
+  frame is "audit_logs"
+  fields:
+    id:
+      type "string"
+      primary_key true
+    message:
+      type "string"
+
+flow is "seed_valid_product":
+  description "Inserts a valid product that satisfies every rule."
+  step is "create":
+    kind is "db_create"
+    record "Product"
+    values:
+      id: "prod-001"
+      price: 49.95
+      discount_rate: 0.2
+      status: "draft"
+      slug: "valid-product"
+      tags: ["featured", "launch"]
+      metadata: { origin: "seed" }
+
+flow is "create_bad_price":
+  description "Fails because price is negative and violates must be at least 0."
+  step is "create":
+    kind is "db_create"
+    record "Product"
+    values:
+      id: "prod-err"
+      price: -5
+      discount_rate: 0.1
+      status: "draft"
+      slug: "bad-price"
+
+flow is "bulk_seed_products":
+  description "Bulk insert two products; the second one fails slug validation which rolls back the batch."
+  step is "insert_many":
+    create many products from state.new_products
+
+flow is "transaction_invalid_slug":
+  description "Shows that a transaction rolls back when a later step violates a pattern rule."
+  transaction:
+    step is "valid_row":
+      kind is "db_create"
+      record "Product"
+      values:
+        id: "prod-tx-1"
+        price: 25
+        discount_rate: 0.15
+        status: "draft"
+        slug: "tx-valid"
+    step is "invalid_row":
+      kind is "db_create"
+      record "Product"
+      values:
+        id: "prod-tx-2"
+        price: 25
+        discount_rate: 0.15
+        status: "draft"
+        slug: "Invalid Slug"
+  on error:
+    step is "log_failure":
+      kind is "db_create"
+      record "AuditLog"
+      values:
+        id: "log-validation-error"
+        message: "Rolled back because slug failed the pattern rule."
+
+page is "overview" at "/records-validation":
+  section "intro":
+    heading "Records Validation Demo"
+    text "Run seed_valid_product to see a successful insert."
+    text "Run create_bad_price or bulk_seed_products to trigger validation errors."
+    text "transaction_invalid_slug shows that transactions roll back when a later step violates a rule."

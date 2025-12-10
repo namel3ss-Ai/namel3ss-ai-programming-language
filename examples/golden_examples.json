@@ -5,5 +5,7 @@
   "examples/support_bot/support_bot.ai",
   "examples/control_flow_demo/control_flow_demo.ai",
   "examples/data_collections_demo/data_collections_demo.ai",
-  "examples/records_queries_demo/records_queries_demo.ai"
+  "examples/records_queries_demo/records_queries_demo.ai",
+  "examples/transactions_demo/transactions_demo.ai",
+  "examples/records_validation_demo/records_validation_demo.ai"
 ]

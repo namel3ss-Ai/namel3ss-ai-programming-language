@@ -8,7 +8,7 @@ import asyncio
 from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, Optional
 
-from ..ir import IRFlow, IRFlowLoop, IRFlowStep
+from ..ir import IRFlow, IRFlowLoop, IRFlowStep, IRTransactionBlock
 from ..runtime.expressions import VariableEnvironment
 
 
@@ -107,6 +107,7 @@ class FlowRuntimeContext:
     stream_callback: Callable[[Any], Any] | None = None
     provider_cache: Any = None
     step_aliases: dict[str, str] | None = None
+    transaction_stack: list[dict[str, list[dict]]] = field(default_factory=list)
 
 
 def flow_ir_to_graph(flow: IRFlow) -> FlowGraph:
@@ -147,9 +148,22 @@ def flow_ir_to_graph(flow: IRFlow) -> FlowGraph:
             },
         }
 
-    def _ir_item_to_inline(item: IRFlowStep | "IRFlowLoop") -> dict:
-        if hasattr(item, "var_name"):
-            return _loop_to_dict(item)  # type: ignore[arg-type]
+    def _transaction_to_dict(block: "IRTransactionBlock") -> dict:
+        return {
+            "id": block.name,
+            "name": block.name,
+            "kind": "transaction",
+            "config": {
+                "step_name": block.name,
+                "body": [_ir_item_to_inline(child) for child in block.body],
+            },
+        }
+
+    def _ir_item_to_inline(item: IRFlowStep | "IRFlowLoop" | "IRTransactionBlock") -> dict:
+        if isinstance(item, IRFlowLoop):
+            return _loop_to_dict(item)
+        if isinstance(item, IRTransactionBlock):
+            return _transaction_to_dict(item)
         cfg = _ir_step_to_config(item)  # type: ignore[arg-type]
         return {
             "id": getattr(item, "name", cfg.get("step_name")),
@@ -181,7 +195,7 @@ def flow_ir_to_graph(flow: IRFlow) -> FlowGraph:
             if error_entry_id is None:
                 error_entry_id = node_id
 
-    def _add_node_from_item(item: IRFlowStep | IRFlowLoop) -> None:
+    def _add_node_from_item(item: IRFlowStep | IRFlowLoop | IRTransactionBlock) -> None:
         nonlocal prev_id, entry_id
         if isinstance(item, IRFlowLoop):
             node_id = item.name
@@ -192,6 +206,18 @@ def flow_ir_to_graph(flow: IRFlow) -> FlowGraph:
                     "step_name": item.name,
                     "var_name": item.var_name,
                     "iterable_expr": item.iterable,
+                    "body": [_ir_item_to_inline(child) for child in item.body],
+                },
+                next_ids=[],
+                error_boundary_id=error_entry_id,
+            )
+        elif isinstance(item, IRTransactionBlock):
+            node_id = item.name
+            node = FlowNode(
+                id=node_id,
+                kind="transaction",
+                config={
+                    "step_name": item.name,
                     "body": [_ir_item_to_inline(child) for child in item.body],
                 },
                 next_ids=[],

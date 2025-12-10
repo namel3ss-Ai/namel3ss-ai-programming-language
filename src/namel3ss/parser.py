@@ -28,6 +28,7 @@ class Parser:
             "memory",
             "tools",
         }
+        self._transaction_depth = 0
 
     @classmethod
     def from_source(cls, source: str) -> "Parser":
@@ -1290,23 +1291,44 @@ class Parser:
                         primary_key = False
                         required = False
                         default_expr: ast_nodes.Expr | None = None
-                        field_allowed = {"type", "primary_key", "required", "default"}
+                        is_unique = False
+                        unique_scope: str | None = None
+                        references_record: str | None = None
+                        references_field: str | None = None
+                        relationship_target: str | None = None
+                        relationship_via_field: str | None = None
+                        numeric_min_expr: ast_nodes.Expr | None = None
+                        numeric_max_expr: ast_nodes.Expr | None = None
+                        length_min_expr: ast_nodes.Expr | None = None
+                        length_max_expr: ast_nodes.Expr | None = None
+                        enum_values_literal: ast_nodes.ListLiteral | None = None
+                        pattern_value: str | None = None
+                        field_allowed = {"type", "primary_key", "required", "default", "must", "references", "relationship"}
                         while not self.check("DEDENT"):
                             if self.match("NEWLINE"):
                                 continue
                             prop_tok = self.consume("KEYWORD")
-                            if prop_tok.value not in field_allowed:
+                            prop_name = prop_tok.value or ""
+                            if prop_name == "primary":
+                                if self.match_value("KEYWORD", "key"):
+                                    prop_name = "primary_key"
+                                else:
+                                    raise self.error(
+                                        "I expected 'key' after primary when declaring a primary key rule. Try 'primary key true'.",
+                                        self.peek(),
+                                    )
+                            if prop_name not in field_allowed:
                                 raise self.error(
                                     f"Unexpected field '{prop_tok.value}' inside record field '{field_name_tok.value}'.",
                                     prop_tok,
                                 )
-                            if prop_tok.value == "type":
+                            if prop_name == "type":
                                 if self.match_value("KEYWORD", "is"):
                                     type_tok = self.consume_any({"STRING", "IDENT"})
                                 else:
                                     type_tok = self.consume_any({"STRING", "IDENT"})
                                 field_type = type_tok.value or ""
-                            elif prop_tok.value in {"primary_key", "required"}:
+                            elif prop_name in {"primary_key", "required"}:
                                 if self.match_value("KEYWORD", "is"):
                                     bool_tok = self.consume_any({"KEYWORD", "IDENT"})
                                 else:
@@ -1314,18 +1336,184 @@ class Parser:
                                 bool_val = (bool_tok.value or "").lower()
                                 if bool_val not in {"true", "false"}:
                                     raise self.error(
-                                        f"Field '{prop_tok.value}' must be 'true' or 'false'.",
+                                        f"Field '{prop_name}' must be 'true' or 'false'.",
                                         bool_tok,
                                     )
-                                if prop_tok.value == "primary_key":
+                                if prop_name == "primary_key":
                                     primary_key = bool_val == "true"
                                 else:
                                     required = bool_val == "true"
-                            else:  # default
+                            elif prop_name == "default":
                                 if self.match_value("KEYWORD", "is"):
                                     default_expr = self.parse_expression()
                                 else:
                                     default_expr = self.parse_expression()
+                            elif prop_name == "references":
+                                if references_record:
+                                    raise self.error(
+                                        "I see more than one references rule on this field. Keep only a single references \"RecordName\" rule.",
+                                        prop_tok,
+                                    )
+                                if self.match_value("KEYWORD", "is"):
+                                    target_tok = self.consume_any({"STRING", "IDENT", "KEYWORD"})
+                                else:
+                                    target_tok = self.consume_any({"STRING", "IDENT", "KEYWORD"})
+                                references_record = target_tok.value or ""
+                                if not references_record:
+                                    raise self.error(
+                                        "I expected a record name after references.",
+                                        target_tok,
+                                    )
+                                if self.match_value("KEYWORD", "by"):
+                                    ref_field_tok = self.consume_any({"STRING", "IDENT", "KEYWORD"})
+                                    references_field = ref_field_tok.value or ""
+                                    if not references_field:
+                                        raise self.error(
+                                            "I expected a field name after references ... by.",
+                                            ref_field_tok,
+                                        )
+                            elif prop_name == "relationship":
+                                if relationship_target:
+                                    raise self.error(
+                                        "I see more than one relationship rule on this field. Keep only one relationship declaration here.",
+                                        prop_tok,
+                                    )
+                                self.consume("KEYWORD", "is")
+                                target_tok = self.consume_any({"STRING", "IDENT", "KEYWORD"})
+                                relationship_target = target_tok.value or ""
+                                if not relationship_target:
+                                    raise self.error(
+                                        "I expected a record name after relationship is.",
+                                        target_tok,
+                                    )
+                                if self.match_value("KEYWORD", "by"):
+                                    via_tok = self.consume_any({"STRING", "IDENT", "KEYWORD"})
+                                    relationship_via_field = via_tok.value or ""
+                                    if not relationship_via_field:
+                                        raise self.error(
+                                            "I expected a field name after relationship ... by.",
+                                            via_tok,
+                                    )
+                                else:
+                                    raise self.error(
+                                        "Relationship declarations must specify the field to use, e.g. relationship is \"User\" by user_id.",
+                                        prop_tok,
+                                    )
+                            else:  # must ...
+                                consumed_rule = False
+                                if self.match_value("KEYWORD", "have"):
+                                    consumed_rule = True
+                                    self.consume("KEYWORD", "length")
+                                    if not self.match_value("KEYWORD", "at"):
+                                        raise self.error(
+                                            "Length rules must say at least ... or at most ....",
+                                            self.peek(),
+                                        )
+                                    bound_tok = self.consume("KEYWORD")
+                                    expr = self.parse_expression()
+                                    if bound_tok.value == "least":
+                                        if length_min_expr is not None:
+                                            raise self.error(
+                                                "I already see a must have length at least rule on this field.",
+                                                prop_tok,
+                                            )
+                                        length_min_expr = expr
+                                    elif bound_tok.value == "most":
+                                        if length_max_expr is not None:
+                                            raise self.error(
+                                                "I already see a must have length at most rule on this field.",
+                                                prop_tok,
+                                            )
+                                        length_max_expr = expr
+                                    else:
+                                        raise self.error(
+                                            "Length rules must say at least ... or at most ....",
+                                            bound_tok,
+                                        )
+                                elif self.match_value("KEYWORD", "match"):
+                                    consumed_rule = True
+                                    self.consume("KEYWORD", "pattern")
+                                    pattern_tok = self.consume("STRING")
+                                    pattern_raw = pattern_tok.value or ""
+                                    if not pattern_raw:
+                                        raise self.error(
+                                            "I expected a quoted pattern after must match pattern.",
+                                            pattern_tok,
+                                        )
+                                    if pattern_value is not None:
+                                        raise self.error(
+                                            "I already see a must match pattern rule on this field.",
+                                            pattern_tok,
+                                        )
+                                    pattern_value = pattern_raw
+                                elif self.match_value("KEYWORD", "be"):
+                                    consumed_rule = True
+                                    if self.match_value("KEYWORD", "unique"):
+                                        if is_unique:
+                                            raise self.error(
+                                                "I see more than one uniqueness rule on this field. Keep only one must be unique rule here.",
+                                                prop_tok,
+                                            )
+                                        is_unique = True
+                                        scope_value: str | None = None
+                                        if self.match_value("KEYWORD", "within"):
+                                            scope_tok = self.consume_any({"STRING", "IDENT", "KEYWORD"})
+                                            scope_value = scope_tok.value or ""
+                                            if not scope_value:
+                                                raise self.error(
+                                                    "I expected a scope name after must be unique within.",
+                                                    scope_tok,
+                                                )
+                                        unique_scope = scope_value
+                                    elif self.match_value("KEYWORD", "present"):
+                                        required = True
+                                    elif self.match_value("KEYWORD", "at"):
+                                        bound_tok = self.consume("KEYWORD")
+                                        expr = self.parse_expression()
+                                        if bound_tok.value == "least":
+                                            if numeric_min_expr is not None:
+                                                raise self.error(
+                                                    "I already see a must be at least rule on this field.",
+                                                    prop_tok,
+                                                )
+                                            numeric_min_expr = expr
+                                        elif bound_tok.value == "most":
+                                            if numeric_max_expr is not None:
+                                                raise self.error(
+                                                    "I already see a must be at most rule on this field.",
+                                                    prop_tok,
+                                                )
+                                            numeric_max_expr = expr
+                                        else:
+                                            raise self.error(
+                                                "Numeric rules must say at least ... or at most ....",
+                                                bound_tok,
+                                            )
+                                    elif self.match_value("KEYWORD", "one"):
+                                        self.consume("KEYWORD", "of")
+                                        if enum_values_literal is not None:
+                                            raise self.error(
+                                                "I already see a must be one of rule on this field.",
+                                                prop_tok,
+                                            )
+                                        if not self.check("LBRACKET"):
+                                            raise self.error(
+                                                'I expected a list like ["draft", "published"] after must be one of.',
+                                                self.peek(),
+                                            )
+                                        enum_values_literal = self.parse_list_literal()
+                                    else:
+                                        raise self.error(
+                                            "I don't understand this must be ... rule. Try must be unique, must be at least, must be at most, "
+                                            "must be present, or must be one of [...].",
+                                            self.peek(),
+                                        )
+                                if not consumed_rule:
+                                    raise self.error(
+                                        "I don't understand this must ... rule. Try must be unique, must be at least, must be at most, "
+                                        "must be present, must have length at least, must have length at most, must be one of [...], or must match pattern \"...\".",
+                                        self.peek(),
+                                    )
                             self.optional_newline()
                         self.consume("DEDENT")
                         field_decls.append(
@@ -1335,6 +1523,18 @@ class Parser:
                                 primary_key=primary_key,
                                 required=required,
                                 default_expr=default_expr,
+                                is_unique=is_unique,
+                                unique_scope=unique_scope,
+                                references_record=references_record,
+                                references_field=references_field,
+                                relationship_target=relationship_target,
+                                relationship_via_field=relationship_via_field,
+                                numeric_min_expr=numeric_min_expr,
+                                numeric_max_expr=numeric_max_expr,
+                                length_min_expr=length_min_expr,
+                                length_max_expr=length_max_expr,
+                                enum_values_expr=enum_values_literal,
+                                pattern=pattern_value,
                                 span=self._span(field_name_tok),
                             )
                         )
@@ -2882,10 +3082,10 @@ class Parser:
         self.consume("COLON")
         self.consume("NEWLINE")
         description = None
-        steps: List[ast_nodes.FlowStepDecl | ast_nodes.FlowLoopDecl] = []
+        steps: List[ast_nodes.FlowStepDecl | ast_nodes.FlowLoopDecl | ast_nodes.FlowTransactionBlock] = []
         if self.check("INDENT"):
             self.consume("INDENT")
-        allowed_fields: Set[str] = {"description", "step", "on", "for"}
+        allowed_fields: Set[str] = {"description", "step", "on", "for", "transaction"}
         error_steps: List[ast_nodes.FlowStepDecl] = []
         on_error_seen = False
         while not self.check("DEDENT"):
@@ -2907,6 +3107,8 @@ class Parser:
                         prefix = self.consume("KEYWORD").value
                     if self.peek().value == "for":
                         steps.append(self.parse_flow_loop())
+                    elif self.peek().value == "transaction":
+                        steps.append(self.parse_transaction_block())
                     else:
                         steps.append(self.parse_english_flow_step(prefix))
                 self.consume("DEDENT")
@@ -2917,6 +3119,8 @@ class Parser:
                 prefix = self.consume("KEYWORD").value
                 if self.peek().value == "for":
                     steps.append(self.parse_flow_loop())
+                elif self.peek().value == "transaction":
+                    steps.append(self.parse_transaction_block())
                 else:
                     steps.append(self.parse_english_flow_step(prefix))
                 continue
@@ -2935,6 +3139,8 @@ class Parser:
                 steps.append(self.parse_flow_step())
             elif field_token.value == "for":
                 steps.append(self.parse_flow_loop(start_token=field_token))
+            elif field_token.value == "transaction":
+                steps.append(self.parse_transaction_block(start_token=field_token))
             elif field_token.value == "on":
                 if on_error_seen:
                     raise self.error("N3L-980: multiple 'on error' blocks are not allowed", field_token)
@@ -3209,7 +3415,7 @@ class Parser:
         self.consume("COLON")
         self.consume("NEWLINE")
         self.consume("INDENT")
-        steps: list[ast_nodes.FlowStepDecl | ast_nodes.FlowLoopDecl] = []
+        steps: list[ast_nodes.FlowStepDecl | ast_nodes.FlowLoopDecl | ast_nodes.FlowTransactionBlock] = []
         while not self.check("DEDENT"):
             if self.match("NEWLINE"):
                 continue
@@ -3219,17 +3425,65 @@ class Parser:
             elif tok.value == "step":
                 self.consume("KEYWORD", "step")
                 steps.append(self.parse_flow_step())
+            elif tok.value == "transaction":
+                steps.append(self.parse_transaction_block())
             else:
-                raise self.error("Unexpected content inside loop; expected step or nested loop", tok)
+                raise self.error("Unexpected content inside loop; expected step, transaction, or nested loop", tok)
         self.consume("DEDENT")
         self.optional_newline()
         return ast_nodes.FlowLoopDecl(
             name=f"for_each_{var_name}",
             var_name=var_name,
             iterable=iterable_expr,
-            steps=[s for s in steps if isinstance(s, ast_nodes.FlowStepDecl) or isinstance(s, ast_nodes.FlowLoopDecl)],
+            steps=[
+                s
+                for s in steps
+                if isinstance(s, ast_nodes.FlowStepDecl)
+                or isinstance(s, ast_nodes.FlowLoopDecl)
+                or isinstance(s, ast_nodes.FlowTransactionBlock)
+            ],
             span=self._span(start),
         )
+
+    def parse_transaction_block(self, start_token: Token | None = None) -> ast_nodes.FlowTransactionBlock:
+        start = start_token or self.consume("KEYWORD", "transaction")
+        if self._transaction_depth > 0:
+            raise self.error(
+                "Nested transactions are not supported yet. Remove the inner transaction: block or merge its steps into the outer one.",
+                start,
+            )
+        self._transaction_depth += 1
+        try:
+            self.consume("COLON")
+            self.consume("NEWLINE")
+            self.consume("INDENT")
+            steps: list[ast_nodes.FlowStepDecl | ast_nodes.FlowLoopDecl | ast_nodes.FlowTransactionBlock] = []
+            while not self.check("DEDENT"):
+                if self.match("NEWLINE"):
+                    continue
+                tok = self.peek()
+                if tok.value == "for":
+                    steps.append(self.parse_flow_loop())
+                elif tok.value == "step":
+                    self.consume("KEYWORD", "step")
+                    steps.append(self.parse_flow_step())
+                elif tok.value == "transaction":
+                    raise self.error(
+                        "Nested transactions are not supported yet. Remove the inner transaction: block or move its steps outside.",
+                        tok,
+                    )
+                else:
+                    raise self.error(
+                        "transaction: blocks can only contain steps or for each loops.",
+                        tok,
+                    )
+            self.consume("DEDENT")
+            self.optional_newline()
+            if not steps:
+                raise self.error("A transaction block must include at least one step.", start)
+            return ast_nodes.FlowTransactionBlock(steps=steps, span=self._span(start))
+        finally:
+            self._transaction_depth = max(0, self._transaction_depth - 1)
 
     def parse_english_flow_step(self, prefix: str | None) -> ast_nodes.FlowStepDecl:
         if prefix:
@@ -3497,10 +3751,113 @@ class Parser:
         } if allow_fields else set()
         script_mode = False
         find_query: ast_nodes.RecordQuery | None = None
+        def _aliases_match(candidate: str, base: str) -> bool:
+            if candidate == base:
+                return True
+            if candidate.endswith("s") and candidate[:-1] == base:
+                return True
+            if base.endswith("s") and base[:-1] == candidate:
+                return True
+            return False
+
+        def _alias_from_token(alias_token: Token) -> tuple[str, str | None]:
+            alias_value = alias_token.value or ""
+            if not alias_value:
+                raise self.error("I expected a record name or alias here.", alias_token)
+            explicit_record = alias_value if alias_token.type == "STRING" else None
+            return alias_value, explicit_record
+
         while not self.check("DEDENT"):
             if self.match("NEWLINE"):
                 continue
             token = self.peek()
+            if token.value == "create":
+                next_token = self.peek_offset(1)
+                if next_token.value == "many":
+                    self.advance()  # consume create
+                    self.advance()  # consume many
+                    if kind and kind not in {"db_bulk_create"}:
+                        raise self.error("This step already declares a kind. Remove 'kind is ...' when using 'create many ...'.", token)
+                    if "bulk_create" in extra_params:
+                        raise self.error("I already saw a create many ... helper in this step. Keep only one bulk create helper per step.", token)
+                    alias_tok = self.consume_any({"IDENT", "KEYWORD", "STRING"})
+                    alias, explicit_record = _alias_from_token(alias_tok)
+                    if not self.match_value("KEYWORD", "from"):
+                        raise self.error("I expected 'create many <record> from <values>'.", self.peek())
+                    source_expr = self.parse_expression()
+                    record_override = extra_params.get("record") if isinstance(extra_params.get("record"), str) else None
+                    record_name = explicit_record or record_override
+                    bulk_spec = ast_nodes.BulkCreateSpec(
+                        alias=alias,
+                        record_name=record_name,
+                        source_expr=source_expr,
+                        span=self._span(alias_tok),
+                    )
+                    default_target = record_name or alias
+                    extra_params.setdefault("record", default_target)
+                    extra_params["bulk_create"] = bulk_spec
+                    kind = "db_bulk_create"
+                    target = target or default_target
+                    self.optional_newline()
+                    continue
+            if token.value == "update":
+                next_token = self.peek_offset(1)
+                if next_token.value == "many":
+                    self.advance()  # consume update
+                    self.advance()  # consume many
+                    if kind and kind not in {"db_bulk_update"}:
+                        raise self.error("This step already declares a different kind. Remove 'kind is ...' when using 'update many ...'.", token)
+                    if "bulk_update" in extra_params:
+                        raise self.error("I already saw an update many ... helper in this step. Keep only one bulk update helper per step.", token)
+                    alias_tok = self.consume_any({"IDENT", "KEYWORD", "STRING"})
+                    alias, explicit_record = _alias_from_token(alias_tok)
+                    if not self.match_value("KEYWORD", "where"):
+                        raise self.error("update many ... must include a 'where:' block.", self.peek())
+                    where_conditions = self._parse_where_conditions()
+                    record_override = extra_params.get("record") if isinstance(extra_params.get("record"), str) else None
+                    record_name = explicit_record or record_override
+                    bulk_spec = ast_nodes.BulkUpdateSpec(
+                        alias=alias,
+                        where_condition=where_conditions,
+                        record_name=record_name,
+                        span=self._span(alias_tok),
+                    )
+                    default_target = record_name or alias
+                    extra_params.setdefault("record", default_target)
+                    extra_params["bulk_update"] = bulk_spec
+                    kind = "db_bulk_update"
+                    target = target or default_target
+                    self.optional_newline()
+                    continue
+            if token.value == "delete":
+                next_token = self.peek_offset(1)
+                if next_token.value == "many":
+                    self.advance()  # consume delete
+                    self.advance()  # consume many
+                    if kind and kind not in {"db_bulk_delete"}:
+                        raise self.error("This step already declares a different kind. Remove 'kind is ...' when using 'delete many ...'.", token)
+                    if "bulk_delete" in extra_params:
+                        raise self.error("I already saw a delete many ... helper in this step. Keep only one bulk delete helper per step.", token)
+                    alias_tok = self.consume_any({"IDENT", "KEYWORD", "STRING"})
+                    alias, explicit_record = _alias_from_token(alias_tok)
+                    if not self.match_value("KEYWORD", "where"):
+                        raise self.error("delete many ... must include a 'where:' block.", self.peek())
+                    where_conditions = self._parse_where_conditions()
+                    record_override = extra_params.get("record") if isinstance(extra_params.get("record"), str) else None
+                    record_name = explicit_record or record_override
+                    bulk_spec = ast_nodes.BulkDeleteSpec(
+                        alias=alias,
+                        where_condition=where_conditions,
+                        record_name=record_name,
+                        span=self._span(alias_tok),
+                    )
+                    default_target = record_name or alias
+                    extra_params.setdefault("record", default_target)
+                    extra_params["bulk_delete"] = bulk_spec
+                    kind = "db_bulk_delete"
+                    target = target or default_target
+                    self.optional_newline()
+                    continue
             if token.value == "find":
                 self.advance()
                 alias_tok = self.consume_any({"IDENT", "KEYWORD"})
@@ -3598,7 +3955,48 @@ class Parser:
                 extra_params["query"] = find_query
                 self.optional_newline()
                 continue
-            if token.value == "set" and allow_fields and kind in {"frame_update"} and not script_mode:
+            if token.value == "with":
+                if find_query is None:
+                    raise self.error(
+                        "I can’t attach a relationship until you declare a find <alias> where: block.",
+                        token,
+                    )
+                self.advance()
+                related_alias_tok = self.consume_any({"IDENT", "KEYWORD"})
+                related_alias = related_alias_tok.value or ""
+                if not related_alias:
+                    raise self.error("I expected an alias after with.", related_alias_tok)
+                if not self.match_value("KEYWORD", "for"):
+                    raise self.error("Use 'with <alias> for each <base alias> by <field>'.", self.peek())
+                self.consume("KEYWORD", "each")
+                base_alias_tok = self.consume_any({"IDENT", "KEYWORD"})
+                base_alias_raw = base_alias_tok.value or ""
+                if not base_alias_raw:
+                    raise self.error("I expected the base alias after 'for each'.", base_alias_tok)
+                canonical_alias = find_query.alias or ""
+                if not _aliases_match(base_alias_raw, canonical_alias):
+                    raise self.error(
+                        f"I can’t attach this relationship because I don’t know what {base_alias_raw} refers to here. Use the alias from find {canonical_alias} where: first.",
+                        base_alias_tok,
+                    )
+                if not self.match_value("KEYWORD", "by"):
+                    raise self.error("Relationship joins must specify the field to use, e.g. 'by user_id'.", self.peek())
+                via_field_tok = self.consume_any({"IDENT", "KEYWORD", "STRING"})
+                via_field = via_field_tok.value or ""
+                if not via_field:
+                    raise self.error("I expected a field name after 'by'.", via_field_tok)
+                find_query.relationships.append(
+                    ast_nodes.RecordRelationshipJoin(
+                        related_alias=related_alias,
+                        base_alias=canonical_alias,
+                        via_field=via_field,
+                        display_base_alias=base_alias_raw,
+                        span=self._span(related_alias_tok),
+                    )
+                )
+                self.optional_newline()
+                continue
+            if token.value == "set" and allow_fields and kind in {"frame_update", "db_update", "db_bulk_update"} and not script_mode:
                 field_token = self.consume("KEYWORD")
                 if field_token.value not in allowed_fields:
                     raise self.error(
@@ -3874,6 +4272,9 @@ class Parser:
             "db_create",
             "db_update",
             "db_delete",
+            "db_bulk_create",
+            "db_bulk_update",
+            "db_bulk_delete",
             "find",
             "auth_register",
             "auth_login",
@@ -3885,7 +4286,24 @@ class Parser:
                 args={
                     k: v
                     for k, v in extra_params.items()
-                    if k in {"values", "where", "set", "vector_store", "query_text", "top_k", "by_id", "limit", "input", "query", "offset", "order_by"}
+                    if k
+                    in {
+                        "values",
+                        "where",
+                        "set",
+                        "vector_store",
+                        "query_text",
+                        "top_k",
+                        "by_id",
+                        "limit",
+                        "input",
+                        "query",
+                        "offset",
+                        "order_by",
+                        "bulk_create",
+                        "bulk_update",
+                        "bulk_delete",
+                    }
                 },
                 span=None,
             )
@@ -3924,7 +4342,7 @@ class Parser:
             "stream_label": stream_label,
             "stream_mode": stream_mode,
         }
-        if kind in {"db_create", "db_get", "db_update", "db_delete"}:
+        if kind in {"db_create", "db_get", "db_update", "db_delete", "db_bulk_create", "db_bulk_update", "db_bulk_delete"}:
             record_name = extra_params.get("record") or target
             if not record_name:
                 raise self.error(

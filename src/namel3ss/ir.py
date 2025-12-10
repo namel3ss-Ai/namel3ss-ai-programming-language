@@ -5,7 +5,10 @@ Intermediate Representation (IR) for Namel3ss V3.
 from __future__ import annotations
 
 import copy
+import itertools
+import re
 from dataclasses import dataclass, field
+from decimal import Decimal, InvalidOperation
 from typing import Dict, List, Literal, Optional, Union
 
 from . import ast_nodes
@@ -233,7 +236,7 @@ class IRFlow:
 
     name: str
     description: str | None
-    steps: List[Union["IRFlowStep", "IRFlowLoop"]] = field(default_factory=list)
+    steps: List[Union["IRFlowStep", "IRFlowLoop", "IRTransactionBlock"]] = field(default_factory=list)
     error_steps: List[IRFlowStep] = field(default_factory=list)
 
 
@@ -242,7 +245,24 @@ class IRFlowLoop:
     name: str
     var_name: str
     iterable: ast_nodes.Expr | None = None
-    body: List[Union[IRFlowStep, "IRFlowLoop"]] = field(default_factory=list)
+    body: List[Union[IRFlowStep, "IRFlowLoop", "IRTransactionBlock"]] = field(default_factory=list)
+
+
+@dataclass
+class IRTransactionBlock:
+    name: str
+    body: List[Union[IRFlowStep, IRFlowLoop]] = field(default_factory=list)
+    span_line: int | None = None
+
+
+def _yield_flow_steps(items: List[Union[IRFlowStep, IRFlowLoop, IRTransactionBlock]]):
+    for item in items:
+        if isinstance(item, IRFlowLoop):
+            yield from _yield_flow_steps(item.body)
+        elif isinstance(item, IRTransactionBlock):
+            yield from _yield_flow_steps(item.body)
+        else:
+            yield item
 
 
 @dataclass
@@ -652,6 +672,28 @@ class IRRecordField:
     primary_key: bool = False
     required: bool = False
     default: object | None = None
+    is_unique: bool = False
+    unique_scope: str | None = None
+    unique_scope_field: str | None = None
+    references_record: str | None = None
+    references_field: str | None = None
+    reference_target_field: str | None = None
+    numeric_min: object | None = None
+    numeric_max: object | None = None
+    length_min: int | None = None
+    length_max: int | None = None
+    enum_values: list[object] | None = None
+    pattern: str | None = None
+    span: ast_nodes.Span | None = None
+
+
+@dataclass
+class IRRecordRelationship:
+    name: str
+    target_record: str
+    via_field: str
+    target_field: str | None = None
+    span: ast_nodes.Span | None = None
 
 
 @dataclass
@@ -701,6 +743,18 @@ class IRRecordOrderBy:
 
 
 @dataclass
+class IRRelationshipJoin:
+    related_alias: str
+    base_alias: str
+    via_field: str
+    display_base_alias: str | None = None
+    target_record: str | None = None
+    target_field: str | None = None
+    attachment_field: str | None = None
+    span: ast_nodes.Span | None = None
+
+
+@dataclass
 class IRRecordQuery:
     alias: str
     record_name: str
@@ -708,6 +762,31 @@ class IRRecordQuery:
     order_by: list[IRRecordOrderBy] | None = None
     limit_expr: ast_nodes.Expr | None = None
     offset_expr: ast_nodes.Expr | None = None
+    relationships: list[IRRelationshipJoin] = field(default_factory=list)
+    span: ast_nodes.Span | None = None
+
+
+@dataclass
+class IRBulkCreateSpec:
+    record_name: str
+    alias: str
+    source_expr: ast_nodes.Expr | IRCollectionPipeline
+    span: ast_nodes.Span | None = None
+
+
+@dataclass
+class IRBulkUpdateSpec:
+    record_name: str
+    alias: str
+    where_condition: IRBooleanCondition | None = None
+    span: ast_nodes.Span | None = None
+
+
+@dataclass
+class IRBulkDeleteSpec:
+    record_name: str
+    alias: str
+    where_condition: IRBooleanCondition | None = None
     span: ast_nodes.Span | None = None
 
 
@@ -717,6 +796,7 @@ class IRRecord:
     frame: str
     fields: dict[str, IRRecordField] = field(default_factory=dict)
     primary_key: str | None = None
+    relationships: dict[str, IRRecordRelationship] = field(default_factory=dict)
 
 
 @dataclass
@@ -776,7 +856,57 @@ class IRTool:
 SUPPORTED_MEMORY_PIPELINE_TYPES = {"llm_summarizer", "llm_fact_extractor"}
 SUPPORTED_PII_POLICIES = {"none", "strip-email-ip"}
 SUPPORTED_MEMORY_SCOPES = {"per_session", "per_user", "shared"}
-SUPPORTED_RECORD_FIELD_TYPES = {"string", "text", "int", "float", "bool", "uuid", "datetime"}
+SUPPORTED_RECORD_FIELD_TYPES = {"string", "text", "int", "float", "bool", "uuid", "datetime", "array", "json", "decimal"}
+RECORD_FIELD_TYPE_ALIASES = {
+    "boolean": "bool",
+    "number": "float",
+    "integer": "int",
+}
+
+
+def _normalize_scope_key(value: str | None) -> str:
+    return re.sub(r"[^a-z0-9]", "", (value or "").lower())
+
+
+def _scope_slug(value: str | None) -> str:
+    slug = re.sub(r"[^a-z0-9]+", "_", (value or "").lower()).strip("_")
+    return slug or "scope"
+
+
+def _resolve_scope_field_name(
+    record_decl: ast_nodes.RecordDecl,
+    field_name: str,
+    scope_name: str,
+    field_span: ast_nodes.Span | None,
+) -> str:
+    normalized_scope = _normalize_scope_key(scope_name)
+    candidates: list[str] = []
+    if normalized_scope:
+        if normalized_scope.endswith("id"):
+            candidates.append(normalized_scope)
+        else:
+            candidates.append(f"{normalized_scope}id")
+            candidates.append(normalized_scope)
+    for raw in (scope_name, scope_name.replace(" ", "_"), scope_name.replace(" ", "").lower()):
+        cleaned = _normalize_scope_key(raw)
+        if cleaned and cleaned not in candidates:
+            candidates.append(cleaned)
+    field_options: list[tuple[str, str]] = []
+    for decl_field in record_decl.fields:
+        fname = (decl_field.name or "").strip()
+        if not fname:
+            continue
+        field_options.append((fname, _normalize_scope_key(fname)))
+    for candidate in candidates:
+        for fname, normalized in field_options:
+            if normalized == candidate:
+                return fname
+    scope_hint = _scope_slug(scope_name)
+    raise IRError(
+        f"I can’t enforce must be unique within \"{scope_name}\" on field '{field_name}' in record '{record_decl.name}' "
+        f"because I can’t find a scope field like '{scope_hint}_id'. Add that field or remove this rule.",
+        field_span and field_span.line,
+    )
 
 
 def _collect_input_refs(expr: ast_nodes.Expr | None) -> set[str]:
@@ -1004,6 +1134,182 @@ def _evaluate_record_default(
     )
 
 
+def _literal_from_expr(
+    expr: ast_nodes.Expr | None,
+    record_name: str,
+    field_name: str,
+    rule_desc: str,
+) -> object | None:
+    if expr is None:
+        return None
+    if isinstance(expr, ast_nodes.Literal):
+        return expr.value
+    raise IRError(
+        f"The rule '{rule_desc}' on field '{field_name}' in record '{record_name}' must use a literal value.",
+        expr.span.line if expr.span else None,
+    )
+
+
+def _evaluate_numeric_literal(
+    expr: ast_nodes.Expr | None,
+    record_name: str,
+    field_name: str,
+    rule_desc: str,
+) -> float | int | None:
+    value = _literal_from_expr(expr, record_name, field_name, rule_desc)
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        value = int(value)
+    if isinstance(value, (int, float)):
+        return value
+    raise IRError(
+        f"The rule '{rule_desc}' on field '{field_name}' in record '{record_name}' must use a numeric literal.",
+        expr.span.line if expr and expr.span else None,
+    )
+
+
+def _evaluate_length_literal(
+    expr: ast_nodes.Expr | None,
+    record_name: str,
+    field_name: str,
+    rule_desc: str,
+) -> int | None:
+    value = _literal_from_expr(expr, record_name, field_name, rule_desc)
+    if value is None:
+        return None
+    if isinstance(value, float):
+        if value.is_integer():
+            value = int(value)
+        else:
+            raise IRError(
+                f"The rule '{rule_desc}' on field '{field_name}' in record '{record_name}' must use a whole number.",
+                expr.span.line if expr and expr.span else None,
+            )
+    if isinstance(value, bool):
+        value = int(value)
+    if not isinstance(value, int):
+        raise IRError(
+            f"The rule '{rule_desc}' on field '{field_name}' in record '{record_name}' must use a whole number.",
+            expr.span.line if expr and expr.span else None,
+        )
+    if value < 0:
+        raise IRError(
+            f"The rule '{rule_desc}' on field '{field_name}' in record '{record_name}' must be zero or greater.",
+            expr.span.line if expr and expr.span else None,
+        )
+    return value
+
+
+def _evaluate_enum_literal(
+    literal: ast_nodes.ListLiteral | None,
+    record_name: str,
+    field_name: str,
+) -> list[object] | None:
+    if literal is None:
+        return None
+    values: list[object] = []
+    for item in literal.items:
+        if isinstance(item, ast_nodes.Literal):
+            values.append(item.value)
+        else:
+            raise IRError(
+                f"Each entry inside must be one of on field '{field_name}' in record '{record_name}' must be a literal value.",
+                item.span.line if item and item.span else None,
+            )
+    if not values:
+        raise IRError(
+            f"must be one of on field '{field_name}' in record '{record_name}' must include at least one value.",
+            literal.span.line if literal and literal.span else None,
+        )
+    return values
+
+
+def _convert_numeric_rule_value(
+    field_type: str,
+    raw_value: float | int | None,
+    record_name: str,
+    field_name: str,
+    rule_desc: str,
+) -> float | int | Decimal | None:
+    if raw_value is None:
+        return None
+    if field_type == "int":
+        if isinstance(raw_value, float):
+            if not raw_value.is_integer():
+                raise IRError(
+                    f"The rule '{rule_desc}' on field '{field_name}' in record '{record_name}' must be an integer.",
+                    None,
+                )
+            return int(raw_value)
+        return int(raw_value)
+    if field_type == "float":
+        return float(raw_value)
+    if field_type == "decimal":
+        try:
+            return Decimal(str(raw_value))
+        except (InvalidOperation, ValueError) as exc:
+            raise IRError(
+                f"The rule '{rule_desc}' on field '{field_name}' in record '{record_name}' must be a decimal number.",
+                None,
+            ) from exc
+    raise IRError(
+        f"Field '{field_name}' in record '{record_name}' can't use '{rule_desc}' because it isn't a numeric field.",
+        None,
+    )
+
+
+def _coerce_enum_values_for_field(
+    field_type: str,
+    raw_values: list[object],
+    record_name: str,
+    field_name: str,
+) -> list[object]:
+    allowed_types = {"string", "text", "int", "float", "decimal", "bool", "uuid"}
+    if field_type not in allowed_types:
+        raise IRError(
+            f"Field '{field_name}' in record '{record_name}' can't use must be one of because it isn't a scalar field.",
+            None,
+        )
+    coerced: list[object] = []
+    for raw in raw_values:
+        try:
+            if field_type in {"string", "text", "uuid"}:
+                coerced.append("" if raw is None else str(raw))
+            elif field_type == "int":
+                if isinstance(raw, float):
+                    if not raw.is_integer():
+                        raise ValueError("not an integer")
+                    coerced.append(int(raw))
+                elif isinstance(raw, bool):
+                    coerced.append(int(raw))
+                else:
+                    coerced.append(int(raw))
+            elif field_type == "float":
+                coerced.append(float(raw))
+            elif field_type == "decimal":
+                coerced.append(Decimal(str(raw)))
+            elif field_type == "bool":
+                if isinstance(raw, bool):
+                    coerced.append(raw)
+                elif isinstance(raw, str):
+                    lowered = raw.strip().lower()
+                    if lowered in {"true", "false"}:
+                        coerced.append(lowered == "true")
+                    else:
+                        raise ValueError("not a boolean literal")
+                else:
+                    raise ValueError("not a boolean literal")
+            else:
+                coerced.append(raw)
+        except (InvalidOperation, ValueError, TypeError) as exc:
+            raise IRError(
+                f"Value '{raw}' inside must be one of on field '{field_name}' in record '{record_name}' doesn't match the field type.",
+                None,
+            ) from exc
+    return coerced
+
+
 def ast_to_ir(module: ast_nodes.Module) -> IRProgram:
     program = IRProgram()
     program.version = IR_VERSION
@@ -1016,16 +1322,34 @@ def ast_to_ir(module: ast_nodes.Module) -> IRProgram:
     page_routes: dict[str, str] = {}
     memory_store_refs: list[tuple[str, str | None]] = []
     ai_tool_refs: list[tuple[str, str, int | None]] = []
-    def lower_flow_item(step: ast_nodes.FlowStepDecl | ast_nodes.FlowLoopDecl) -> IRFlowStep | IRFlowLoop:
+
+    def lower_flow_item(
+        step: ast_nodes.FlowStepDecl | ast_nodes.FlowLoopDecl | ast_nodes.FlowTransactionBlock,
+        flow_name: str | None = None,
+        tx_counter: itertools.count | None = None,
+    ) -> IRFlowStep | IRFlowLoop | IRTransactionBlock:
         if isinstance(step, ast_nodes.FlowLoopDecl):
-            body_items = [lower_flow_item(s) for s in step.steps]
+            body_items = [lower_flow_item(s, flow_name, tx_counter) for s in step.steps]
+            flat_body: list[IRFlowStep | IRFlowLoop | IRTransactionBlock] = []
+            for item in body_items:
+                flat_body.append(item)
+            return IRFlowLoop(name=step.name, var_name=step.var_name, iterable=step.iterable, body=flat_body)
+        if isinstance(step, ast_nodes.FlowTransactionBlock):
+            counter = tx_counter or itertools.count(1)
+            block_index = next(counter)
+            base_name = (flow_name or "transaction").strip() or "transaction"
+            safe_base = re.sub(r"\s+", "_", base_name)
+            tx_name = f"{safe_base}_transaction_{block_index}"
+            body_items = [lower_flow_item(child, flow_name, counter) for child in step.steps]
             flat_body: list[IRFlowStep | IRFlowLoop] = []
             for item in body_items:
-                if isinstance(item, list):
-                    flat_body.extend(item)
-                else:
-                    flat_body.append(item)
-            return IRFlowLoop(name=step.name, var_name=step.var_name, iterable=step.iterable, body=flat_body)
+                if isinstance(item, IRTransactionBlock):
+                    raise IRError(
+                        "Nested transaction blocks are not supported yet. Remove the inner transaction: block or merge it into the outer transaction.",
+                        step.span.line if step.span else None,
+                    )
+                flat_body.append(item)
+            return IRTransactionBlock(name=tx_name, body=flat_body, span_line=step.span.line if step.span else None)
         if step.statements:
             ir_statements = [lower_statement(stmt) for stmt in step.statements]
             params_tx = transform_params(getattr(step, "params", {}) or {})
@@ -1077,6 +1401,9 @@ def ast_to_ir(module: ast_nodes.Module) -> IRProgram:
             "db_create",
             "db_update",
             "db_delete",
+            "db_bulk_create",
+            "db_bulk_update",
+            "db_bulk_delete",
             "find",
             "auth_register",
             "auth_login",
@@ -1125,6 +1452,30 @@ def ast_to_ir(module: ast_nodes.Module) -> IRProgram:
             query_param = params_tx.get("query")
             if isinstance(query_param, IRRecordQuery):
                 target_name = query_param.record_name
+        elif step.kind == "db_bulk_create":
+            bulk_spec = params_tx.get("bulk_create")
+            if not isinstance(bulk_spec, IRBulkCreateSpec):
+                raise IRError(
+                    f"Step '{step.name}' must include 'create many ...' details to use bulk create.",
+                    step.span and step.span.line,
+                )
+            target_name = bulk_spec.record_name
+        elif step.kind == "db_bulk_update":
+            bulk_spec = params_tx.get("bulk_update")
+            if not isinstance(bulk_spec, IRBulkUpdateSpec):
+                raise IRError(
+                    f"Step '{step.name}' must include 'update many ... where:' details to use bulk update.",
+                    step.span and step.span.line,
+                )
+            target_name = bulk_spec.record_name
+        elif step.kind == "db_bulk_delete":
+            bulk_spec = params_tx.get("bulk_delete")
+            if not isinstance(bulk_spec, IRBulkDeleteSpec):
+                raise IRError(
+                    f"Step '{step.name}' must include 'delete many ... where:' details to use bulk delete.",
+                    step.span and step.span.line,
+                )
+            target_name = bulk_spec.record_name
         return IRFlowStep(
             name=step.name,
             alias=getattr(step, "alias", None),
@@ -1322,6 +1673,16 @@ def ast_to_ir(module: ast_nodes.Module) -> IRProgram:
             ]
         limit_expr, _ = transform_expr(query.limit_expr) if query.limit_expr is not None else (None, None)
         offset_expr, _ = transform_expr(query.offset_expr) if query.offset_expr is not None else (None, None)
+        relationships = [
+            IRRelationshipJoin(
+                related_alias=rel.related_alias,
+                base_alias=rel.base_alias,
+                via_field=rel.via_field,
+                display_base_alias=rel.display_base_alias,
+                span=rel.span,
+            )
+            for rel in query.relationships
+        ]
         return IRRecordQuery(
             alias=query.alias,
             record_name=record_name,
@@ -1329,6 +1690,7 @@ def ast_to_ir(module: ast_nodes.Module) -> IRProgram:
             order_by=order_items,
             limit_expr=limit_expr,
             offset_expr=offset_expr,
+            relationships=relationships,
             span=query.span,
         )
 
@@ -1339,6 +1701,31 @@ def ast_to_ir(module: ast_nodes.Module) -> IRProgram:
                 new_params[key] = transform_condition(value)
             elif key == "query" and isinstance(value, ast_nodes.RecordQuery):
                 new_params[key] = transform_record_query(value)
+            elif key == "bulk_create" and isinstance(value, ast_nodes.BulkCreateSpec):
+                record_name = value.record_name or _resolve_record_name_from_alias(value.alias)
+                source_expr, _ = transform_expr(value.source_expr)
+                new_params[key] = IRBulkCreateSpec(
+                    record_name=record_name,
+                    alias=value.alias,
+                    source_expr=source_expr or value.source_expr,
+                    span=value.span,
+                )
+            elif key == "bulk_update" and isinstance(value, ast_nodes.BulkUpdateSpec):
+                record_name = value.record_name or _resolve_record_name_from_alias(value.alias)
+                new_params[key] = IRBulkUpdateSpec(
+                    record_name=record_name,
+                    alias=value.alias,
+                    where_condition=transform_condition(value.where_condition),
+                    span=value.span,
+                )
+            elif key == "bulk_delete" and isinstance(value, ast_nodes.BulkDeleteSpec):
+                record_name = value.record_name or _resolve_record_name_from_alias(value.alias)
+                new_params[key] = IRBulkDeleteSpec(
+                    record_name=record_name,
+                    alias=value.alias,
+                    where_condition=transform_condition(value.where_condition),
+                    span=value.span,
+                )
             else:
                 new_params[key] = value
         return new_params
@@ -1851,7 +2238,9 @@ def ast_to_ir(module: ast_nodes.Module) -> IRProgram:
                     decl.span and decl.span.line,
                 )
             field_map: dict[str, IRRecordField] = {}
+            relationships_map: dict[str, IRRecordRelationship] = {}
             primary_key_name: str | None = None
+            seen_field_names: set[str] = set()
             for field in decl.fields:
                 field_name = (field.name or "").strip()
                 if not field_name:
@@ -1859,12 +2248,34 @@ def ast_to_ir(module: ast_nodes.Module) -> IRProgram:
                         f"Record '{decl.name}' has a field with no name.",
                         field.span and field.span.line,
                     )
-                if field_name in field_map:
+                if field_name in seen_field_names:
                     raise IRError(
                         f"Record '{decl.name}' declares field '{field_name}' more than once.",
                         field.span and field.span.line,
                     )
+                seen_field_names.add(field_name)
+                if getattr(field, "relationship_target", None):
+                    rel_target = (field.relationship_target or "").strip()
+                    if not rel_target:
+                        raise IRError(
+                            f"Relationship field '{field_name}' on record '{decl.name}' is missing a target record.",
+                            field.span and field.span.line,
+                        )
+                    via_field = (field.relationship_via_field or "").strip()
+                    if not via_field:
+                        raise IRError(
+                            f"Relationship field '{field_name}' on record '{decl.name}' must declare 'by <field>' to indicate the foreign key.",
+                            field.span and field.span.line,
+                        )
+                    relationships_map[field_name] = IRRecordRelationship(
+                        name=field_name,
+                        target_record=rel_target,
+                        via_field=via_field,
+                        span=field.span,
+                    )
+                    continue
                 field_type = (field.type or "").strip().lower()
+                field_type = RECORD_FIELD_TYPE_ALIASES.get(field_type, field_type)
                 if not field_type:
                     raise IRError(
                         f"N3L-1501: Field '{field_name}' on record '{decl.name}' is missing a type.",
@@ -1884,12 +2295,111 @@ def ast_to_ir(module: ast_nodes.Module) -> IRProgram:
                             field.span and field.span.line,
                         )
                     primary_key_name = field_name
+                is_unique = bool(getattr(field, "is_unique", False))
+                unique_scope_name = getattr(field, "unique_scope", None) or None
+                unique_scope_field = None
+                if is_unique and unique_scope_name:
+                    unique_scope_field = _resolve_scope_field_name(
+                        decl,
+                        field_name,
+                        unique_scope_name,
+                        field.span,
+                    )
+                raw_numeric_min = _evaluate_numeric_literal(
+                    getattr(field, "numeric_min_expr", None),
+                    decl.name,
+                    field_name,
+                    "must be at least",
+                )
+                raw_numeric_max = _evaluate_numeric_literal(
+                    getattr(field, "numeric_max_expr", None),
+                    decl.name,
+                    field_name,
+                    "must be at most",
+                )
+                raw_length_min = _evaluate_length_literal(
+                    getattr(field, "length_min_expr", None),
+                    decl.name,
+                    field_name,
+                    "must have length at least",
+                )
+                raw_length_max = _evaluate_length_literal(
+                    getattr(field, "length_max_expr", None),
+                    decl.name,
+                    field_name,
+                    "must have length at most",
+                )
+                enum_values = _evaluate_enum_literal(
+                    getattr(field, "enum_values_expr", None),
+                    decl.name,
+                    field_name,
+                )
+                pattern_value = getattr(field, "pattern", None) or None
+                if (raw_numeric_min is not None or raw_numeric_max is not None) and field_type not in {"int", "float", "decimal"}:
+                    raise IRError(
+                        f"Field '{field_name}' on record '{decl.name}' can't use numeric min/max rules because it isn't numeric.",
+                        field.span.line if field.span else None,
+                    )
+                numeric_min_value = (
+                    _convert_numeric_rule_value(field_type, raw_numeric_min, decl.name, field_name, "must be at least")
+                    if raw_numeric_min is not None
+                    else None
+                )
+                numeric_max_value = (
+                    _convert_numeric_rule_value(field_type, raw_numeric_max, decl.name, field_name, "must be at most")
+                    if raw_numeric_max is not None
+                    else None
+                )
+                if numeric_min_value is not None and numeric_max_value is not None and numeric_min_value > numeric_max_value:
+                    raise IRError(
+                        f"Field '{field_name}' on record '{decl.name}' has conflicting numeric limits (at least > at most).",
+                        field.span.line if field.span else None,
+                    )
+                if (raw_length_min is not None or raw_length_max is not None) and field_type not in {"string", "text", "array"}:
+                    raise IRError(
+                        f"Field '{field_name}' on record '{decl.name}' can't use length rules because it isn't a string or array field.",
+                        field.span.line if field.span else None,
+                    )
+                length_min_value = raw_length_min
+                length_max_value = raw_length_max
+                if length_min_value is not None and length_max_value is not None and length_min_value > length_max_value:
+                    raise IRError(
+                        f"Field '{field_name}' on record '{decl.name}' has conflicting length limits (at least > at most).",
+                        field.span.line if field.span else None,
+                    )
+                if enum_values is not None:
+                    enum_values = _coerce_enum_values_for_field(field_type, enum_values, decl.name, field_name)
+                if pattern_value:
+                    if field_type not in {"string", "text"}:
+                        raise IRError(
+                            f"Field '{field_name}' on record '{decl.name}' can't use must match pattern because it isn't a string.",
+                            field.span.line if field.span else None,
+                        )
+                    try:
+                        re.compile(pattern_value)
+                    except re.error as exc:
+                        raise IRError(
+                            f"Pattern on field '{field_name}' in record '{decl.name}' is invalid: {exc}",
+                            field.span.line if field.span else None,
+                        )
                 field_map[field_name] = IRRecordField(
                     name=field_name,
                     type=field_type,
                     primary_key=bool(field.primary_key),
                     required=bool(field.required) or bool(field.primary_key),
                     default=default_value,
+                    is_unique=is_unique,
+                    unique_scope=unique_scope_name,
+                    unique_scope_field=unique_scope_field,
+                    references_record=getattr(field, "references_record", None) or None,
+                    references_field=getattr(field, "references_field", None) or None,
+                    numeric_min=numeric_min_value,
+                    numeric_max=numeric_max_value,
+                    length_min=length_min_value,
+                    length_max=length_max_value,
+                    enum_values=enum_values,
+                    pattern=pattern_value,
+                    span=field.span,
                 )
             if not primary_key_name:
                 raise IRError(
@@ -1901,6 +2411,7 @@ def ast_to_ir(module: ast_nodes.Module) -> IRProgram:
                 frame=decl.frame,
                 fields=field_map,
                 primary_key=primary_key_name,
+                relationships=relationships_map,
             )
         elif isinstance(decl, ast_nodes.AuthDecl):
             if program.auth is not None:
@@ -2032,9 +2543,10 @@ def ast_to_ir(module: ast_nodes.Module) -> IRProgram:
                 raise IRError(
                     f"Duplicate flow '{decl.name}'", decl.span and decl.span.line
                 )
-            flow_steps: List[IRFlowStep | IRFlowLoop] = []
+            tx_counter = itertools.count(1)
+            flow_steps: List[IRFlowStep | IRFlowLoop | IRTransactionBlock] = []
             for step in decl.steps:
-                ir_item = lower_flow_item(step)
+                ir_item = lower_flow_item(step, decl.name, tx_counter)
                 flow_steps.append(ir_item)
             program.flows[decl.name] = IRFlow(
                 name=decl.name,
@@ -2045,9 +2557,11 @@ def ast_to_ir(module: ast_nodes.Module) -> IRProgram:
             # Lower error handler steps if present
             error_steps_ir: List[IRFlowStep] = []
             for step in getattr(decl, "error_steps", []) or []:
-                ir_item = lower_flow_item(step)
+                ir_item = lower_flow_item(step, decl.name, tx_counter)
                 if isinstance(ir_item, IRFlowLoop):
                     raise IRError("Loops are not allowed in error handlers", step.span and step.span.line)
+                if isinstance(ir_item, IRTransactionBlock):
+                    raise IRError("Transactions are not allowed in error handlers", step.span and step.span.line)
                 error_steps_ir.append(ir_item)
             program.flows[decl.name].error_steps = error_steps_ir
         elif isinstance(decl, ast_nodes.PluginDecl):
@@ -2185,9 +2699,7 @@ def ast_to_ir(module: ast_nodes.Module) -> IRProgram:
             )
 
     for flow in program.flows.values():
-        for step in flow.steps:
-            if isinstance(step, IRFlowLoop):
-                continue
+        for step in _yield_flow_steps(flow.steps):
             if step.kind == "ai":
                 if step.target not in program.ai_calls:
                     raise IRError(
@@ -2279,6 +2791,8 @@ def ast_to_ir(module: ast_nodes.Module) -> IRProgram:
                 continue
 
     _validate_flow_scopes(program)
+    _resolve_record_constraints(program)
+    _resolve_relationship_joins(program)
 
     return program
 
@@ -2297,10 +2811,12 @@ def _validate_flow_scopes(program: IRProgram) -> None:
     if not program.flows:
         return
 
-    def _collect_step_names(items: list[IRFlowStep | IRFlowLoop], names: set[str], loop_vars: set[str]) -> None:
+    def _collect_step_names(items: list[IRFlowStep | IRFlowLoop | IRTransactionBlock], names: set[str], loop_vars: set[str]) -> None:
         for item in items:
             if isinstance(item, IRFlowLoop):
                 loop_vars.add(item.var_name)
+                _collect_step_names(item.body, names, loop_vars)
+            elif isinstance(item, IRTransactionBlock):
                 _collect_step_names(item.body, names, loop_vars)
             else:
                 names.add(item.name)
@@ -2335,6 +2851,7 @@ def _validate_flow_scopes(program: IRProgram) -> None:
                 span=getattr(expr, "span", None),
             )
         return None
+
 
     def _validate_varref(
         varref: ast_nodes.VarRef,
@@ -2512,7 +3029,7 @@ def _validate_flow_scopes(program: IRProgram) -> None:
                 if stmt.expr:
                     _walk_expr(stmt.expr, scope, flow_name, all_steps, steps_seen)
 
-    def _walk_flow_items(items: list[IRFlowStep | IRFlowLoop], scope: _FlowScope, flow_name: str, all_steps: set[str], steps_seen: set[str]) -> None:
+    def _walk_flow_items(items: list[IRFlowStep | IRFlowLoop | IRTransactionBlock], scope: _FlowScope, flow_name: str, all_steps: set[str], steps_seen: set[str]) -> None:
         for item in items:
             if isinstance(item, IRFlowLoop):
                 if item.iterable:
@@ -2521,6 +3038,8 @@ def _validate_flow_scopes(program: IRProgram) -> None:
                 loop_scope.active_loops.add(item.var_name)
                 loop_scope.all_loop_vars.add(item.var_name)
                 _walk_flow_items(item.body, loop_scope, flow_name, all_steps, steps_seen)
+            elif isinstance(item, IRTransactionBlock):
+                _walk_flow_items(item.body, scope, flow_name, all_steps, steps_seen)
             else:
                 for expr in _iter_exprs(item.params):
                     _walk_expr(expr, scope, flow_name, all_steps, steps_seen)
@@ -2537,3 +3056,127 @@ def _validate_flow_scopes(program: IRProgram) -> None:
         scope = _FlowScope(locals=set(), active_loops=set(), all_loop_vars=loop_vars)
         steps_seen: set[str] = set()
         _walk_flow_items(flow.steps, scope, flow.name, all_steps, steps_seen)
+
+
+def _resolve_record_constraints(program: IRProgram) -> None:
+    for record_name, record in program.records.items():
+        for field in record.fields.values():
+            if not field.references_record:
+                continue
+            target_name = field.references_record
+            target_record = program.records.get(target_name)
+            line = field.span.line if field.span else None
+            if not target_record:
+                raise IRError(
+                    f'I can’t build record "{record_name}" because field {field.name} references "{target_name}", but no record named "{target_name}" exists.',
+                    line,
+                )
+            target_pk = target_record.primary_key
+            if not target_pk:
+                raise IRError(
+                    f'I can’t use references "{target_name}" on {record_name}.{field.name} because "{target_name}" has no primary key. Add a primary key to "{target_name}" or remove this reference.',
+                    line,
+                )
+            target_field_name = field.references_field or target_pk
+            if target_field_name not in target_record.fields:
+                raise IRError(
+                    f'I can’t build record "{record_name}" because field {field.name} references "{target_name}" by "{target_field_name}", but that field does not exist on "{target_name}".',
+                    line,
+                )
+            field.reference_target_field = target_field_name
+        for relationship in record.relationships.values():
+            rel_line = relationship.span.line if relationship.span else None
+            target_record = program.records.get(relationship.target_record)
+            if not target_record:
+                raise IRError(
+                    f'I can’t build this relationship because "{relationship.target_record}" does not exist. Define record "{relationship.target_record}" or remove the relationship "{relationship.name}" on record "{record_name}".',
+                    rel_line,
+                )
+            via_field = record.fields.get(relationship.via_field)
+            if not via_field:
+                raise IRError(
+                    f'I can’t build this relationship because I can’t find a field named {relationship.via_field} on record "{record_name}". Make sure the relationship uses an existing foreign key field.',
+                    rel_line,
+                )
+            if via_field.references_record != relationship.target_record:
+                raise IRError(
+                    f'I can’t build this relationship because {relationship.via_field} on record "{record_name}" does not reference "{relationship.target_record}". Point that field to "{relationship.target_record}" or pick a different relationship target.',
+                    rel_line,
+                )
+            if not via_field.reference_target_field:
+                raise IRError(
+                    f'I can’t build this relationship because {relationship.via_field} on record "{record_name}" does not resolve a target field on "{relationship.target_record}".',
+                    rel_line,
+                )
+            relationship.target_field = via_field.reference_target_field
+
+
+def _resolve_relationship_joins(program: IRProgram) -> None:
+    if not program.flows:
+        return
+
+    def _iter_steps(items: list[IRFlowStep | IRFlowLoop | IRTransactionBlock]) -> list[IRFlowStep]:
+        collected: list[IRFlowStep] = []
+        for item in items:
+            if isinstance(item, IRFlowLoop):
+                collected.extend(_iter_steps(item.body))
+            elif isinstance(item, IRTransactionBlock):
+                collected.extend(_iter_steps(item.body))
+            else:
+                collected.append(item)
+        return collected
+
+    def _resolve_query(query: IRRecordQuery, flow_name: str) -> None:
+        if not query.relationships:
+            return
+        base_record = program.records.get(query.record_name)
+        if not base_record:
+            raise IRError(
+                f'I can’t resolve relationships for alias "{query.alias}" in flow "{flow_name}" because record "{query.record_name}" is not declared.',
+                query.span and query.span.line,
+            )
+        for join in query.relationships:
+            via_field = base_record.fields.get(join.via_field)
+            display_alias = join.display_base_alias or join.base_alias
+            if not via_field:
+                raise IRError(
+                    f'I can’t join {join.related_alias} for each {display_alias} by {join.via_field} because record "{base_record.name}" has no field named {join.via_field}.',
+                    join.span and join.span.line,
+                )
+            target_record_name = via_field.references_record
+            if not target_record_name:
+                raise IRError(
+                    f'I can’t join {join.related_alias} for each {display_alias} by {join.via_field} because {join.via_field} does not reference another record. Add references \"Record\" to that field first.',
+                    join.span and join.span.line,
+                )
+            target_record = program.records.get(target_record_name)
+            if not target_record:
+                raise IRError(
+                    f'I can’t join {join.related_alias} for each {display_alias} by {join.via_field} because record "{target_record_name}" does not exist.',
+                    join.span and join.span.line,
+                )
+            target_field = via_field.reference_target_field or target_record.primary_key
+            if not target_field:
+                raise IRError(
+                    f'I can’t join {join.related_alias} for each {display_alias} because I can’t determine which field to use on "{target_record_name}".',
+                    join.span and join.span.line,
+                )
+            attachment_field = None
+            for rel_name, rel in base_record.relationships.items():
+                if rel.via_field == join.via_field and rel.target_record == target_record_name:
+                    attachment_field = rel_name
+                    break
+            if attachment_field is None:
+                attachment_field = join.related_alias
+            join.target_record = target_record_name
+            join.target_field = target_field
+            join.attachment_field = attachment_field
+
+    for flow in program.flows.values():
+        for step in _iter_steps(flow.steps):
+            if not isinstance(step, IRFlowStep):
+                continue
+            params = step.params or {}
+            query = params.get("query")
+            if isinstance(query, IRRecordQuery):
+                _resolve_query(query, flow.name)

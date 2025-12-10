@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import csv
 from dataclasses import dataclass
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 from .. import ast_nodes
 from ..errors import Namel3ssError
@@ -139,6 +139,14 @@ class FrameRegistry:
             remain.append(row)
         self._store[name] = remain
         return deleted
+
+    def snapshot(self) -> Dict[str, List[dict]]:
+        return {name: [dict(row) for row in rows] for name, rows in self._store.items()}
+
+    def restore(self, snapshot: Optional[Dict[str, List[dict]]]) -> None:
+        if snapshot is None:
+            return
+        self._store = {name: [dict(row) for row in rows] for name, rows in snapshot.items()}
 
     def _eval_where(self, expr: ast_nodes.Expr, row: dict) -> bool:
         env = VariableEnvironment(dict(row))

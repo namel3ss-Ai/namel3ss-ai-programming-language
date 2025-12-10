@@ -8,6 +8,7 @@ from __future__ import annotations
 import asyncio
 import inspect
 import json
+import re
 import time
 import urllib.error
 import urllib.parse
@@ -15,6 +16,7 @@ import urllib.request
 import numbers
 from dataclasses import asdict, is_dataclass
 from datetime import datetime
+from decimal import Decimal, InvalidOperation
 from typing import Any, Callable, Optional
 from uuid import UUID, uuid4
 
@@ -33,11 +35,15 @@ from ..errors import (
 from ..runtime.auth import hash_password, verify_password
 from ..ir import (
     IRAction,
+    IRBulkCreateSpec,
+    IRBulkDeleteSpec,
+    IRBulkUpdateSpec,
     IRAskUser,
     IRCheckpoint,
     IRFlow,
     IRFlowLoop,
     IRFlowStep,
+    IRTransactionBlock,
     IRForEach,
     IRForm,
     IRIf,
@@ -185,16 +191,20 @@ class FlowEngine:
             "frame_insert",
             "frame_query",
             "frame_update",
-            "frame_delete",
-            "db_create",
-            "db_update",
-            "db_delete",
-            "find",
-            "auth_register",
-            "auth_login",
-            "auth_logout",
-            "noop",
+             "frame_delete",
+             "db_create",
+             "db_update",
+             "db_delete",
+             "db_bulk_create",
+             "db_bulk_update",
+             "db_bulk_delete",
+             "find",
+             "auth_register",
+             "auth_login",
+             "auth_logout",
+             "noop",
             "function",
+            "transaction",
         }
         if kind in supported:
             return "script" if kind == "function" and statements else kind
@@ -818,7 +828,7 @@ class FlowEngine:
                         runtime_ctx.event_logger.log(payload)
                     except Exception:
                         pass
-            elif resolved_kind in {"db_create", "db_update", "db_delete", "find"}:
+            elif resolved_kind in {"db_create", "db_update", "db_delete", "db_bulk_create", "db_bulk_update", "db_bulk_delete", "find"}:
                 params = node.config.get("params") or {}
                 record_name = target or target_label
                 if not record_name:
@@ -1061,6 +1071,8 @@ class FlowEngine:
                 output = func(state)
             elif resolved_kind == "parallel":
                 output = await self._execute_parallel_block(node, state, runtime_ctx)
+            elif resolved_kind == "transaction":
+                output = await self._execute_transaction_block(node, state, runtime_ctx)
             elif resolved_kind == "for_each":
                 output = await self._execute_for_each(node, state, runtime_ctx)
             elif resolved_kind == "try":
@@ -1549,6 +1561,41 @@ class FlowEngine:
         # Merge branch states back into parent.
         self._merge_branch_states(state, branch_ids, results_states)
         return {"parallel": branch_ids}
+
+    async def _execute_transaction_block(self, node: FlowNode, state: FlowState, runtime_ctx: FlowRuntimeContext):
+        frames = runtime_ctx.frames
+        if frames is None:
+            raise Namel3ssError("Frame registry unavailable for transactions.")
+        stack = runtime_ctx.transaction_stack
+        if stack is None:
+            stack = []
+            runtime_ctx.transaction_stack = stack
+        if stack:
+            raise Namel3ssError(
+                "Nested transactions are not supported yet. Remove the inner transaction: block or move its steps outside."
+            )
+        snapshot = frames.snapshot()
+        stack.append(snapshot)
+        flow_name = state.context.get("flow_name") or (
+            runtime_ctx.execution_context.flow_name if runtime_ctx.execution_context else None
+        )
+        flow_label = f'flow "{flow_name}"' if flow_name else "this flow"
+        body = node.config.get("body") or []
+        step_id = node.config.get("step_name", node.id)
+        try:
+            await self._run_inline_sequence(step_id, body, state, runtime_ctx)
+        except Exception as exc:
+            frames.restore(stack.pop())
+            message = (
+                f"This transaction in {flow_label} failed and all record changes were rolled back.\n"
+                f"Reason: {exc}"
+            )
+            wrapped = Namel3ssError(message)
+            if hasattr(exc, "diagnostics"):
+                wrapped.diagnostics = getattr(exc, "diagnostics")
+            raise wrapped from exc
+        stack.pop()
+        return {"transaction": "committed", "steps": len(body)}
 
     async def _execute_for_each(self, node: FlowNode, state: FlowState, runtime_ctx: FlowRuntimeContext):
         config = node.config if isinstance(node.config, dict) else {}
@@ -2488,12 +2535,15 @@ class FlowEngine:
             helper_resolver=lambda name, args: self._call_helper(name, args, state, runtime_ctx),
         )
 
-    def _collect_step_aliases(self, items: list[IRFlowStep | IRFlowLoop]) -> dict[str, str]:
+    def _collect_step_aliases(self, items: list[IRFlowStep | IRFlowLoop | IRTransactionBlock]) -> dict[str, str]:
         aliases: dict[str, str] = {}
 
-        def walk(steps: list[IRFlowStep | IRFlowLoop]) -> None:
+        def walk(steps: list[IRFlowStep | IRFlowLoop | IRTransactionBlock]) -> None:
             for step in steps:
                 if isinstance(step, IRFlowLoop):
+                    walk(step.body)
+                    continue
+                if isinstance(step, IRTransactionBlock):
                     walk(step.body)
                     continue
                 if step.alias:
@@ -2734,6 +2784,27 @@ class FlowEngine:
                     f"Failed to evaluate '{key}' inside '{block_name}' for step '{step_name}': {exc}"
                 ) from exc
         return values
+
+    def _evaluate_bulk_source(
+        self,
+        source_expr: ast_nodes.Expr,
+        evaluator: ExpressionEvaluator,
+        step_name: str,
+        label: str,
+    ) -> list[Any]:
+        try:
+            value = evaluator.evaluate(source_expr)
+        except Exception as exc:
+            raise Namel3ssError(
+                f"I couldn’t evaluate {label} in step '{step_name}': {exc}"
+            ) from exc
+        if value is None:
+            return []
+        if not isinstance(value, list):
+            raise Namel3ssError(
+                f"I expected {label} to be a list, but got {type(value).__name__} instead."
+            )
+        return value
 
     def _evaluate_where_conditions(
         self,
@@ -3007,6 +3078,34 @@ class FlowEngine:
                 if isinstance(value, str):
                     return datetime.fromisoformat(value)
                 raise ValueError("expected datetime or ISO-8601 string")
+            if ftype == "decimal":
+                if isinstance(value, Decimal):
+                    return value
+                if isinstance(value, (int, float)) and not isinstance(value, bool):
+                    return Decimal(str(value))
+                if isinstance(value, str):
+                    return Decimal(value)
+                raise ValueError("expected decimal-compatible value")
+            if ftype == "array":
+                if isinstance(value, list):
+                    return value
+                if isinstance(value, tuple):
+                    return list(value)
+                if isinstance(value, str):
+                    parsed = json.loads(value)
+                    if isinstance(parsed, list):
+                        return parsed
+                    raise ValueError("expected JSON array string")
+                raise ValueError("expected list or array-like value")
+            if ftype == "json":
+                if isinstance(value, (dict, list)):
+                    return value
+                if isinstance(value, str):
+                    parsed = json.loads(value)
+                    if isinstance(parsed, (dict, list)):
+                        return parsed
+                    raise ValueError("expected JSON object or array string")
+                raise ValueError("expected JSON object or array value")
         except Exception as exc:
             raise Namel3ssError(
                 f"Field '{field.name}' on record '{record_name}' could not be coerced to type '{ftype}': {exc}"
@@ -3045,6 +3144,314 @@ class FlowEngine:
                 if (field.required or field.primary_key) and normalized.get(key) is None:
                     raise Namel3ssError(f"N3L-1502: I can't create a {record.name} record because required field {key} is missing.")
         return normalized
+
+    def _format_unique_violation_error(
+        self,
+        record_name: str,
+        field_name: str,
+        value: Any,
+        scope_label: str | None,
+    ) -> str:
+        value_display = f"\"{value}\"" if isinstance(value, str) else str(value)
+        record_lower = record_name.lower()
+        if scope_label:
+            return (
+                f'I can’t save this {record_name} because {field_name} {value_display} is already used inside this {scope_label}.\n'
+                f"Each {record_lower} must have a unique {field_name} within {scope_label.lower()}."
+            )
+        return (
+            f'I can’t save this {record_name} because {field_name} {value_display} is already used.\n'
+            f"Each {record_lower} must have a unique {field_name}."
+        )
+
+    def _format_missing_scope_value_error(
+        self,
+        record_name: str,
+        field_name: str,
+        scope_label: str,
+        scope_field: str,
+    ) -> str:
+        return (
+            f'I can’t enforce must be unique within "{scope_label}" on {record_name}.{field_name} because I can’t find a value for {scope_field} on this record.\n'
+            f"Provide {scope_field} before saving or remove that uniqueness rule."
+        )
+
+    def _format_foreign_key_violation_error(
+        self,
+        record_name: str,
+        field_name: str,
+        value: Any,
+        target_record: str,
+    ) -> str:
+        value_display = f"\"{value}\"" if isinstance(value, str) else str(value)
+        return (
+            f'I can’t save this {record_name} because {field_name} {value_display} does not point to an existing {target_record}.\n'
+            f"Make sure you use a valid {target_record} id here."
+        )
+
+    def _enforce_record_uniqueness(
+        self,
+        record,
+        candidate_row: dict[str, Any],
+        existing_row: dict[str, Any] | None,
+        frames,
+        frame_name: str,
+        operation: str,
+    ) -> None:
+        pk_name = getattr(record, "primary_key", None)
+        pk_value = None
+        if pk_name:
+            if operation == "update" and existing_row is not None:
+                pk_value = existing_row.get(pk_name)
+            else:
+                pk_value = candidate_row.get(pk_name)
+        for field in record.fields.values():
+            if not getattr(field, "is_unique", False):
+                continue
+            new_value = candidate_row.get(field.name)
+            if new_value is None:
+                continue
+            scope_label = getattr(field, "unique_scope", None)
+            scope_field = getattr(field, "unique_scope_field", None)
+            scope_value = None
+            if scope_label:
+                if not scope_field:
+                    raise Namel3ssError(
+                        f'I can’t enforce must be unique within "{scope_label}" on {record.name}.{field.name} because I can’t resolve the scope field.'
+                    )
+                scope_value = candidate_row.get(scope_field)
+                if scope_value is None:
+                    raise Namel3ssError(
+                        self._format_missing_scope_value_error(record.name, field.name, scope_label, scope_field)
+                    )
+            if existing_row is not None:
+                previous_value = existing_row.get(field.name)
+                scope_changed = False
+                if scope_field:
+                    previous_scope = existing_row.get(scope_field)
+                    scope_changed = previous_scope != scope_value
+                if previous_value == new_value and not scope_changed:
+                    continue
+            filters = [{"field": field.name, "op": "eq", "value": new_value}]
+            if scope_field:
+                filters.append({"field": scope_field, "op": "eq", "value": scope_value})
+            matches = frames.query(frame_name, filters)
+            for row in matches:
+                if operation == "update" and pk_name and row.get(pk_name) == pk_value:
+                    continue
+                raise Namel3ssError(
+                    self._format_unique_violation_error(record.name, field.name, new_value, scope_label)
+                )
+
+    def _enforce_record_foreign_keys(
+        self,
+        record,
+        candidate_row: dict[str, Any],
+        existing_row: dict[str, Any] | None,
+        frames,
+        runtime_records: dict[str, Any] | None,
+        operation: str,
+    ) -> None:
+        if not runtime_records:
+            runtime_records = {}
+        for field in record.fields.values():
+            target_record_name = getattr(field, "references_record", None)
+            target_field_name = getattr(field, "reference_target_field", None)
+            if not target_record_name or not target_field_name:
+                continue
+            new_value = candidate_row.get(field.name)
+            if new_value is None:
+                continue
+            if existing_row is not None:
+                previous_value = existing_row.get(field.name)
+                if previous_value == new_value:
+                    continue
+            target_record = runtime_records.get(target_record_name)
+            if not target_record:
+                raise Namel3ssError(
+                    f'I can’t enforce references "{target_record_name}" on {record.name}.{field.name} because record "{target_record_name}" is not available at runtime.'
+                )
+            target_frame = getattr(target_record, "frame", None)
+            if not target_frame:
+                raise Namel3ssError(
+                    f'I can’t enforce references "{target_record_name}" on {record.name}.{field.name} because the referenced record has no frame.'
+                )
+            filters = [
+                {
+                    "field": target_field_name,
+                    "op": "eq",
+                    "value": new_value,
+                }
+            ]
+            matches = frames.query(target_frame, filters)
+            if not matches:
+                raise Namel3ssError(
+                    self._format_foreign_key_violation_error(record.name, field.name, new_value, target_record_name)
+                )
+
+    def _validate_record_field_values(
+        self,
+        record,
+        candidate_row: dict[str, Any],
+    ) -> None:
+        for field in record.fields.values():
+            value = candidate_row.get(field.name)
+            self._validate_single_field_value(record, field, value)
+
+    def _validate_single_field_value(self, record, field, value: Any) -> None:
+        if value is None:
+            return
+        enum_values = getattr(field, "enum_values", None)
+        if enum_values:
+            if value not in enum_values:
+                allowed_label = "[" + ", ".join(self._format_validation_value(val) for val in enum_values) + "]"
+                raise Namel3ssError(
+                    self._format_validation_error(
+                        record.name,
+                        f"{field.name} must be one of {allowed_label} but got {self._format_validation_value(value)}.",
+                    )
+                )
+        numeric_min = getattr(field, "numeric_min", None)
+        if numeric_min is not None and value < numeric_min:
+            raise Namel3ssError(
+                self._format_validation_error(
+                    record.name,
+                    f"{field.name} must be at least {self._format_validation_value(numeric_min)} but got {self._format_validation_value(value)}.",
+                )
+            )
+        numeric_max = getattr(field, "numeric_max", None)
+        if numeric_max is not None and value > numeric_max:
+            raise Namel3ssError(
+                self._format_validation_error(
+                    record.name,
+                    f"{field.name} must be at most {self._format_validation_value(numeric_max)} but got {self._format_validation_value(value)}.",
+                )
+            )
+        length_min = getattr(field, "length_min", None)
+        length_max = getattr(field, "length_max", None)
+        if length_min is not None or length_max is not None:
+            unit = "items"
+            if isinstance(value, str):
+                current_length = len(value)
+                unit = "characters"
+            elif isinstance(value, (list, tuple)):
+                current_length = len(value)
+            else:
+                current_length = None
+            if current_length is not None:
+                if length_min is not None and current_length < length_min:
+                    raise Namel3ssError(
+                        self._format_validation_error(
+                            record.name,
+                            f"{field.name} must have length at least {length_min} {unit} but got {current_length}.",
+                        )
+                    )
+                if length_max is not None and current_length > length_max:
+                    raise Namel3ssError(
+                        self._format_validation_error(
+                            record.name,
+                            f"{field.name} must have length at most {length_max} {unit} but got {current_length}.",
+                        )
+                    )
+        pattern = getattr(field, "pattern", None)
+        if pattern:
+            if not isinstance(value, str):
+                raise Namel3ssError(
+                    self._format_validation_error(
+                        record.name,
+                        f"{field.name} must match pattern \"{pattern}\" but got {self._format_validation_value(value)}.",
+                    )
+                )
+            if not re.fullmatch(pattern, value):
+                raise Namel3ssError(
+                    self._format_validation_error(
+                        record.name,
+                        f"{field.name} must match pattern \"{pattern}\" but got {self._format_validation_value(value)}.",
+                    )
+                )
+
+    def _format_validation_error(self, record_name: str, message: str) -> str:
+        return f"I can't save this {record_name} because {message}"
+
+    def _format_validation_value(self, value: Any) -> str:
+        if isinstance(value, str):
+            return f'"{value}"'
+        return str(value)
+
+    def _track_pending_uniques(
+        self,
+        record,
+        candidate_row: dict[str, Any],
+        tracker: dict[tuple[str, Any | None], set[Any]],
+    ) -> None:
+        for field in record.fields.values():
+            if not getattr(field, "is_unique", False):
+                continue
+            value = candidate_row.get(field.name)
+            if value is None:
+                continue
+            scope_field = getattr(field, "unique_scope_field", None)
+            scope_label = getattr(field, "unique_scope", None)
+            scope_value = candidate_row.get(scope_field) if scope_field else None
+            if scope_field and scope_value is None:
+                continue
+            key = (field.name, scope_value if scope_field else None)
+            seen = tracker.setdefault(key, set())
+            if value in seen:
+                raise Namel3ssError(
+                    self._format_unique_violation_error(record.name, field.name, value, scope_label)
+                )
+            seen.add(value)
+
+    def _apply_relationship_joins(
+        self,
+        record,
+        rows: list[dict[str, Any]],
+        relationships: list,
+        runtime_ctx: FlowRuntimeContext,
+    ) -> list[dict[str, Any]]:
+        if not rows or not relationships:
+            return rows
+        frames = runtime_ctx.frames
+        if frames is None:
+            raise Namel3ssError("Frame registry unavailable for relationship queries.")
+        runtime_records = getattr(runtime_ctx, "records", {}) or {}
+        for join in relationships:
+            target_record_name = getattr(join, "target_record", None)
+            target_field = getattr(join, "target_field", None)
+            attachment_field = getattr(join, "attachment_field", None) or join.related_alias
+            via_field = join.via_field
+            if not target_record_name or not target_field:
+                raise Namel3ssError(
+                    f"I can’t load related records for '{attachment_field}' because the relationship metadata is incomplete."
+                )
+            target_record = runtime_records.get(target_record_name)
+            if not target_record:
+                raise Namel3ssError(
+                    f'I can’t load related {target_record_name} records because "{target_record_name}" is not registered at runtime.'
+                )
+            target_frame = getattr(target_record, "frame", None)
+            if not target_frame:
+                raise Namel3ssError(
+                    f'I can’t load related {target_record_name} records because "{target_record_name}" is missing a frame binding.'
+                )
+            fk_values = {row.get(via_field) for row in rows if row.get(via_field) is not None}
+            related_map: dict[Any, dict[str, Any]] = {}
+            if fk_values:
+                filters = [{"field": target_field, "op": "in", "value": list(fk_values)}]
+                related_rows = frames.query(target_frame, filters)
+                for rel_row in related_rows:
+                    rel_dict = dict(rel_row)
+                    key = rel_dict.get(target_field)
+                    if key is not None:
+                        related_map[key] = rel_dict
+            for row in rows:
+                fk_value = row.get(via_field)
+                if fk_value is None:
+                    row[attachment_field] = None
+                else:
+                    row[attachment_field] = related_map.get(fk_value)
+        return rows
 
     def _evaluate_pagination_expr(
         self,
@@ -3097,8 +3504,75 @@ class FlowEngine:
                 include_defaults=True,
                 enforce_required=True,
             )
+            self._validate_record_field_values(record, normalized)
+            candidate_row = dict(normalized)
+            self._enforce_record_uniqueness(
+                record,
+                candidate_row,
+                None,
+                frames,
+                frame_name,
+                operation="create",
+            )
+            self._enforce_record_foreign_keys(
+                record,
+                candidate_row,
+                None,
+                frames,
+                getattr(runtime_ctx, "records", None),
+                operation="create",
+            )
             frames.insert(frame_name, normalized)
             return dict(normalized)
+        if kind == "db_bulk_create":
+            bulk_spec = params.get("bulk_create")
+            if not isinstance(bulk_spec, IRBulkCreateSpec):
+                raise Namel3ssError("I need create many ... details to run this bulk create step.")
+            expr_label = self._expr_to_str(bulk_spec.source_expr)
+            source_label = f"create many {record.name} from {expr_label or 'that expression'}"
+            source_value = self._evaluate_bulk_source(bulk_spec.source_expr, evaluator, step_name, source_label)
+            if not source_value:
+                return []
+            local_uniques: dict[tuple[str, Any | None], set[Any]] = {}
+            runtime_records = getattr(runtime_ctx, "records", None)
+            prepared_rows: list[dict[str, Any]] = []
+            for idx, item in enumerate(source_value, start=1):
+                if not isinstance(item, dict):
+                    raise Namel3ssError(
+                        f"Item {idx} inside create many {record.name} must be a record of field values, but I received {type(item).__name__}."
+                    )
+                normalized = self._prepare_record_values(
+                    record,
+                    item,
+                    step_name,
+                    include_defaults=True,
+                    enforce_required=True,
+                )
+                self._validate_record_field_values(record, normalized)
+                candidate_row = dict(normalized)
+                self._enforce_record_uniqueness(
+                    record,
+                    candidate_row,
+                    None,
+                    frames,
+                    frame_name,
+                    operation="create",
+                )
+                self._enforce_record_foreign_keys(
+                    record,
+                    candidate_row,
+                    None,
+                    frames,
+                    runtime_records,
+                    operation="create",
+                )
+                self._track_pending_uniques(record, candidate_row, local_uniques)
+                prepared_rows.append(normalized)
+            inserted_rows: list[dict[str, Any]] = []
+            for row in prepared_rows:
+                frames.insert(frame_name, row)
+                inserted_rows.append(dict(row))
+            return inserted_rows
         if kind in {"find", "db_get"}:
             query_obj = params.get("query")
             alias = record.name.lower()
@@ -3153,9 +3627,17 @@ class FlowEngine:
             limit_value = self._evaluate_pagination_expr(limit_expr, evaluator, step_name, f"limit {alias} to")
             if limit_value is not None:
                 rows = rows[:limit_value]
+            rows = [dict(row) for row in rows]
+            if isinstance(query_obj, IRRecordQuery) and getattr(query_obj, "relationships", None):
+                rows = self._apply_relationship_joins(
+                    record,
+                    rows,
+                    query_obj.relationships,
+                    runtime_ctx,
+                )
             if used_primary:
-                return dict(rows[0]) if rows else None
-            return [dict(row) for row in rows]
+                return rows[0] if rows else None
+            return rows
         if kind == "db_update":
             by_id_values = self._evaluate_expr_dict(params.get("by_id"), evaluator, step_name, "by id")
             if not record.primary_key or record.primary_key not in by_id_values:
@@ -3186,9 +3668,80 @@ class FlowEngine:
             rows = frames.query(frame_name, filters)
             if not rows:
                 return None
+            existing_row = dict(rows[0])
+            candidate_row = dict(existing_row)
+            candidate_row.update(updates)
+            self._validate_record_field_values(record, candidate_row)
+            self._enforce_record_uniqueness(
+                record,
+                candidate_row,
+                existing_row,
+                frames,
+                frame_name,
+                operation="update",
+            )
+            self._enforce_record_foreign_keys(
+                record,
+                candidate_row,
+                existing_row,
+                frames,
+                getattr(runtime_ctx, "records", None),
+                operation="update",
+            )
             for row in rows:
                 row.update(updates)
             return dict(rows[0])
+        if kind == "db_bulk_update":
+            bulk_spec = params.get("bulk_update")
+            if not isinstance(bulk_spec, IRBulkUpdateSpec):
+                raise Namel3ssError("I need update many ... where: details to run this bulk update step.")
+            set_entries = params.get("set")
+            if not isinstance(set_entries, dict) or not set_entries:
+                raise Namel3ssError(f"I need a 'set:' block inside update many {record.name.lower()}s to know which fields to change.")
+            evaluated_updates = self._evaluate_expr_dict(set_entries, evaluator, step_name, "set")
+            normalized_updates = self._prepare_record_values(
+                record,
+                evaluated_updates,
+                step_name,
+                include_defaults=False,
+                enforce_required=False,
+            )
+            filters_tree = self._evaluate_where_conditions(bulk_spec.where_condition, evaluator, step_name, record)
+            rows = list(frames.query(frame_name, None))
+            if filters_tree:
+                alias_label = bulk_spec.alias or record.name
+                rows = [row for row in rows if self._condition_tree_matches(filters_tree, row, alias_label)]
+            if not rows:
+                return []
+            runtime_records = getattr(runtime_ctx, "records", None)
+            local_uniques: dict[tuple[str, Any | None], set[Any]] = {}
+            staged_rows: list[tuple[dict[str, Any], dict[str, Any]]] = []
+            for row in rows:
+                existing_row = dict(row)
+                candidate_row = dict(existing_row)
+                candidate_row.update(normalized_updates)
+                self._validate_record_field_values(record, candidate_row)
+                self._enforce_record_uniqueness(
+                    record,
+                    candidate_row,
+                    existing_row,
+                    frames,
+                    frame_name,
+                    operation="update",
+                )
+                self._enforce_record_foreign_keys(
+                    record,
+                    candidate_row,
+                    existing_row,
+                    frames,
+                    runtime_records,
+                    operation="update",
+                )
+                self._track_pending_uniques(record, candidate_row, local_uniques)
+                staged_rows.append((row, candidate_row))
+            for row, _candidate in staged_rows:
+                row.update(normalized_updates)
+            return [dict(row) for row in rows]
         if kind == "db_delete":
             by_id_values = self._evaluate_expr_dict(params.get("by_id"), evaluator, step_name, "by id")
             if not record.primary_key or record.primary_key not in by_id_values:
@@ -3209,6 +3762,15 @@ class FlowEngine:
                 }
             ]
             deleted = frames.delete(frame_name, filters)
+            return {"ok": deleted > 0, "deleted": deleted}
+        if kind == "db_bulk_delete":
+            bulk_spec = params.get("bulk_delete")
+            if not isinstance(bulk_spec, IRBulkDeleteSpec):
+                raise Namel3ssError("I need delete many ... where: details to run this bulk delete step.")
+            filters_tree = self._evaluate_where_conditions(bulk_spec.where_condition, evaluator, step_name, record)
+            if not filters_tree:
+                raise Namel3ssError("delete many ... must include a 'where:' block to limit which records are removed.")
+            deleted = frames.delete(frame_name, filters_tree)
             return {"ok": deleted > 0, "deleted": deleted}
         raise Namel3ssError(f"Unsupported record operation '{kind}'.")
 

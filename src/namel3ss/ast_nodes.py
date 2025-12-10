@@ -234,6 +234,18 @@ class RecordFieldDecl:
     primary_key: bool = False
     required: bool = False
     default_expr: "Expr" | None = None
+    is_unique: bool = False
+    unique_scope: str | None = None
+    references_record: str | None = None
+    references_field: str | None = None
+    relationship_target: str | None = None
+    relationship_via_field: str | None = None
+    numeric_min_expr: "Expr" | None = None
+    numeric_max_expr: "Expr" | None = None
+    length_min_expr: "Expr" | None = None
+    length_max_expr: "Expr" | None = None
+    enum_values_expr: "ListLiteral" | None = None
+    pattern: str | None = None
     span: Optional[Span] = None
 
 
@@ -299,6 +311,15 @@ class RecordOrderBy:
 
 
 @dataclass
+class RecordRelationshipJoin:
+    related_alias: str
+    base_alias: str
+    via_field: str
+    display_base_alias: str | None = None
+    span: Optional[Span] = None
+
+
+@dataclass
 class RecordQuery:
     alias: str
     record_name: str | None = None
@@ -306,6 +327,31 @@ class RecordQuery:
     order_by: list[RecordOrderBy] | None = None
     limit_expr: "Expr | None" = None
     offset_expr: "Expr | None" = None
+    relationships: list[RecordRelationshipJoin] = field(default_factory=list)
+    span: Optional[Span] = None
+
+
+@dataclass
+class BulkCreateSpec:
+    alias: str
+    source_expr: "Expr"
+    record_name: str | None = None
+    span: Optional[Span] = None
+
+
+@dataclass
+class BulkUpdateSpec:
+    alias: str
+    where_condition: BooleanCondition | None = None
+    record_name: str | None = None
+    span: Optional[Span] = None
+
+
+@dataclass
+class BulkDeleteSpec:
+    alias: str
+    where_condition: BooleanCondition | None = None
+    record_name: str | None = None
     span: Optional[Span] = None
 
 
@@ -468,7 +514,15 @@ class FlowLoopDecl:
     name: str
     var_name: str
     iterable: Expr
-    steps: List[FlowStepDecl | "FlowLoopDecl"] = field(default_factory=list)
+    steps: List[FlowStepDecl | "FlowLoopDecl" | "FlowTransactionBlock"] = field(default_factory=list)
+    span: Optional[Span] = None
+
+
+@dataclass
+class FlowTransactionBlock:
+    """transaction: block containing one or more steps."""
+
+    steps: List[FlowStepDecl | FlowLoopDecl] = field(default_factory=list)
     span: Optional[Span] = None
 
 
@@ -478,7 +532,7 @@ class FlowDecl:
 
     name: str
     description: Optional[str] = None
-    steps: List[FlowStepDecl | FlowLoopDecl] = field(default_factory=list)
+    steps: List[FlowStepDecl | FlowLoopDecl | FlowTransactionBlock] = field(default_factory=list)
     error_steps: List[FlowStepDecl] = field(default_factory=list)
     span: Optional[Span] = None
 

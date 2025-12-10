@@ -61,7 +61,7 @@ Each block kind has required and optional fields aligned with the current IR:
 
 - **model**
   - required: `name`, `provider`
-  - optional: —
+  - optional: (none)
 
 - **ai**
   - required: `name`, `model_name`, `input_source`
@@ -372,8 +372,22 @@ Studio's Memory Inspector shows these policies (scope, retention, PII handling, 
   - UI manifest v1 captures pages, routes, layout trees, styles, state, components, and theme tokens for frontend rendering.
   - Backend bridge exposes `/api/ui/manifest` and `/api/ui/flow/execute` to let the frontend render pages and call flows with state/form data.
 
+## Constraints & Relationships v1
+
+- `must be unique` and `must be unique within "Scope"` declare global or scoped uniqueness beyond the primary key.
+- `references "OtherRecord"` marks foreign-key fields whose non-null values must point at existing records.
+- `relationship is "OtherRecord" by field_name` defines non-persisted helpers for loading related records.
+- `with users for each order by user_id` (plus optional projections) enriches `find <alias> where:` results with related data.
+- Field validations:
+  - `must be present` (alias for `required`), `must be at least ...`, `must be at most ...` on numeric fields (`int`, `float`, `decimal`).
+  - `must have length at least/at most ...` on strings and arrays.
+  - `must be one of [ ... ]` for enums on scalar fields.
+  - `must match pattern "..."` (regular expressions) for strings.
+  - Additional field types: `decimal`, `array`, `json`.
+- The parser and runtime enforce these directives today (C2-C7). Every `db_create` / `db_update` / bulk helper runs through the same constraint pipeline, and `transaction:` blocks roll back all record writes when any constraint fails.
+
 ## Loops
-- Flow-level for-each loops: `for each is <var> in <expr>:` (or `for each <var> in <expr>:`) inside a `flow` block. The indented body contains normal flow steps and runs once per element in the iterable. Iterables resolving to `None` are treated as empty; non-list/array-like values raise a flow error (“loop iterable must be a list/array-like”). The loop variable is available inside the body (including `when` conditions) and is not guaranteed to exist outside the loop.
+- Flow-level for-each loops: `for each is <var> in <expr>:` (or `for each <var> in <expr>:`) inside a `flow` block. The indented body contains normal flow steps and runs once per element in the iterable. Iterables resolving to `None` are treated as empty; non-list/array-like values raise a flow error ("loop iterable must be a list/array-like"). The loop variable is available inside the body (including `when` conditions) and is not guaranteed to exist outside the loop.
 - Script for-each loops: `repeat for each <name> in <expr>:` followed by a block of statements. The iterable must evaluate to a list (`N3-3400`). Use `let <name> be ...` / `let constant <name> be ...` for locals and `set state.*` for state mutation (per Naming Standard v1).
 - Bounded loops: `repeat up to <expr> times:`; the count must be numeric and non-negative (`N3-3401` / `N3-3402`).
 - Loops execute inside flow/agent script blocks and share the current variable environment.
@@ -382,7 +396,7 @@ Studio's Memory Inspector shows these policies (scope, retention, PII handling, 
 - `set state.<field> be <expr>` mutates flow state. The runtime emits a `state_change` stream event with the `path`, `old_value`, and `new_value` whenever state changes.
 - The reference server exposes `/api/ui/state/stream` (JSON lines) that carries these `state_change` events for live UI previews.
 - `/api/ui/flow/stream` also includes `state_change` events for the associated flow run; the Studio preview combines this with `state/stream` for continuous synchronization.
-- UI components bound to `state.*` update immediately when a corresponding `state_change` event arrives—no manual refresh needed.
+- UI components bound to `state.*` update immediately when a corresponding `state_change` event arrives - no manual refresh needed.
 
 ## Diagnostics Philosophy
 - Categories: `syntax`, `semantic`, `lang-spec`, `performance`, `security`.

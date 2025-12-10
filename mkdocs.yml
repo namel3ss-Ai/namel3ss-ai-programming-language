@@ -25,6 +25,7 @@ nav:
       - English Conditions: docs/language/conditions.md
       - English Syntax: docs/language/english_syntax.md
       - Data & Collections Reference: docs/language/data_collections.md
+      - Constraints & Relationships v1: docs/language/constraints_relationships_v1.md
       - Control Flow Walkthrough: docs/book/control_flow.md
       - Variables & Scope: docs/book/variables_and_scope.md
       - Data & Collections Walkthrough: docs/book/data_and_collections.md

@@ -42,6 +42,10 @@ You can also load the new flagship examples:
   - CLI: `n3 example run records_queries_demo`
   - Studio source: `http://localhost:8000/studio?example=records_queries_demo`
 
+- `records_validation_demo` - Field validation showcase with numeric bounds, enum membership, array limits, and transaction rollbacks.
+  - CLI: `n3 example run records_validation_demo`
+  - Studio source: `http://localhost:8000/studio?example=records_validation_demo`
+
 ## Inspecting traces in Studio
 If you have a trace id (from the CLI output), open:
 ```
