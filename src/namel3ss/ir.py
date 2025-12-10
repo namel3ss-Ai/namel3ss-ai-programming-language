@@ -272,7 +272,7 @@ class IRAction:
 @dataclass
 class IRLet:
     name: str
-    expr: ast_nodes.Expr | None = None
+    expr: ast_nodes.Expr | IRCollectionPipeline | None = None
     is_constant: bool = False
     pattern: ast_nodes.DestructuringPattern | None = None
 
@@ -298,6 +298,7 @@ class IRIf:
 @dataclass
 class IRForEach:
     var_name: str
+    pattern: ast_nodes.DestructuringPattern | None = None
     iterable: ast_nodes.Expr | None = None
     body: list["IRStatement"] = field(default_factory=list)
 
@@ -306,6 +307,55 @@ class IRForEach:
 class IRRepeatUpTo:
     count: ast_nodes.Expr | None = None
     body: list["IRStatement"] = field(default_factory=list)
+
+
+@dataclass
+class IRCollectionKeepRowsStep:
+    condition: ast_nodes.Expr | None = None
+
+
+@dataclass
+class IRCollectionDropRowsStep:
+    condition: ast_nodes.Expr | None = None
+
+
+@dataclass
+class IRCollectionGroupByStep:
+    key: ast_nodes.Expr | None = None
+    body: list["IRStatement"] = field(default_factory=list)
+
+
+@dataclass
+class IRCollectionSortStep:
+    kind: Literal["rows", "groups"] = "rows"
+    key: ast_nodes.Expr | None = None
+    direction: Literal["asc", "desc"] = "asc"
+
+
+@dataclass
+class IRCollectionTakeStep:
+    count: ast_nodes.Expr | None = None
+
+
+@dataclass
+class IRCollectionSkipStep:
+    count: ast_nodes.Expr | None = None
+
+
+IRCollectionPipelineStep = (
+    IRCollectionKeepRowsStep
+    | IRCollectionDropRowsStep
+    | IRCollectionGroupByStep
+    | IRCollectionSortStep
+    | IRCollectionTakeStep
+    | IRCollectionSkipStep
+)
+
+
+@dataclass
+class IRCollectionPipeline(ast_nodes.Expr):
+    source: ast_nodes.Expr | None = None
+    steps: list[IRCollectionPipelineStep] = field(default_factory=list)
 
 
 @dataclass
@@ -602,6 +652,63 @@ class IRRecordField:
     primary_key: bool = False
     required: bool = False
     default: object | None = None
+
+
+@dataclass
+class IRBooleanCondition:
+    """Base class for boolean WHERE conditions in IR."""
+
+
+@dataclass
+class IRConditionLeaf(IRBooleanCondition):
+    field_name: str
+    op: str
+    value: ast_nodes.Expr | None = None
+    span: ast_nodes.Span | None = None
+
+
+@dataclass
+class IRConditionAnd(IRBooleanCondition):
+    left: IRBooleanCondition
+    right: IRBooleanCondition
+    span: ast_nodes.Span | None = None
+
+
+@dataclass
+class IRConditionOr(IRBooleanCondition):
+    left: IRBooleanCondition
+    right: IRBooleanCondition
+    span: ast_nodes.Span | None = None
+
+
+@dataclass
+class IRConditionAllGroup(IRBooleanCondition):
+    children: list[IRBooleanCondition] = field(default_factory=list)
+    span: ast_nodes.Span | None = None
+
+
+@dataclass
+class IRConditionAnyGroup(IRBooleanCondition):
+    children: list[IRBooleanCondition] = field(default_factory=list)
+    span: ast_nodes.Span | None = None
+
+
+@dataclass
+class IRRecordOrderBy:
+    field_name: str
+    direction: str  # "asc" or "desc"
+    span: ast_nodes.Span | None = None
+
+
+@dataclass
+class IRRecordQuery:
+    alias: str
+    record_name: str
+    where_condition: IRBooleanCondition | None = None
+    order_by: list[IRRecordOrderBy] | None = None
+    limit_expr: ast_nodes.Expr | None = None
+    offset_expr: ast_nodes.Expr | None = None
+    span: ast_nodes.Span | None = None
 
 
 @dataclass
@@ -921,13 +1028,14 @@ def ast_to_ir(module: ast_nodes.Module) -> IRProgram:
             return IRFlowLoop(name=step.name, var_name=step.var_name, iterable=step.iterable, body=flat_body)
         if step.statements:
             ir_statements = [lower_statement(stmt) for stmt in step.statements]
+            params_tx = transform_params(getattr(step, "params", {}) or {})
             return IRFlowStep(
                 name=step.name,
                 alias=getattr(step, "alias", None),
                 kind="script",
                 target=step.target or step.name,
                 message=getattr(step, "message", None),
-                params=getattr(step, "params", {}) or {},
+                params=params_tx,
                 statements=ir_statements,
                 when_expr=getattr(step, "when_expr", None),
                 streaming=getattr(step, "streaming", False),
@@ -939,13 +1047,14 @@ def ast_to_ir(module: ast_nodes.Module) -> IRProgram:
             )
         if step.conditional_branches:
             branches: list[IRConditionalBranch] = [lower_branch(br) for br in step.conditional_branches]
+            params_tx = transform_params(getattr(step, "params", {}) or {})
             return IRFlowStep(
                 name=step.name,
                 alias=getattr(step, "alias", None),
                 kind="condition",
                 target=step.name,
                 conditional_branches=branches,
-                params=getattr(step, "params", {}) or {},
+                params=params_tx,
                 when_expr=getattr(step, "when_expr", None),
                 streaming=getattr(step, "streaming", False),
                 stream_channel=getattr(step, "stream_channel", None),
@@ -966,15 +1075,16 @@ def ast_to_ir(module: ast_nodes.Module) -> IRProgram:
             "vector_index_frame",
             "vector_query",
             "db_create",
-            "db_get",
             "db_update",
             "db_delete",
+            "find",
             "auth_register",
             "auth_login",
             "auth_logout",
             "for_each",
         ):
             raise IRError(f"Unsupported step kind '{step.kind}'", step.span and step.span.line)
+        params_tx = transform_params(getattr(step, "params", {}) or {})
         if step.kind == "tool":
             if not step.target:
                 raise IRError("N3L-963: Tool call step must specify a target tool.", step.span and step.span.line)
@@ -994,13 +1104,34 @@ def ast_to_ir(module: ast_nodes.Module) -> IRProgram:
                 )
             if step.kind == "vector_query" and "query_text" not in (step.params or {}):
                 raise IRError("N3L-941: vector_query step must define 'query_text'.", step.span and step.span.line)
+            return IRFlowStep(
+                name=step.name,
+                alias=getattr(step, "alias", None),
+                kind=step.kind,
+                target=step.target,
+                message=getattr(step, "message", None),
+                params=params_tx,
+                when_expr=getattr(step, "when_expr", None),
+                streaming=getattr(step, "streaming", False),
+                stream_channel=getattr(step, "stream_channel", None),
+                stream_role=getattr(step, "stream_role", None),
+                stream_label=getattr(step, "stream_label", None),
+                stream_mode=getattr(step, "stream_mode", None),
+                tools_mode=getattr(step, "tools_mode", None),
+            )
+
+        target_name = step.target
+        if step.kind == "find":
+            query_param = params_tx.get("query")
+            if isinstance(query_param, IRRecordQuery):
+                target_name = query_param.record_name
         return IRFlowStep(
             name=step.name,
             alias=getattr(step, "alias", None),
             kind=step.kind,
-            target=step.target,
+            target=target_name,
             message=getattr(step, "message", None),
-            params=getattr(step, "params", {}) or {},
+            params=params_tx,
             when_expr=getattr(step, "when_expr", None),
             streaming=getattr(step, "streaming", False),
             stream_channel=getattr(step, "stream_channel", None),
@@ -1029,11 +1160,31 @@ def ast_to_ir(module: ast_nodes.Module) -> IRProgram:
                     )
                 group_map[cond.name] = cond.expr
             rulegroups[decl.name] = group_map
-    def transform_expr(expr: ast_nodes.Expr | None) -> tuple[ast_nodes.Expr | None, str | None]:
+    def _lower_collection_pipeline_step(step: ast_nodes.CollectionPipelineStep) -> IRCollectionPipelineStep:
+        if isinstance(step, ast_nodes.CollectionKeepRowsStep):
+            return IRCollectionKeepRowsStep(condition=step.condition)
+        if isinstance(step, ast_nodes.CollectionDropRowsStep):
+            return IRCollectionDropRowsStep(condition=step.condition)
+        if isinstance(step, ast_nodes.CollectionGroupByStep):
+            body = [lower_statement(s) for s in step.body]
+            return IRCollectionGroupByStep(key=step.key, body=body)
+        if isinstance(step, ast_nodes.CollectionSortStep):
+            return IRCollectionSortStep(kind=step.kind, key=step.key, direction=step.direction)
+        if isinstance(step, ast_nodes.CollectionTakeStep):
+            return IRCollectionTakeStep(count=step.count)
+        if isinstance(step, ast_nodes.CollectionSkipStep):
+            return IRCollectionSkipStep(count=step.count)
+        raise IRError(f"Unsupported collection pipeline step '{type(step).__name__}'", getattr(step, "span", None) and getattr(step.span, "line", None))
+
+    def transform_expr(expr: ast_nodes.Expr | None) -> tuple[ast_nodes.Expr | IRCollectionPipeline | None, str | None]:
         if expr is None:
             return None, None
         if isinstance(expr, ast_nodes.VarRef):
             return expr, None
+        if isinstance(expr, ast_nodes.CollectionPipeline):
+            source_expr, _ = transform_expr(expr.source)
+            steps = [_lower_collection_pipeline_step(s) for s in expr.steps]
+            return IRCollectionPipeline(source=source_expr, steps=steps), None
         if isinstance(expr, ast_nodes.Identifier):
             name = expr.name
             if name in macro_defs:
@@ -1088,13 +1239,119 @@ def ast_to_ir(module: ast_nodes.Module) -> IRProgram:
             return ast_nodes.ListBuiltinCall(name=expr.name, expr=inner or expr.expr), None
         return expr, None
 
+    def _resolve_record_name_from_alias(alias: str) -> str:
+        alias_lower = (alias or "").lower()
+        for name in program.records:  # type: ignore[attr-defined]
+            if name.lower() == alias_lower:
+                return name
+        if alias_lower.endswith("s"):
+            singular = alias_lower[:-1]
+            for name in program.records:  # type: ignore[attr-defined]
+                if name.lower() == singular:
+                    return name
+        raise IRError(
+            f"I couldn't find a record matching alias '{alias}'. Declare a record with that name or use the record name directly.",
+            None,
+        )
+
+    def transform_condition(cond: ast_nodes.BooleanCondition | None) -> IRBooleanCondition | None:
+        if cond is None:
+            return None
+        if isinstance(cond, dict):
+            leaves: list[IRBooleanCondition] = []
+            for key, expr in cond.items():
+                value_expr = expr if isinstance(expr, ast_nodes.Expr) else ast_nodes.Literal(value=expr)
+                leaves.append(
+                    IRConditionLeaf(
+                        field_name=key,
+                        op="eq",
+                        value=value_expr,
+                    )
+                )
+            if not leaves:
+                return None
+            current = leaves[0]
+            for leaf in leaves[1:]:
+                current = IRConditionAnd(left=current, right=leaf)
+            return current
+        if isinstance(cond, list):
+            children = [transform_condition(c) for c in cond if c is not None]
+            children = [c for c in children if c is not None]
+            if not children:
+                return None
+            current = children[0]
+            for child in children[1:]:
+                current = IRConditionAnd(left=current, right=child)
+            return current
+        if isinstance(cond, (ast_nodes.ConditionLeaf, ast_nodes.RecordWhereCondition)):
+            transformed_value, _ = transform_expr(cond.value_expr) if cond.value_expr is not None else (None, None)
+            return IRConditionLeaf(
+                field_name=cond.field_name,
+                op=cond.op,
+                value=transformed_value or cond.value_expr,
+                span=cond.span,
+            )
+        if isinstance(cond, ast_nodes.ConditionAnd):
+            return IRConditionAnd(
+                left=transform_condition(cond.left),
+                right=transform_condition(cond.right),
+                span=cond.span,
+            )
+        if isinstance(cond, ast_nodes.ConditionOr):
+            return IRConditionOr(
+                left=transform_condition(cond.left),
+                right=transform_condition(cond.right),
+                span=cond.span,
+            )
+        if isinstance(cond, ast_nodes.ConditionAllGroup):
+            children = [transform_condition(c) for c in cond.children]
+            return IRConditionAllGroup(children=[c for c in children if c is not None], span=cond.span)
+        if isinstance(cond, ast_nodes.ConditionAnyGroup):
+            children = [transform_condition(c) for c in cond.children]
+            return IRConditionAnyGroup(children=[c for c in children if c is not None], span=cond.span)
+        return None
+
+    def transform_record_query(query: ast_nodes.RecordQuery) -> IRRecordQuery:
+        record_name = query.record_name or _resolve_record_name_from_alias(query.alias)
+        where_transformed = transform_condition(query.where_condition)
+        order_items: list[IRRecordOrderBy] | None = None
+        if query.order_by:
+            order_items = [
+                IRRecordOrderBy(field_name=item.field_name, direction=item.direction, span=item.span)
+                for item in query.order_by
+            ]
+        limit_expr, _ = transform_expr(query.limit_expr) if query.limit_expr is not None else (None, None)
+        offset_expr, _ = transform_expr(query.offset_expr) if query.offset_expr is not None else (None, None)
+        return IRRecordQuery(
+            alias=query.alias,
+            record_name=record_name,
+            where_condition=where_transformed,
+            order_by=order_items,
+            limit_expr=limit_expr,
+            offset_expr=offset_expr,
+            span=query.span,
+        )
+
+    def transform_params(params: dict[str, object] | None) -> dict[str, object]:
+        new_params: dict[str, object] = {}
+        for key, value in (params or {}).items():
+            if key == "where":
+                new_params[key] = transform_condition(value)
+            elif key == "query" and isinstance(value, ast_nodes.RecordQuery):
+                new_params[key] = transform_record_query(value)
+            else:
+                new_params[key] = value
+        return new_params
+
     def lower_statement(stmt: ast_nodes.Statement | ast_nodes.FlowAction) -> IRStatement:
         if isinstance(stmt, ast_nodes.FlowAction):
-            return IRAction(kind=stmt.kind, target=stmt.target, message=stmt.message, args=stmt.args)
+            return IRAction(kind=stmt.kind, target=stmt.target, message=stmt.message, args=transform_params(stmt.args))
         if isinstance(stmt, ast_nodes.LetStatement):
-            return IRLet(name=stmt.name, expr=stmt.expr, is_constant=stmt.is_constant, pattern=stmt.pattern)
+            transformed, _ = transform_expr(stmt.expr)
+            return IRLet(name=stmt.name, expr=transformed, is_constant=stmt.is_constant, pattern=stmt.pattern)
         if isinstance(stmt, ast_nodes.SetStatement):
-            return IRSet(name=stmt.name, expr=stmt.expr)
+            transformed, _ = transform_expr(stmt.expr)
+            return IRSet(name=stmt.name, expr=transformed)
         if isinstance(stmt, ast_nodes.TryCatchStatement):
             try_body = [lower_statement(s) for s in stmt.try_block]
             catch_body = [lower_statement(s) for s in stmt.catch_block]
@@ -1102,9 +1359,18 @@ def ast_to_ir(module: ast_nodes.Module) -> IRProgram:
         if isinstance(stmt, ast_nodes.IfStatement):
             branches = [lower_branch(br) for br in stmt.branches]
             return IRIf(branches=branches)
+        if isinstance(stmt, ast_nodes.GuardStatement):
+            guard_branch = ast_nodes.ConditionalBranch(
+                condition=stmt.condition,
+                actions=stmt.body,
+                label="guard",
+                span=stmt.span,
+            )
+            branches = [lower_branch(guard_branch)]
+            return IRIf(branches=branches)
         if isinstance(stmt, ast_nodes.ForEachLoop):
             body = [lower_statement(s) for s in stmt.body]
-            return IRForEach(var_name=stmt.var_name, iterable=stmt.iterable, body=body)
+            return IRForEach(var_name=stmt.var_name, pattern=stmt.pattern, iterable=stmt.iterable, body=body)
         if isinstance(stmt, ast_nodes.RepeatUpToLoop):
             body = [lower_statement(s) for s in stmt.body]
             return IRRepeatUpTo(count=stmt.count, body=body)
@@ -1945,7 +2211,7 @@ def ast_to_ir(module: ast_nodes.Module) -> IRProgram:
                         f"Flow '{flow.name}' references missing frame '{step.target}'",
                         None,
                     )
-            elif step.kind in {"db_create", "db_get", "db_update", "db_delete"}:
+            elif step.kind in {"db_create", "db_update", "db_delete", "find"}:
                 record = program.records.get(step.target)
                 if not record:
                     raise IRError(
@@ -1958,18 +2224,6 @@ def ast_to_ir(module: ast_nodes.Module) -> IRProgram:
                     if not isinstance(values, dict) or not values:
                         raise IRError(
                             f"Step '{step.name}' must define a non-empty 'values' block for record '{record.name}'.",
-                            None,
-                        )
-                    missing_required = [
-                        fname
-                        for fname, field in record.fields.items()
-                        if (field.required or field.primary_key)
-                        and field.default is None
-                        and fname not in values
-                    ]
-                    if missing_required:
-                        raise IRError(
-                            f"N3L-1502: Step '{step.name}' must provide field '{missing_required[0]}' when creating record '{record.name}'.",
                             None,
                         )
                 elif step.kind == "db_update":
@@ -1992,11 +2246,12 @@ def ast_to_ir(module: ast_nodes.Module) -> IRProgram:
                             f"Step '{step.name}' must specify primary key '{record.primary_key}' inside 'by id' when deleting record '{record.name}'.",
                             None,
                         )
-                elif step.kind == "db_get":
-                    by_id = params.get("by_id")
-                    if by_id and record.primary_key and record.primary_key not in by_id:
+                elif step.kind == "find":
+                    has_query = isinstance(params.get("query"), IRRecordQuery)
+                    has_by_id = bool(params.get("by_id"))
+                    if not has_query and not has_by_id:
                         raise IRError(
-                            f"Step '{step.name}' must reference primary key '{record.primary_key}' inside 'by id' when querying record '{record.name}'.",
+                            f"Step '{step.name}' must include a 'find ... where:' query definition.",
                             None,
                         )
             elif step.kind in {"auth_register", "auth_login", "auth_logout"}:
@@ -2189,13 +2444,36 @@ def _validate_flow_scopes(program: IRProgram) -> None:
             for arg in expr.args:
                 _walk_expr(arg, scope, flow_name, all_steps, steps_seen)
             return
+        if isinstance(expr, ast_nodes.GetRecordFieldWithDefault):
+            if expr.record:
+                _walk_expr(expr.record, scope, flow_name, all_steps, steps_seen)
+            if expr.default:
+                _walk_expr(expr.default, scope, flow_name, all_steps, steps_seen)
+            return
+        if isinstance(expr, ast_nodes.HasKeyOnRecord):
+            if expr.record:
+                _walk_expr(expr.record, scope, flow_name, all_steps, steps_seen)
+            return
+
+    def _destructured_names(pattern: ast_nodes.DestructuringPattern | None) -> list[str]:
+        if not pattern:
+            return []
+        if pattern.kind == "record":
+            return [f.alias or f.name for f in pattern.fields]
+        if pattern.kind == "list":
+            return list(pattern.fields)
+        return []
 
     def _walk_statements(stmts: list[IRStatement], scope: _FlowScope, flow_name: str, all_steps: set[str], steps_seen: set[str]) -> None:
         for stmt in stmts:
             if isinstance(stmt, IRLet):
                 if stmt.expr:
                     _walk_expr(stmt.expr, scope, flow_name, all_steps, steps_seen)
-                scope.locals.add(stmt.name)
+                if stmt.pattern:
+                    for name in _destructured_names(stmt.pattern):
+                        scope.locals.add(name)
+                else:
+                    scope.locals.add(stmt.name)
             elif isinstance(stmt, IRSet):
                 if stmt.expr:
                     _walk_expr(stmt.expr, scope, flow_name, all_steps, steps_seen)
@@ -2212,8 +2490,10 @@ def _validate_flow_scopes(program: IRProgram) -> None:
                 if stmt.iterable:
                     _walk_expr(stmt.iterable, scope, flow_name, all_steps, steps_seen)
                 loop_scope = scope.copy()
-                loop_scope.active_loops.add(stmt.var_name)
-                loop_scope.all_loop_vars.add(stmt.var_name)
+                loop_targets = _destructured_names(stmt.pattern) if getattr(stmt, "pattern", None) else [stmt.var_name]
+                for name in loop_targets:
+                    loop_scope.active_loops.add(name)
+                    loop_scope.all_loop_vars.add(name)
                 _walk_statements(stmt.body, loop_scope, flow_name, all_steps, steps_seen)
             elif isinstance(stmt, IRRepeatUpTo):
                 if stmt.count:

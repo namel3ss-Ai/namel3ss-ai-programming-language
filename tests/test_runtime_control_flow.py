@@ -17,6 +17,8 @@ from namel3ss.ir import (
     IRProgram,
     IRSet,
 )
+from namel3ss.ir import ast_to_ir
+from namel3ss.parser import parse_source
 from namel3ss.runtime.context import ExecutionContext
 from namel3ss.tools.registry import ToolRegistry
 
@@ -316,6 +318,76 @@ def test_on_error_handler_not_triggered_when_step_succeeds():
     assert result.errors == []
     assert result.state.get("primary") == "ok"
     assert result.state.get("recovered") is None
+
+
+def test_guard_skips_or_runs_body():
+    source = (
+        'flow is "guards":\n'
+        '  step is "check":\n'
+        "    guard true:\n"
+        '      set state.should_not_run be true\n'
+        '    set state.status be "ok"\n'
+    )
+    module = parse_source(source)
+    ir_prog = ast_to_ir(module)
+    engine, ctx = _build_engine(ir_prog.flows["guards"])
+    result = engine.run_flow(ir_prog.flows["guards"], ctx)
+    assert result.errors == []
+    assert result.state.get("status") == "ok"
+    assert "should_not_run" not in result.state.data
+
+    source_fail = (
+        'flow is "guards2":\n'
+        '  step is "check":\n'
+        "    guard false:\n"
+        '      set state.error be "missing"\n'
+        '    set state.status be "after"\n'
+    )
+    module2 = parse_source(source_fail)
+    ir_prog2 = ast_to_ir(module2)
+    engine2, ctx2 = _build_engine(ir_prog2.flows["guards2"])
+    result2 = engine2.run_flow(ir_prog2.flows["guards2"], ctx2)
+    assert result2.errors == []
+    assert result2.state.get("error") == "missing"
+    assert result2.state.get("status") == "after"
+
+
+def test_guard_requires_boolean_condition():
+    source = (
+        'flow is "guards3":\n'
+        '  step is "check":\n'
+        '    let flag be "yes"\n'
+        "    guard flag:\n"
+        '      set state.error be "bad"\n'
+    )
+    module = parse_source(source)
+    ir_prog = ast_to_ir(module)
+    engine, ctx = _build_engine(ir_prog.flows["guards3"])
+    result = engine.run_flow(ir_prog.flows["guards3"], ctx)
+    assert result.errors
+    assert (
+        result.errors[0].error
+        == "This guard condition did not evaluate to a boolean value.\nI got 'yes' instead. Make sure the condition returns true or false."
+    )
+
+
+def test_guard_inside_loop_executes_per_iteration():
+    source = (
+        'flow is "guards4":\n'
+        '  step is "loop":\n'
+        "    let xs be [false, true]\n"
+        "    repeat for each item in xs:\n"
+        "      guard item:\n"
+        '        set state.last_error be item\n'
+        "      set state.last be item\n"
+    )
+    module = parse_source(source)
+    ir_prog = ast_to_ir(module)
+    engine, ctx = _build_engine(ir_prog.flows["guards4"])
+    result = engine.run_flow(ir_prog.flows["guards4"], ctx)
+    assert result.errors == []
+    assert result.state.get("last") is True
+    assert result.state.get("last_error") is False
 
 
 def test_flow_without_on_error_propagates_failure():

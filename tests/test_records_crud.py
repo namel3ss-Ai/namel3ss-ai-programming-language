@@ -110,9 +110,11 @@ def test_ir_validation_missing_required_field_in_create():
         ],
     )
     module = ast_nodes.Module(declarations=[frame, record, flow])
-    with pytest.raises(IRError) as exc:
-        ast_to_ir(module)
-    assert "N3L-1502" in str(exc.value)
+    program = ast_to_ir(module)
+    engine, runtime_ctx = _build_engine(program)
+    result = engine.run_flow(program.flows["create_doc"], runtime_ctx.execution_context, initial_state={})
+    assert result.errors
+    assert "N3L-1502" in result.errors[0].error
 
 
 def test_ir_validation_missing_record_reference():
@@ -164,13 +166,13 @@ def test_runtime_record_crud_flow():
             ),
             IRFlowStep(
                 name="fetch_one",
-                kind="db_get",
+                kind="find",
                 target="Document",
                 params={"by_id": {"id": ast_nodes.Literal(value="doc-1")}},
             ),
             IRFlowStep(
                 name="fetch_project",
-                kind="db_get",
+                kind="find",
                 target="Document",
                 params={"where": {"project_id": ast_nodes.Literal(value="proj-1")}},
             ),

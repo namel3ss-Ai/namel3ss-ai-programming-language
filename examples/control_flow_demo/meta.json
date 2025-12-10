@@ -1,0 +1,6 @@
+{
+  "name": "Control Flow Demo",
+  "category": "control-flow",
+  "description": "Shows guard, match, loops, retry, on error, and core step kinds together.",
+  "tags": ["control-flow", "basics", "flows"]
+}

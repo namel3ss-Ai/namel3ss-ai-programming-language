@@ -31,11 +31,15 @@ class FrameRegistry:
         self.frames[name] = spec
 
     def get_rows(self, name: str) -> List[Any]:
-        if name in self._cache:
-            return self._cache[name]
         if name not in self.frames:
             raise Namel3ssError("N3F-1100: frame not defined")
         frame = self.frames[name]
+        backend = getattr(frame, "backend", None) or ("file" if getattr(frame, "path", None) else "memory")
+        if backend != "file":
+            # Memory-backed frames live in the in-memory store and should reflect current values.
+            return list(self._store.get(name, []))
+        if name in self._cache:
+            return self._cache[name]
         rows = self._load_frame(frame)
         self._cache[name] = rows
         return rows
@@ -98,26 +102,24 @@ class FrameRegistry:
         if not frame:
             raise Namel3ssError(f"N3L-830: Frame '{name}' is not declared.")
         backend = getattr(frame, "backend", None) or ("file" if getattr(frame, "path", None) else "memory")
-        filters = filters or {}
+        conditions = self._normalize_conditions(filters)
         if backend == "file":
             rows = self.get_rows(name)
             if isinstance(rows, list) and rows and isinstance(rows[0], dict):
-                return [
-                    r for r in rows if all(r.get(k) == v for k, v in filters.items())
-                ]
+                return [r for r in rows if self._row_matches(r, conditions)]
             return rows
         data = self._store.get(name, [])
-        return [r for r in data if all(r.get(k) == v for k, v in filters.items())]
+        return [r for r in data if self._row_matches(r, conditions)]
 
     def update(self, name: str, filters: dict | None, updates: dict) -> int:
         frame = self.frames.get(name)
         if not frame:
             raise Namel3ssError(f"N3L-830: Frame '{name}' is not declared.")
         data = self._store.setdefault(name, [])
-        filters = filters or {}
+        conditions = self._normalize_conditions(filters)
         count = 0
         for row in data:
-            if all(row.get(k) == v for k, v in filters.items()):
+            if self._row_matches(row, conditions):
                 row.update(updates)
                 count += 1
         return count
@@ -127,11 +129,11 @@ class FrameRegistry:
         if not frame:
             raise Namel3ssError(f"N3L-830: Frame '{name}' is not declared.")
         data = self._store.setdefault(name, [])
-        filters = filters or {}
+        conditions = self._normalize_conditions(filters)
         remain: list[dict] = []
         deleted = 0
         for row in data:
-            if all(row.get(k) == v for k, v in filters.items()):
+            if self._row_matches(row, conditions):
                 deleted += 1
                 continue
             remain.append(row)
@@ -165,3 +167,83 @@ class FrameRegistry:
             except Exception:
                 return stripped
         return value
+
+    def _normalize_conditions(self, filters: dict | list | None) -> list[dict]:
+        if not filters:
+            return []
+        if isinstance(filters, dict) and filters.get("type") in {"leaf", "and", "or", "all", "any"}:
+            return [filters]
+        if isinstance(filters, dict):
+            return [{"field": k, "op": "eq", "value": v} for k, v in filters.items()]
+        return list(filters)
+
+    def _row_matches(self, row: dict, conditions: list[dict]) -> bool:
+        def _ensure_bool(val: Any) -> bool:
+            if isinstance(val, bool):
+                return val
+            raise Namel3ssError("Where clause must evaluate to a boolean.")
+
+        def _eval(node: dict | list | None) -> bool:
+            if node is None:
+                return True
+            if isinstance(node, list):
+                for item in node:
+                    if not _eval(item):
+                        return False
+                return True
+            if not isinstance(node, dict):
+                raise Namel3ssError("Where clause must evaluate to a boolean.")
+            ntype = node.get("type")
+            if ntype in {"and", "or", "all", "any"}:
+                if ntype == "and":
+                    return _eval(node.get("left")) and _eval(node.get("right"))
+                if ntype == "or":
+                    return _eval(node.get("left")) or _eval(node.get("right"))
+                if ntype == "all":
+                    for child in node.get("children") or []:
+                        if not _eval(child):
+                            return False
+                    return True
+                if ntype == "any":
+                    for child in node.get("children") or []:
+                        if _eval(child):
+                            return True
+                    return False
+            field = node.get("field")
+            op = node.get("op")
+            value = node.get("value")
+            present = field in row
+            row_val = row.get(field)
+            try:
+                if op == "eq":
+                    ok = row_val == value
+                elif op == "neq":
+                    ok = row_val != value
+                elif op == "gt":
+                    ok = row_val > value
+                elif op == "lt":
+                    ok = row_val < value
+                elif op == "ge":
+                    ok = row_val >= value
+                elif op == "le":
+                    ok = row_val <= value
+                elif op == "in":
+                    if not isinstance(value, (list, tuple, set)):
+                        raise Namel3ssError("Filters using 'is one of' must compare against a list of values.")
+                    ok = row_val in value
+                elif op == "is_null":
+                    ok = (not present) or row_val is None
+                elif op == "is_not_null":
+                    ok = present and row_val is not None
+                else:  # pragma: no cover - defensive
+                    ok = False
+            except Exception as exc:
+                raise Namel3ssError(
+                    f"I couldn't apply this filter on field '{field}' because the values are not comparable."
+                ) from exc
+            return _ensure_bool(ok)
+
+        for cond in conditions:
+            if not _eval(cond):
+                return False
+        return True

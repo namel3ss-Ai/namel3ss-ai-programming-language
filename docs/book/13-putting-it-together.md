@@ -100,10 +100,8 @@ flow is "create_project":
 
 flow is "list_projects":
   step is "list":
-    kind is "db_get"
-    record is "Project"
-    where:
-      owner_id: user.id
+    find projects where:
+      owner_id is user.id
 
 flow is "ask_weather":
   step is "fetch":

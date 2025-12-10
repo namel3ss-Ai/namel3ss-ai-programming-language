@@ -14,6 +14,7 @@ This guide captures the preferred English-first style for writing Namel3ss progr
 ## Control Flow Style
 - Prefer clear multi-line `if / otherwise if / else` blocks; keep conditions boolean and explicit.
 - Use `match` with simple literal `when` branches; keep branches small and add an `otherwise` when possible.
+- Reach for `guard` to express preconditions/fail-fast logic; keep guard bodies short and exit early when the precondition is not met.
 - Loops: pick meaningful singular loop variables (`user` in `for each user in users:`) and avoid using loop vars outside the loop.
 - `when` is only used inside `match` in v1; use `if` for standalone conditions.
 - Keep retries and `on error` blocks concise; log enough context to understand failures.

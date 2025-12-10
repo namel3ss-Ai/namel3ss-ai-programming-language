@@ -1,0 +1,56 @@
+app is "Control Flow Demo":
+  entry_page is "control_flow_demo"
+  description "Example showing Control Flow v1 constructs together."
+
+flow is "support_checkout":
+  description "Demonstrates guard, match, loops, retry, and on error."
+
+  step is "prepare":
+    let is_authenticated be true
+    let issue_type be "billing"
+    let tickets be ["billing", "technical", "general"]
+    set state.is_authenticated be is_authenticated
+    set state.issue_type be issue_type
+    set state.tickets be tickets
+    set state.retry_limit be 2
+
+  step is "validate":
+    guard state.is_authenticated is true:
+      set state.error be "not_authenticated"
+      set state.status be "blocked"
+
+    set state.status be "pending"
+
+  step is "route_issue":
+    set state.handler be "general_agent"
+    if state.issue_type is "billing":
+      set state.handler be "billing_agent"
+    if state.issue_type is "technical":
+      set state.handler be "technical_agent"
+
+    repeat for each ticket in state.tickets:
+      set state.last_ticket be ticket
+
+    let repeat_counter be 0
+    repeat up to state.retry_limit times:
+      set repeat_counter be repeat_counter + 1
+    set state.repeat_counter be repeat_counter
+
+  step is "charge":
+    retry up to 3 times with backoff:
+      do tool "echo"
+
+  for each ticket in state.tickets:
+    step is "fan_out":
+      kind is "tool"
+      target is "echo"
+      message is ticket
+
+  on error:
+    step is "capture_failure":
+      set state.error_captured be true
+
+page is "control_flow_demo" at "/control-flow":
+  section "overview":
+    heading "Control Flow Demo"
+    text "Run support_checkout in Studio to see guards, match, loops, retry, and on error handling."

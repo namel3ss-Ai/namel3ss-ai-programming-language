@@ -75,8 +75,11 @@ def test_filter_and_map_english_and_functional():
         'flow is "f":\n'
         '  step is "s":\n'
         '    let xs be [1, 2, 3]\n'
-        '    let highs be all xs where item > 1\n'
-        '    let doubled be map(xs, to: item * 2)\n'
+        '    let highs be xs:\n'
+        '      keep rows where row > 1\n'
+        "    let doubled be []\n"
+        "    repeat for each item in xs:\n"
+        "      set doubled to append doubled with item * 2\n"
         '    do tool "echo"\n'
     )
     ir_prog = ast_to_ir(parse_source(source))
@@ -84,8 +87,8 @@ def test_filter_and_map_english_and_functional():
     ctx = ExecutionContext(app_name="test", request_id="req-filter")
     result = engine.run_flow(ir_prog.flows["f"], ctx)
     assert not result.errors
-    assert tools.calls[0].get("message") == [2, 4, 6]
     assert ctx.variables["highs"] == [2, 3]
+    assert ctx.variables["doubled"] == [2, 4, 6]
 
 
 def test_english_map_with_record_field_access():
@@ -93,7 +96,9 @@ def test_english_map_with_record_field_access():
         'flow is "map":\n'
         '  step is "s":\n'
         '    let users be [{ email: "a@example.com" }, { email: "b@example.com" }]\n'
-        '    let emails be all user.email from users\n'
+        "    let emails be []\n"
+        "    repeat for each user in users:\n"
+        "      set emails to append emails with user.email\n"
         '    do tool "echo"\n'
     )
     ir_prog = ast_to_ir(parse_source(source))
@@ -166,4 +171,7 @@ def test_invalid_for_each_type_errors():
     ctx = ExecutionContext(app_name="test", request_id="req-bad-loop")
     result = engine.run_flow(ir_prog.flows["bad"], ctx)
     assert result.errors
-    assert any("for-each loop" in err.error for err in result.errors)
+    assert (
+        result.errors[0].error
+        == "repeat for each expects a list, but I got 5 instead.\nMake sure the expression after in evaluates to a list of items."
+    )

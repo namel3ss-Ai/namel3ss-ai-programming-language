@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import difflib
 import re
 import uuid
 from datetime import datetime, timezone
@@ -7,6 +8,16 @@ from typing import Any, Callable, Tuple
 
 from .. import ast_nodes
 from ..errors import Namel3ssError
+from ..ir import (
+    IRCollectionDropRowsStep,
+    IRCollectionGroupByStep,
+    IRCollectionKeepRowsStep,
+    IRCollectionPipeline,
+    IRCollectionSkipStep,
+    IRCollectionSortStep,
+    IRCollectionTakeStep,
+    IRLet,
+)
 
 
 class EvaluationError(Namel3ssError):
@@ -14,6 +25,27 @@ class EvaluationError(Namel3ssError):
 
 
 UNDEFINED = object()
+
+
+def build_missing_field_error(field: str, record: Any, *, context: str, include_get_hint: bool = True, code: str = "N3-3300") -> str:
+    available: list[str] = []
+    if isinstance(record, dict):
+        try:
+            available = [str(k) for k in record.keys()]
+        except Exception:
+            available = []
+    suggestion = None
+    if available:
+        matches = difflib.get_close_matches(field, available, n=1, cutoff=0.6)
+        suggestion = matches[0] if matches else None
+    parts: list[str] = [f"{code}: {context}"]
+    if available:
+        parts.append(f"Available fields: {', '.join(available)}.")
+    if include_get_hint:
+        parts.append(f"If this field is optional, use get <record>.{field} otherwise ... instead.")
+    if suggestion and suggestion != field:
+        parts.append(f"Did you mean {suggestion}?")
+    return " ".join(parts)
 
 
 class VariableEnvironment:
@@ -104,22 +136,12 @@ class ExpressionEvaluator:
             # Allow env values (e.g., loop/local) to be resolved directly
             if self.env.has(dotted):
                 return self.env.resolve(dotted)
-            try:
-                # Prefer exact env hit on root if present (locals/loop vars stored bare)
-                if self.env.has(expr.root) and not expr.path:
-                    return self.env.resolve(expr.root)
-                if self.env.has(expr.root) and expr.path:
-                    value: Any = self.env.resolve(expr.root)
-                    for part in expr.path:
-                        if isinstance(value, dict) and part in value:
-                            value = value.get(part)
-                        elif hasattr(value, part):
-                            value = getattr(value, part)
-                        else:
-                            raise EvaluationError("N3-3300: unknown record field")
-                    return value
-            except Exception:
-                pass
+            # Prefer exact env hit on root if present (locals/loop vars stored bare)
+            if self.env.has(expr.root):
+                value: Any = self.env.resolve(expr.root)
+                if expr.path:
+                    value = self._resolve_path_value(value, expr.path)
+                return value
             found, value = self.resolver(dotted)
             if found:
                 return value
@@ -132,14 +154,7 @@ class ExpressionEvaluator:
                 base = parts[0]
                 if self.env.has(base):
                     value: Any = self.env.resolve(base)
-                    for part in parts[1:]:
-                        if isinstance(value, dict) and part in value:
-                            value = value.get(part)
-                        elif hasattr(value, part):
-                            value = getattr(value, part)
-                        else:
-                            raise EvaluationError("N3-3300: unknown record field")
-                    return value
+                    return self._resolve_path_value(value, parts[1:])
             # Support dotted lookups via resolver
             found, value = self.resolver(expr.name)
             if not found:
@@ -148,9 +163,13 @@ class ExpressionEvaluator:
         if isinstance(expr, ast_nodes.RecordFieldAccess):
             target = self.evaluate(expr.target) if expr.target else None
             if not isinstance(target, dict):
-                raise EvaluationError("N3-3300: unknown record field access")
+                raise EvaluationError(
+                    f"N3-3300: I can only look up fields on a record, but got {self._render_value(target)} instead."
+                )
             if expr.field not in target:
-                raise EvaluationError("N3-3300: unknown record field")
+                raise EvaluationError(
+                    build_missing_field_error(expr.field, target, context=f"I don't know field {expr.field} on this record.")
+                )
             return target.get(expr.field)
         if isinstance(expr, ast_nodes.RuleGroupRefExpr):
             if self.rulegroup_resolver:
@@ -249,50 +268,37 @@ class ExpressionEvaluator:
             return self._eval_builtin_call(expr)
         if isinstance(expr, ast_nodes.ListBuiltinCall):
             return self._eval_builtin(expr)
+        if isinstance(expr, ast_nodes.GetRecordFieldWithDefault):
+            record_val = self.evaluate(expr.record) if expr.record is not None else None
+            if not isinstance(record_val, dict):
+                raise EvaluationError(
+                    f"I expected a record for 'get ... otherwise ...', but got {self._render_value(record_val)} instead."
+                )
+            if expr.field is None:
+                raise EvaluationError("get ... otherwise ... requires a field name.")
+            if expr.field in record_val:
+                return record_val.get(expr.field)
+            default_val = self.evaluate(expr.default) if expr.default is not None else None
+            return default_val
+        if isinstance(expr, ast_nodes.HasKeyOnRecord):
+            record_val = self.evaluate(expr.record) if expr.record is not None else None
+            if not isinstance(record_val, dict):
+                raise EvaluationError(
+                    f"I expected a record for 'has key ... on ...', but got {self._render_value(record_val)} instead."
+                )
+            if expr.key is None:
+                raise EvaluationError("has key ... on ... requires a key literal.")
+            return expr.key in record_val
+        if isinstance(expr, IRCollectionPipeline):
+            return self._eval_collection_pipeline(expr)
         if isinstance(expr, ast_nodes.FilterExpression):
-            source = self.evaluate(expr.source) if expr.source else None
-            if not isinstance(source, list):
-                raise EvaluationError("N3-3400: for-each/filter requires a list value")
-            result: list[Any] = []
-            for item in source:
-                had_prev = self.env.has(expr.var_name)
-                prev_val = self.env.resolve(expr.var_name) if had_prev else None
-                if had_prev:
-                    self.env.assign(expr.var_name, item)
-                else:
-                    self.env.declare(expr.var_name, item)
-                try:
-                    pred_val = self.evaluate(expr.predicate) if expr.predicate else False
-                    if not isinstance(pred_val, bool):
-                        raise EvaluationError("N3-3201: filter predicate must yield boolean")
-                    if pred_val:
-                        result.append(item)
-                finally:
-                    if had_prev:
-                        self.env.assign(expr.var_name, prev_val)
-                    else:
-                        self.env.remove(expr.var_name)
-            return result
+            raise EvaluationError(
+                "The legacy 'all ... where ...' filter syntax is no longer supported. Use a collection pipeline with 'keep rows where ...' instead."
+            )
         if isinstance(expr, ast_nodes.MapExpression):
-            source = self.evaluate(expr.source) if expr.source else None
-            if not isinstance(source, list):
-                raise EvaluationError("N3-3400: map requires a list value")
-            mapped: list[Any] = []
-            for item in source:
-                had_prev = self.env.has(expr.var_name)
-                prev_val = self.env.resolve(expr.var_name) if had_prev else None
-                if had_prev:
-                    self.env.assign(expr.var_name, item)
-                else:
-                    self.env.declare(expr.var_name, item)
-                try:
-                    mapped.append(self.evaluate(expr.mapper) if expr.mapper else item)
-                finally:
-                    if had_prev:
-                        self.env.assign(expr.var_name, prev_val)
-                    else:
-                        self.env.remove(expr.var_name)
-            return mapped
+            raise EvaluationError(
+                "The legacy map(...) syntax is no longer supported. Rewrite this as a collection pipeline or build the list with append/insert helpers."
+            )
         if isinstance(expr, ast_nodes.AnyExpression):
             source = self.evaluate(expr.source) if expr.source else None
             if not isinstance(source, list):
@@ -391,37 +397,42 @@ class ExpressionEvaluator:
         return self._dispatch_builtin(name, args)
 
     def _dispatch_builtin(self, name: str, args: list[Any]) -> Any:
-        if name in {"length"}:
-            arg = args[0] if args else None
+        def _ensure_list(arg: Any, context: str) -> list[Any]:
             if not isinstance(arg, list):
-                raise EvaluationError("N3-3200: length requires a list")
-            return len(arg)
+                raise EvaluationError(f"I expected a list for {context}, but got {self._render_value(arg)} instead.")
+            return arg
+
+        def _ensure_numeric(value: Any, context: str) -> float | int:
+            if isinstance(value, bool) or not isinstance(value, (int, float)):
+                raise EvaluationError(f"I expected a list of numbers for {context}, but {self._render_value(value)} is not a number.")
+            return value
+
+        if name in {"length", "count"}:
+            arg = args[0] if args else None
+            seq = _ensure_list(arg, f"{name}")
+            return len(seq)
         if name in {"first"}:
             arg = args[0] if args else None
-            if not isinstance(arg, list):
-                raise EvaluationError("N3-3200: first requires a list")
-            if not arg:
-                raise EvaluationError("N3-3200: first requires a non-empty list")
-            return arg[0]
+            seq = _ensure_list(arg, "first")
+            if not seq:
+                raise EvaluationError("I can't take the first element of an empty list.")
+            return seq[0]
         if name in {"last"}:
             arg = args[0] if args else None
-            if not isinstance(arg, list):
-                raise EvaluationError("N3-3200: last requires a list")
-            if not arg:
-                raise EvaluationError("N3-3200: last requires a non-empty list")
-            return arg[-1]
+            seq = _ensure_list(arg, "last")
+            if not seq:
+                raise EvaluationError("I can't take the last element of an empty list.")
+            return seq[-1]
         if name in {"reverse"}:
             arg = args[0] if args else None
-            if not isinstance(arg, list):
-                raise EvaluationError("N3-3200: reverse requires a list")
-            return list(reversed(arg))
+            seq = _ensure_list(arg, "reverse")
+            return list(reversed(seq))
         if name in {"unique"}:
             arg = args[0] if args else None
-            if not isinstance(arg, list):
-                raise EvaluationError("N3-3200: unique requires a list")
+            seq = _ensure_list(arg, "unique")
             seen = set()
             unique_items = []
-            for item in arg:
+            for item in seq:
                 try:
                     marker = item
                     is_new = marker not in seen
@@ -436,19 +447,17 @@ class ExpressionEvaluator:
             return unique_items
         if name in {"sorted"}:
             arg = args[0] if args else None
-            if not isinstance(arg, list):
-                raise EvaluationError("N3-3200: sorted requires a list")
+            seq = _ensure_list(arg, "sorted")
             try:
-                return sorted(arg)
+                return sorted(seq)
             except Exception:
-                raise EvaluationError("N3-3204: cannot compare elements for sorting")
+                raise EvaluationError("I couldn't sort these values because the sort keys are not comparable.")
         if name in {"sum"}:
             arg = args[0] if args else None
-            if not isinstance(arg, list):
-                raise EvaluationError("N3-3200: sum requires a list")
+            seq = _ensure_list(arg, "sum")
             total = 0
-            for item in arg:
-                num = self._to_number(item)
+            for item in seq:
+                num = _ensure_numeric(item, "sum")
                 total += num
             return total
         if name in {"trim", "lowercase", "uppercase", "slugify"}:
@@ -496,16 +505,27 @@ class ExpressionEvaluator:
             return sep.join(items)
         if name in {"minimum", "min", "maximum", "max", "mean", "average"}:
             if not args:
-                raise EvaluationError("N3-4100: aggregate requires a non-empty numeric list")
+                raise EvaluationError("I expected a list of numbers for this aggregate, but nothing was provided.")
             seq = args[0]
-            if not isinstance(seq, list) or not seq:
-                raise EvaluationError("N3-4100: aggregate requires a non-empty numeric list")
-            nums = [self._numeric_value(item, code="N3-4102") for item in seq]
-            if name in {"minimum", "min"}:
-                return min(nums)
-            if name in {"maximum", "max"}:
-                return max(nums)
-            return sum(nums) / len(nums)
+            if not isinstance(seq, list):
+                raise EvaluationError(f"I expected a list of numbers for {name}, but got {self._render_value(seq)} instead.")
+            if not seq:
+                if name in {"minimum", "min"}:
+                    raise EvaluationError("I can't find a minimum on an empty list.")
+                if name in {"maximum", "max"}:
+                    raise EvaluationError("I can't find a maximum on an empty list.")
+                raise EvaluationError("I can't compute mean of an empty list. If this list can be empty, guard it or provide a default.")
+            nums = []
+            for item in seq:
+                nums.append(self._numeric_value(item, code="N3-4102"))
+            try:
+                if name in {"minimum", "min"}:
+                    return min(nums)
+                if name in {"maximum", "max"}:
+                    return max(nums)
+                return sum(nums) / len(nums)
+            except Exception:
+                raise EvaluationError("I couldn't compare these values to compute the aggregate.")
         if name == "round":
             if not args:
                 raise EvaluationError("N3-4102: invalid type for numeric builtin")
@@ -525,6 +545,51 @@ class ExpressionEvaluator:
                 raise EvaluationError("N3-4102: invalid type for numeric builtin")
             val = self._numeric_value(args[0], code="N3-4102")
             return abs(val)
+        if name == "append":
+            if len(args) != 2:
+                raise EvaluationError("append expects a list and a value.")
+            seq = args[0]
+            if not isinstance(seq, list):
+                raise EvaluationError(f"I expected a list here for append, but got {self._render_value(seq)} instead.")
+            return list(seq) + [args[1]]
+        if name == "remove":
+            if len(args) != 2:
+                raise EvaluationError("remove expects a list and a value.")
+            seq = args[0]
+            if not isinstance(seq, list):
+                raise EvaluationError(f"I expected a list here for remove, but got {self._render_value(seq)} instead.")
+            target = args[1]
+            result = list(seq)
+            try:
+                result.remove(target)
+            except ValueError:
+                # If the value isn't present, return the original list unchanged.
+                return result
+            return result
+        if name == "insert":
+            if len(args) != 3:
+                raise EvaluationError("insert expects a list, an index, and a value.")
+            seq = args[0]
+            if not isinstance(seq, list):
+                raise EvaluationError(f"I expected a list here for insert, but got {self._render_value(seq)} instead.")
+            index_val = args[1]
+            if isinstance(index_val, bool) or not isinstance(index_val, (int, float)):
+                raise EvaluationError(
+                    f"I expected a non-negative index within the list bounds for insert, but got {self._render_value(index_val)}."
+                )
+            if isinstance(index_val, float):
+                if not index_val.is_integer():
+                    raise EvaluationError(
+                        f"I expected a non-negative index within the list bounds for insert, but got {self._render_value(index_val)}."
+                    )
+                index_val = int(index_val)
+            if index_val < 0 or index_val > len(seq):
+                raise EvaluationError(
+                    f"I expected a non-negative index within the list bounds for insert, but got {self._render_value(index_val)}."
+                )
+            result = list(seq)
+            result.insert(int(index_val), args[2])
+            return result
         if name == "current_timestamp":
             if args:
                 raise EvaluationError("N3-4305: builtin does not accept arguments")
@@ -538,3 +603,230 @@ class ExpressionEvaluator:
                 raise EvaluationError("N3-4305: builtin does not accept arguments")
             return str(uuid.uuid4())
         raise EvaluationError(f"N3-3200: unsupported builtin '{name}'")
+
+    def _render_value(self, value: Any) -> str:
+        try:
+            rendered = repr(value)
+        except Exception:
+            rendered = f"<{value.__class__.__name__}>"
+        if len(rendered) > 120:
+            rendered = f"{rendered[:117]}..."
+        return rendered
+
+    def _resolve_path_value(self, value: Any, path: list[str]) -> Any:
+        current = value
+        for part in path:
+            if isinstance(current, dict):
+                if part in current:
+                    current = current.get(part)
+                else:
+                    raise EvaluationError(
+                        build_missing_field_error(part, current, context=f"I don't know field {part} on this record.")
+                    )
+            elif hasattr(current, part):
+                current = getattr(current, part)
+            else:
+                raise EvaluationError(
+                    f"N3-3300: I can only look up fields on a record, but got {self._render_value(current)} while looking for {part}."
+                )
+        return current
+
+    def _ensure_boolean(self, value: Any, context: str) -> bool:
+        if isinstance(value, bool):
+            return value
+        raise EvaluationError(
+            f"I expected the condition in '{context}' to be true or false, but got {self._render_value(value)} instead."
+        )
+
+    def _ensure_collection(self, value: Any) -> list[Any]:
+        if isinstance(value, list):
+            return value
+        raise EvaluationError(
+            f"I expected a list or frame here, but got {type(value).__name__}. Collection pipelines only work on lists and frames."
+        )
+
+    def _with_row_binding(self, row: Any) -> tuple[bool, Any]:
+        had_prev = self.env.has("row")
+        prev_val = self.env.resolve("row") if had_prev else None
+        if had_prev:
+            self.env.assign("row", row)
+        else:
+            self.env.declare("row", row)
+        return had_prev, prev_val
+
+    def _restore_row_binding(self, had_prev: bool, prev_val: Any) -> None:
+        if had_prev:
+            self.env.assign("row", prev_val)
+        else:
+            self.env.remove("row")
+
+    def _evaluate_group_expression(
+        self, expr: ast_nodes.Expr | None, rows: list[Any], evaluator: "ExpressionEvaluator"
+    ) -> Any:
+        if expr is None:
+            return None
+        if isinstance(expr, ast_nodes.ListBuiltinCall):
+            target = expr.expr
+            if isinstance(target, ast_nodes.RecordFieldAccess) and isinstance(target.target, ast_nodes.Identifier):
+                if target.target.name == "row":
+                    values: list[Any] = []
+                    for r in rows:
+                        if not isinstance(r, dict):
+                            raise EvaluationError(
+                                f"N3-3300: I can only look up fields on a record, but got {self._render_value(r)} instead."
+                            )
+                        if target.field not in r:
+                            raise EvaluationError(
+                                build_missing_field_error(
+                                    target.field,
+                                    r,
+                                    context=f"I don't know field {target.field} on this record.",
+                                )
+                            )
+                        values.append(r.get(target.field))
+                    return evaluator._dispatch_builtin((expr.name or "").lower(), [values])
+            if isinstance(target, ast_nodes.VarRef) and target.root == "row" and target.path:
+                values: list[Any] = []
+                for r in rows:
+                    current = r
+                    for part in target.path:
+                        if isinstance(current, dict) and part in current:
+                            current = current.get(part)
+                        elif hasattr(current, part):
+                            current = getattr(current, part)
+                        else:
+                            raise EvaluationError(
+                                build_missing_field_error(
+                                    part,
+                                    current,
+                                    context=f"I don't know field {part} on this record.",
+                                )
+                            )
+                    values.append(current)
+                return evaluator._dispatch_builtin((expr.name or "").lower(), [values])
+        return evaluator.evaluate(expr)
+
+    def _eval_collection_pipeline(self, pipeline: IRCollectionPipeline) -> list[Any]:
+        source_val = self.evaluate(pipeline.source) if pipeline.source is not None else None
+        items = self._ensure_collection(source_val)
+        for step in pipeline.steps:
+            if isinstance(step, IRCollectionKeepRowsStep):
+                kept: list[Any] = []
+                for row in items:
+                    had_prev, prev_val = self._with_row_binding(row)
+                    try:
+                        cond_val = self.evaluate(step.condition) if step.condition is not None else False
+                        result = self._ensure_boolean(cond_val, "keep rows where ...")
+                        if result:
+                            kept.append(row)
+                    finally:
+                        self._restore_row_binding(had_prev, prev_val)
+                items = kept
+                continue
+            if isinstance(step, IRCollectionDropRowsStep):
+                kept: list[Any] = []
+                for row in items:
+                    had_prev, prev_val = self._with_row_binding(row)
+                    try:
+                        cond_val = self.evaluate(step.condition) if step.condition is not None else False
+                        result = self._ensure_boolean(cond_val, "drop rows where ...")
+                        if not result:
+                            kept.append(row)
+                    finally:
+                        self._restore_row_binding(had_prev, prev_val)
+                items = kept
+                continue
+            if isinstance(step, IRCollectionGroupByStep):
+                groups: dict[Any, list[Any]] = {}
+                for row in items:
+                    had_prev, prev_val = self._with_row_binding(row)
+                    try:
+                        key_val = self.evaluate(step.key) if step.key is not None else None
+                    finally:
+                        self._restore_row_binding(had_prev, prev_val)
+                    groups.setdefault(key_val, []).append(row)
+                grouped_records: list[dict[str, Any]] = []
+                for key_val, rows in groups.items():
+                    group_env = self.env.clone()
+                    if group_env.has("rows"):
+                        group_env.assign("rows", rows)
+                    else:
+                        group_env.declare("rows", rows)
+                    if group_env.has("group_key"):
+                        group_env.assign("group_key", key_val)
+                    else:
+                        group_env.declare("group_key", key_val)
+                    group_evaluator = ExpressionEvaluator(
+                        group_env,
+                        resolver=self.resolver,
+                        rulegroup_resolver=self.rulegroup_resolver,
+                        helper_resolver=self.helper_resolver,
+                    )
+                    record: dict[str, Any] = {"key": key_val}
+                    for stmt in step.body:
+                        if not isinstance(stmt, (ast_nodes.LetStatement, IRLet)):
+                            raise EvaluationError("Only let statements are supported inside group by blocks for now.")
+                        value = self._evaluate_group_expression(stmt.expr, rows, group_evaluator)
+                        if group_env.has(stmt.name):
+                            group_env.assign(stmt.name, value)
+                        else:
+                            group_env.declare(stmt.name, value, is_constant=stmt.is_constant)
+                        record[stmt.name] = value
+                    grouped_records.append(record)
+                items = grouped_records
+                continue
+            if isinstance(step, IRCollectionSortStep):
+                kind = step.kind
+                direction = step.direction
+
+                def sort_key(element: Any) -> Any:
+                    env_clone = self.env.clone()
+                    bind_name = "row" if kind == "rows" else "group"
+                    if env_clone.has(bind_name):
+                        env_clone.assign(bind_name, element)
+                    else:
+                        env_clone.declare(bind_name, element)
+                    if kind == "groups":
+                        if env_clone.has("row"):
+                            env_clone.assign("row", element)
+                        else:
+                            env_clone.declare("row", element)
+                        if isinstance(element, dict):
+                            for k, v in element.items():
+                                if env_clone.has(k):
+                                    env_clone.assign(k, v)
+                                else:
+                                    env_clone.declare(k, v)
+                    evaluator = ExpressionEvaluator(
+                        env_clone,
+                        resolver=self.resolver,
+                        rulegroup_resolver=self.rulegroup_resolver,
+                        helper_resolver=self.helper_resolver,
+                    )
+                    return evaluator.evaluate(step.key) if step.key is not None else None
+
+                try:
+                    items = sorted(items, key=sort_key, reverse=direction == "desc")
+                except Exception:
+                    raise EvaluationError("I couldn't sort these values because the sort keys are not comparable.")
+                continue
+            if isinstance(step, IRCollectionTakeStep):
+                count_val = self.evaluate(step.count) if step.count is not None else 0
+                if not isinstance(count_val, (int, float)) or isinstance(count_val, bool) or count_val < 0:
+                    raise EvaluationError(
+                        f"I expected a non-negative number for 'take first ...', but got {self._render_value(count_val)}."
+                    )
+                count_int = int(count_val)
+                items = items[:count_int]
+                continue
+            if isinstance(step, IRCollectionSkipStep):
+                count_val = self.evaluate(step.count) if step.count is not None else 0
+                if not isinstance(count_val, (int, float)) or isinstance(count_val, bool) or count_val < 0:
+                    raise EvaluationError(
+                        f"I expected a non-negative number for 'skip first ...', but got {self._render_value(count_val)}."
+                    )
+                count_int = int(count_val)
+                items = items[count_int:]
+                continue
+            raise EvaluationError(f"Unsupported collection pipeline step '{type(step).__name__}'")
+        return items

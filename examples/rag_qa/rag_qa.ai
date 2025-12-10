@@ -1,17 +1,17 @@
 model "retriever":
   provider "openai"
 
-ai is \"rewrite_question":
+ai is "rewrite_question":
   model "retriever"
   input from "user_input"
   description "Rewrite the question to be concise and retrieval-friendly."
 
-ai is \"lookup_context":
+ai is "lookup_context":
   model "retriever"
   input from "user_input"
   description "Locate the most relevant context for the rewritten question."
 
-ai is \"compose_answer":
+ai is "compose_answer":
   model "retriever"
   input from "user_input"
   description "Compose a short answer grounded in the retrieved context."

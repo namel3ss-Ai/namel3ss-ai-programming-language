@@ -12,6 +12,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+import numbers
 from dataclasses import asdict, is_dataclass
 from datetime import datetime
 from typing import Any, Callable, Optional
@@ -46,6 +47,13 @@ from ..ir import (
     IRMatchBranch,
     IRNote,
     IRProgram,
+    IRRecordQuery,
+    IRRecordOrderBy,
+    IRConditionLeaf,
+    IRConditionAnd,
+    IRConditionOr,
+    IRConditionAllGroup,
+    IRConditionAnyGroup,
     IRRepeatUpTo,
     IRRetry,
     IRReturn,
@@ -71,7 +79,12 @@ from ..runtime.context import (
 from ..runtime.retries import get_default_retry_config, with_retries_and_timeout
 from ..runtime.circuit_breaker import default_circuit_breaker
 from ..runtime.eventlog import EventLogger
-from ..runtime.expressions import EvaluationError, ExpressionEvaluator, VariableEnvironment
+from ..runtime.expressions import (
+    EvaluationError,
+    ExpressionEvaluator,
+    VariableEnvironment,
+    build_missing_field_error,
+)
 from ..runtime.frames import FrameRegistry
 from ..runtime.vectorstores import VectorStoreRegistry
 from ..secrets.manager import SecretsManager
@@ -147,14 +160,62 @@ class FlowEngine:
                         )
                     )
 
+    def _resolve_step_kind(self, node: FlowNode) -> str:
+        cfg = node.config if isinstance(node.config, dict) else {}
+        kind = node.kind or ""
+        statements = cfg.get("statements") or []
+        if not kind:
+            if statements:
+                return "script"
+            return "script"
+        builtin = {"script", "ai", "agent", "tool"}
+        supported = builtin | {
+            "condition",
+            "branch",
+            "join",
+            "parallel",
+            "for_each",
+            "try",
+            "goto_flow",
+            "subflow",
+            "rag",
+            "vector",
+            "vector_query",
+            "vector_index_frame",
+            "frame_insert",
+            "frame_query",
+            "frame_update",
+            "frame_delete",
+            "db_create",
+            "db_update",
+            "db_delete",
+            "find",
+            "auth_register",
+            "auth_login",
+            "auth_logout",
+            "noop",
+            "function",
+        }
+        if kind in supported:
+            return "script" if kind == "function" and statements else kind
+        raise Namel3ssError(
+            f'I don\'t know how to run a step with kind is "{kind}".\nSupported built-in kinds are "script", "ai", "agent", and "tool".'
+        )
+
     def _apply_destructuring(self, pattern, value, env, state, *, is_constant: bool = False) -> None:
         if pattern.kind == "record":
             if not isinstance(value, dict):
-                raise Namel3ssError("Cannot destructure record; expected an object with fields.")
+                raise Namel3ssError("N3-3300: I can only destructure fields from a record value.")
             for field in pattern.fields:
                 target_name = field.alias or field.name
                 if field.name not in value:
-                    raise Namel3ssError(f"Cannot destructure field {field.name}; this value has no {field.name} field.")
+                    raise Namel3ssError(
+                        build_missing_field_error(
+                            field.name,
+                            value,
+                            context=f"I can't destructure field {field.name} from this record.",
+                        )
+                    )
                 env.declare(target_name, value.get(field.name), is_constant=is_constant)
                 state.set(target_name, value.get(field.name))
             return
@@ -341,6 +402,9 @@ class FlowEngine:
                 return current_state
 
             node = graph.nodes[node_id]
+            resolved_kind = self._resolve_step_kind(node)
+            target_label = node.config.get("target") if isinstance(node.config, dict) else None
+            target_label = target_label or node.id
             boundary_for_children = node.error_boundary_id or boundary_id
 
             try:
@@ -355,8 +419,8 @@ class FlowEngine:
                 diags = list(getattr(exc, "diagnostics", []) or [])
                 failure = FlowStepResult(
                     step_name=node.config.get("step_name", node.id),
-                    kind=node.kind,
-                    target=node.config.get("target", node.id),
+                    kind=resolved_kind,
+                    target=target_label,
                     success=False,
                     error_message=str(exc),
                     handled=handled,
@@ -370,7 +434,7 @@ class FlowEngine:
                 if tracer:
                     tracer.record_flow_error(
                         node_id=node.id,
-                        node_kind=node.kind,
+                        node_kind=resolved_kind,
                         handled=handled,
                         boundary_id=boundary_for_children,
                     )
@@ -420,7 +484,7 @@ class FlowEngine:
                 return current_state
 
             # Branch evaluation
-            if node.kind == "branch":
+            if resolved_kind == "branch":
                 next_id = self._evaluate_branch(node, current_state, runtime_ctx)
                 if next_id is None:
                     return current_state
@@ -571,10 +635,12 @@ class FlowEngine:
         return branches.get(result) or branches.get(str(result)) or branches.get("default")
 
     async def _execute_node(
-        self, node: FlowNode, state: FlowState, runtime_ctx: FlowRuntimeContext
+        self, node: FlowNode, state: FlowState, runtime_ctx: FlowRuntimeContext, resolved_kind: str | None = None
     ) -> Optional[FlowStepResult]:
         tracer = runtime_ctx.tracer
-        target = node.config.get("target", node.id)
+        resolved_kind = resolved_kind or self._resolve_step_kind(node)
+        target = node.config.get("target")
+        target_label = target or node.id
         step_name = node.config.get("step_name", node.id)
         output: Any = None
         base_context = runtime_ctx.execution_context
@@ -594,13 +660,15 @@ class FlowEngine:
         params = node.config.get("params") or {}
 
         with default_tracer.span(
-            f"flow.step.{node.kind}", attributes={"step": step_name, "flow_target": target, "kind": node.kind}
+            f"flow.step.{resolved_kind}", attributes={"step": step_name, "flow_target": target_label, "kind": resolved_kind}
         ):
-            if node.kind == "noop":
+            if resolved_kind == "noop":
                 output = node.config.get("output")
-            elif node.kind == "ai":
+            elif resolved_kind == "ai":
+                if not target:
+                    raise Namel3ssError("This AI step needs a target (the model to call), but none was provided.")
                 if target not in runtime_ctx.program.ai_calls:
-                    raise Namel3ssError(f"Flow AI target '{target}' not found")
+                    raise Namel3ssError(f'I couldn\'t find an AI call named "{target}". Check your configuration or plugin setup.')
                 ai_call = runtime_ctx.program.ai_calls[target]
                 if runtime_ctx.event_logger:
                     try:
@@ -667,12 +735,21 @@ class FlowEngine:
                         )
                     except Exception:
                         pass
-            elif node.kind == "agent":
+            elif resolved_kind == "agent":
+                if not target:
+                    raise Namel3ssError("This agent step needs a target (the agent to run), but none was provided.")
+                if target not in runtime_ctx.program.agents:
+                    raise Namel3ssError(f'I couldn\'t find an agent named "{target}". Check your configuration or plugin setup.')
                 raw_output = await asyncio.to_thread(runtime_ctx.agent_runner.run, target, base_context)
                 output = asdict(raw_output) if is_dataclass(raw_output) else raw_output
-            elif node.kind == "tool":
-                output = await self._execute_tool_call(node, state, runtime_ctx)
-            elif node.kind in {"frame_insert", "frame_query", "frame_update", "frame_delete"}:
+            elif resolved_kind == "tool":
+                if not target:
+                    raise Namel3ssError("This tool step needs a target (the tool name), but none was provided.")
+                tool_cfg = runtime_ctx.tool_registry.get(target)
+                if not tool_cfg:
+                    raise Namel3ssError(f'I couldn\'t find a tool named "{target}". Check your configuration or plugin setup.')
+                output = await self._execute_tool_call(node, state, runtime_ctx, tool_override=tool_cfg)
+            elif resolved_kind in {"frame_insert", "frame_query", "frame_update", "frame_delete"}:
                 params = node.config.get("params") or {}
                 frame_name = params.get("frame") or target
                 if not frame_name:
@@ -680,7 +757,7 @@ class FlowEngine:
                         "N3L-831: frame_insert/frame_query/frame_update/frame_delete requires a frame name."
                     )
                 evaluator = self._build_evaluator(state, runtime_ctx)
-                operation = node.kind.replace("frame_", "")
+                operation = resolved_kind.replace("frame_", "")
                 if runtime_ctx.event_logger:
                     try:
                         runtime_ctx.event_logger.log(
@@ -696,7 +773,7 @@ class FlowEngine:
                         )
                     except Exception:
                         pass
-                if node.kind == "frame_insert":
+                if resolved_kind == "frame_insert":
                     values_expr = params.get("values") or {}
                     if not isinstance(values_expr, dict) or not values_expr:
                         raise Namel3ssError("N3L-832: frame_insert requires non-empty values.")
@@ -705,22 +782,16 @@ class FlowEngine:
                         row[k] = evaluator.evaluate(v) if isinstance(v, ast_nodes.Expr) else v
                     runtime_ctx.frames.insert(frame_name, row)
                     output = row
-                elif node.kind == "frame_query":
+                elif resolved_kind == "frame_query":
                     filters_expr = params.get("where") or {}
-                    filters: dict[str, Any] = {}
-                    if isinstance(filters_expr, dict):
-                        for k, v in filters_expr.items():
-                            filters[k] = evaluator.evaluate(v) if isinstance(v, ast_nodes.Expr) else v
+                    filters = self._evaluate_where_conditions(filters_expr, evaluator, step_name, record=None)
                     output = runtime_ctx.frames.query(frame_name, filters)
-                elif node.kind == "frame_update":
+                elif resolved_kind == "frame_update":
                     set_expr = params.get("set") or {}
                     if not isinstance(set_expr, dict) or not set_expr:
                         raise Namel3ssError("N3L-840: frame_update step must define a non-empty 'set' block.")
                     filters_expr = params.get("where") or {}
-                    filters: dict[str, Any] = {}
-                    if isinstance(filters_expr, dict):
-                        for k, v in filters_expr.items():
-                            filters[k] = evaluator.evaluate(v) if isinstance(v, ast_nodes.Expr) else v
+                    filters = self._evaluate_where_conditions(filters_expr, evaluator, step_name, record=None)
                     updates: dict[str, Any] = {}
                     for k, v in set_expr.items():
                         updates[k] = evaluator.evaluate(v) if isinstance(v, ast_nodes.Expr) else v
@@ -729,10 +800,7 @@ class FlowEngine:
                     filters_expr = params.get("where") or {}
                     if not filters_expr:
                         raise Namel3ssError("N3L-841: frame_delete step requires a 'where' block to avoid deleting all rows.")
-                    filters: dict[str, Any] = {}
-                    if isinstance(filters_expr, dict):
-                        for k, v in filters_expr.items():
-                            filters[k] = evaluator.evaluate(v) if isinstance(v, ast_nodes.Expr) else v
+                    filters = self._evaluate_where_conditions(filters_expr, evaluator, step_name, record=None)
                     output = runtime_ctx.frames.delete(frame_name, filters)
                 if runtime_ctx.event_logger:
                     try:
@@ -745,14 +813,14 @@ class FlowEngine:
                             "step_name": step_name,
                             "status": "success",
                         }
-                        if node.kind in {"frame_query", "frame_update", "frame_delete"}:
+                        if resolved_kind in {"frame_query", "frame_update", "frame_delete"}:
                             payload["row_count"] = output if isinstance(output, (int, float)) else (len(output) if isinstance(output, list) else None)
                         runtime_ctx.event_logger.log(payload)
                     except Exception:
                         pass
-            elif node.kind in {"db_create", "db_get", "db_update", "db_delete"}:
+            elif resolved_kind in {"db_create", "db_update", "db_delete", "find"}:
                 params = node.config.get("params") or {}
-                record_name = target
+                record_name = target or target_label
                 if not record_name:
                     raise Namel3ssError(
                         f"N3L-1500: Step '{step_name}' must specify a record target."
@@ -765,14 +833,14 @@ class FlowEngine:
                     )
                 evaluator = self._build_evaluator(state, runtime_ctx)
                 output = self._execute_record_step(
-                    kind=node.kind,
+                    kind=resolved_kind,
                     record=record,
                     params=params,
                     evaluator=evaluator,
                     runtime_ctx=runtime_ctx,
                     step_name=step_name,
                 )
-            elif node.kind in {"auth_register", "auth_login", "auth_logout"}:
+            elif resolved_kind in {"auth_register", "auth_login", "auth_logout"}:
                 params = node.config.get("params") or {}
                 auth_cfg = getattr(runtime_ctx, "auth_config", None)
                 if not auth_cfg:
@@ -783,7 +851,7 @@ class FlowEngine:
                     raise Namel3ssError("N3L-1600: Auth configuration references unknown user_record.")
                 evaluator = self._build_evaluator(state, runtime_ctx)
                 output = self._execute_auth_step(
-                    kind=node.kind,
+                    kind=resolved_kind,
                     auth_config=auth_cfg,
                     record=record,
                     params=params,
@@ -792,7 +860,7 @@ class FlowEngine:
                     step_name=step_name,
                     state=state,
                 )
-            elif node.kind == "vector_index_frame":
+            elif resolved_kind == "vector_index_frame":
                 params = node.config.get("params") or {}
                 vector_store_name = params.get("vector_store") or target
                 if not vector_store_name:
@@ -802,10 +870,7 @@ class FlowEngine:
                 evaluator = self._build_evaluator(state, runtime_ctx)
                 cfg = runtime_ctx.vectorstores.get(vector_store_name)
                 filters_expr = params.get("where") or {}
-                filters: dict[str, Any] = {}
-                if isinstance(filters_expr, dict):
-                    for k, v in filters_expr.items():
-                        filters[k] = evaluator.evaluate(v) if isinstance(v, ast_nodes.Expr) else v
+                filters = self._evaluate_where_conditions(filters_expr, evaluator, step_name, record=None)
                 if runtime_ctx.event_logger:
                     try:
                         runtime_ctx.event_logger.log(
@@ -874,7 +939,7 @@ class FlowEngine:
                         except Exception:
                             pass
                     raise
-            elif node.kind == "vector_query":
+            elif resolved_kind == "vector_query":
                 params = node.config.get("params") or {}
                 vector_store_name = params.get("vector_store") or target
                 if not vector_store_name:
@@ -961,7 +1026,7 @@ class FlowEngine:
                         except Exception:
                             pass
                     raise
-            elif node.kind == "rag":
+            elif resolved_kind == "rag":
                 if not runtime_ctx.rag_engine:
                     raise Namel3ssError("RAG engine unavailable for rag step")
                 query = node.config.get("query") or state.get("last_output") or ""
@@ -972,11 +1037,11 @@ class FlowEngine:
                 ]
                 if runtime_ctx.metrics:
                     runtime_ctx.metrics.record_rag_query(backends=[target])
-            elif node.kind == "branch":
+            elif resolved_kind == "branch":
                 output = {"branch": True}
-            elif node.kind == "join":
+            elif resolved_kind == "join":
                 output = {"join": True}
-            elif node.kind == "subflow":
+            elif resolved_kind == "subflow":
                 subflow = runtime_ctx.program.flows.get(target)
                 if not subflow:
                     raise Namel3ssError(f"Subflow '{target}' not found")
@@ -984,23 +1049,23 @@ class FlowEngine:
                 sub_state = state.copy()
                 result = await self.a_run_flow(graph, sub_state, runtime_ctx, flow_name=target)
                 output = {"subflow": target, "state": result.state.data if result.state else {}}
-            elif node.kind == "script":
+            elif resolved_kind == "script":
                 statements = node.config.get("statements") or []
                 output = await self._execute_script(statements, state, runtime_ctx, node.id)
-            elif node.kind == "condition":
+            elif resolved_kind == "condition":
                 output = await self._run_condition_node(node, state, runtime_ctx)
-            elif node.kind == "function":
+            elif resolved_kind == "function":
                 func = node.config.get("callable")
                 if not callable(func):
                     raise Namel3ssError(f"Function node '{node.id}' missing callable")
                 output = func(state)
-            elif node.kind == "parallel":
+            elif resolved_kind == "parallel":
                 output = await self._execute_parallel_block(node, state, runtime_ctx)
-            elif node.kind == "for_each":
+            elif resolved_kind == "for_each":
                 output = await self._execute_for_each(node, state, runtime_ctx)
-            elif node.kind == "try":
+            elif resolved_kind == "try":
                 output = await self._execute_try_catch(node, state, runtime_ctx)
-            elif node.kind == "goto_flow":
+            elif resolved_kind == "goto_flow":
                 target_flow = node.config.get("target")
                 reason = node.config.get("reason", "unconditional")
                 if not target_flow:
@@ -1018,23 +1083,23 @@ class FlowEngine:
                         },
                     )
             else:
-                raise Namel3ssError(f"Unsupported flow step kind '{node.kind}'")
+                raise Namel3ssError(f"Unsupported flow step kind '{resolved_kind}'")
 
         state.set(f"step.{node.id}.output", output)
         state.set("last_output", output)
         if tracer:
             tracer.record_flow_step(
                 step_name=step_name,
-                kind=node.kind,
-                target=target,
+                kind=resolved_kind,
+                target=target_label,
                 success=True,
                 output_preview=str(output)[:200] if output is not None else None,
                 node_id=node.id,
         )
         return FlowStepResult(
             step_name=step_name,
-            kind=node.kind,
-            target=target,
+            kind=resolved_kind,
+            target=target_label,
             success=True,
             output=output,
             node_id=node.id,
@@ -1497,25 +1562,12 @@ class FlowEngine:
         items: list[Any] = []
         if iterable_expr is not None:
             iterable_value = evaluator.evaluate(iterable_expr)
-            if iterable_value is None:
-                items = []
-            elif isinstance(iterable_value, (list, tuple)):
-                items = list(iterable_value)
-            else:
-                raise Namel3ssError("Loop iterable must be a list/array-like")
+            items = self._require_list_iterable(iterable_value, context="This for each loop")
         elif items_path:
             iterable_value = state.get(items_path, []) or []
-            if iterable_value is None:
-                items = []
-            elif isinstance(iterable_value, (list, tuple)):
-                items = list(iterable_value)
-            else:
-                raise Namel3ssError("Loop iterable must be a list/array-like")
+            items = self._require_list_iterable(iterable_value, context="This for each loop")
         elif items_val is not None:
-            if isinstance(items_val, (list, tuple)):
-                items = list(items_val)
-            else:
-                raise Namel3ssError("Loop iterable must be a list/array-like")
+            items = self._require_list_iterable(items_val, context="This for each loop")
         else:
             items = []
 
@@ -1537,7 +1589,7 @@ class FlowEngine:
                 await self._run_inline_sequence(f"{node.id}.{idx}", body, state, runtime_ctx, loop_item=item)
                 delta = {k: v for k, v in state.data.items() if before_data.get(k) != v}
                 items_meta.append(delta)
-                if state.context.get("__redirect_flow__"):
+                if state.context.get("__redirect_flow__") or state.context.get("__awaiting_input__"):
                     break
         finally:
             if var_name:
@@ -1546,6 +1598,8 @@ class FlowEngine:
                     state.set(var_name, prev_val)
                 else:
                     env.remove(var_name)
+                    if hasattr(env, "mark_loop_var_exited"):
+                        env.mark_loop_var_exited(var_name)
                     state.data.pop(var_name, None)
             state.data.pop("loop.item", None)
         state.set(f"step.{node.id}.items", items_meta)
@@ -1608,11 +1662,14 @@ class FlowEngine:
     async def _execute_ir_if(self, stmt: IRIf, state: FlowState, runtime_ctx: FlowRuntimeContext, prefix: str) -> None:
         env = state.variables or runtime_ctx.variables or VariableEnvironment()
         for idx, br in enumerate(stmt.branches):
+            context_label = br.label or "if"
             result, candidate_binding = self._eval_condition_with_binding(
-                br.condition, state, runtime_ctx, context_label="if"
+                br.condition, state, runtime_ctx, context_label=context_label
             )
             label = br.label or f"branch-{idx}"
             if br.label == "unless":
+                result = not result
+            if br.label == "guard":
                 result = not result
             if not result:
                 continue
@@ -1757,41 +1814,98 @@ class FlowEngine:
                 return state.get("last_output")
         if isinstance(stmt, IRForEach):
             iterable_val = evaluator.evaluate(stmt.iterable) if stmt.iterable is not None else None
-            if not isinstance(iterable_val, list):
-                raise Namel3ssError("N3-3400: for-each loop requires a list value")
-            had_prev = env.has(stmt.var_name)
-            prev_val = env.resolve(stmt.var_name) if had_prev else None
-            declared_new = not had_prev
-            for idx, item in enumerate(iterable_val):
-                if had_prev or not declared_new:
-                    env.assign(stmt.var_name, item)
-                else:
-                    env.declare(stmt.var_name, item)
-                    declared_new = False
-                state.set(stmt.var_name, item)
-                for body_stmt in stmt.body:
-                    await self._execute_statement(body_stmt, state, runtime_ctx, f"{prefix}.foreach{idx}", allow_return=allow_return)
+            items = self._require_list_iterable(
+                iterable_val,
+                context="repeat for each",
+                detail="Make sure the expression after in evaluates to a list of items.",
+            )
+            if stmt.pattern:
+                pattern = stmt.pattern
+                target_names = (
+                    [f.alias or f.name for f in pattern.fields] if pattern.kind == "record" else list(pattern.fields)
+                )
+                prev_values = {name: env.resolve(name) for name in target_names if env.has(name)}
+                declared: set[str] = set()
+                for idx, item in enumerate(items):
+                    if pattern.kind == "record":
+                        if not isinstance(item, dict):
+                            raise Namel3ssError("N3-3300: repeat for each requires a list of records for this pattern.")
+                        for field in pattern.fields:
+                            target_name = field.alias or field.name
+                            if field.name not in item:
+                                raise Namel3ssError(
+                                    build_missing_field_error(
+                                        field.name,
+                                        item,
+                                        context=f"I can't destructure field {field.name} from this record.",
+                                    )
+                                )
+                            if env.has(target_name):
+                                env.assign(target_name, item.get(field.name))
+                            else:
+                                env.declare(target_name, item.get(field.name))
+                                declared.add(target_name)
+                            state.set(target_name, item.get(field.name))
+                    elif pattern.kind == "list":
+                        if not isinstance(item, (list, tuple)):
+                            raise Namel3ssError("Cannot destructure list; expected a list/sequence.")
+                        fields = pattern.fields
+                        if len(item) < len(fields):
+                            raise Namel3ssError(
+                                f"Cannot destructure list into [{', '.join(fields)}]; it has only {len(item)} elements."
+                            )
+                        for idx_name, name in enumerate(fields):
+                            if env.has(name):
+                                env.assign(name, item[idx_name] if idx_name < len(item) else None)
+                            else:
+                                env.declare(name, item[idx_name] if idx_name < len(item) else None)
+                                declared.add(name)
+                            state.set(name, item[idx_name] if idx_name < len(item) else None)
+                    for body_stmt in stmt.body:
+                        await self._execute_statement(body_stmt, state, runtime_ctx, f"{prefix}.foreach{idx}", allow_return=allow_return)
+                        if state.context.get("__awaiting_input__"):
+                            break
                     if state.context.get("__awaiting_input__"):
                         break
-                if state.context.get("__awaiting_input__"):
-                    break
-            if had_prev:
-                env.assign(stmt.var_name, prev_val)
-                state.set(stmt.var_name, prev_val)
+                for name in target_names:
+                    if name in prev_values:
+                        env.assign(name, prev_values[name])
+                        state.set(name, prev_values[name])
+                    else:
+                        env.remove(name)
+                        if hasattr(env, "mark_loop_var_exited"):
+                            env.mark_loop_var_exited(name)
+                        state.data.pop(name, None)
+                return state.get("last_output")
             else:
-                env.remove(stmt.var_name)
-                if hasattr(env, "mark_loop_var_exited"):
-                    env.mark_loop_var_exited(stmt.var_name)
-                state.data.pop(stmt.var_name, None)
-            return state.get("last_output")
+                had_prev = env.has(stmt.var_name)
+                prev_val = env.resolve(stmt.var_name) if had_prev else None
+                declared_new = False
+                for idx, item in enumerate(items):
+                    if had_prev or declared_new:
+                        env.assign(stmt.var_name, item)
+                    else:
+                        env.declare(stmt.var_name, item)
+                        declared_new = True
+                    state.set(stmt.var_name, item)
+                    for body_stmt in stmt.body:
+                        await self._execute_statement(body_stmt, state, runtime_ctx, f"{prefix}.foreach{idx}", allow_return=allow_return)
+                        if state.context.get("__awaiting_input__"):
+                            break
+                    if state.context.get("__awaiting_input__"):
+                        break
+                if had_prev:
+                    env.assign(stmt.var_name, prev_val)
+                    state.set(stmt.var_name, prev_val)
+                else:
+                    env.remove(stmt.var_name)
+                    if hasattr(env, "mark_loop_var_exited"):
+                        env.mark_loop_var_exited(stmt.var_name)
+                    state.data.pop(stmt.var_name, None)
+                return state.get("last_output")
         if isinstance(stmt, IRRepeatUpTo):
             count_val = evaluator.evaluate(stmt.count) if stmt.count is not None else 0
-            try:
-                count_num = int(count_val)
-            except Exception:
-                raise Namel3ssError("N3-3401: repeat-up-to requires numeric count")
-            if count_num < 0:
-                raise Namel3ssError("N3-3402: loop count must be non-negative")
+            count_num = self._coerce_non_negative_int(count_val, context="repeat up to", unit="times")
             for idx in range(count_num):
                 for body_stmt in stmt.body:
                     await self._execute_statement(body_stmt, state, runtime_ctx, f"{prefix}.repeat{idx}", allow_return=allow_return)
@@ -1802,13 +1916,10 @@ class FlowEngine:
             return state.get("last_output")
         if isinstance(stmt, IRRetry):
             count_val = evaluator.evaluate(stmt.count) if stmt.count is not None else 0
-            try:
-                attempts = int(count_val)
-            except Exception:
-                raise Namel3ssError("N3-4500: retry requires numeric max attempts")
-            if attempts < 1:
-                raise Namel3ssError("N3-4501: retry max attempts must be at least 1")
-            last_output = None
+            attempts = self._coerce_non_negative_int(count_val, context="retry up to", unit="attempts")
+            if attempts == 0:
+                return state.get("last_output")
+            last_output = state.get("last_output")
             for attempt in range(attempts):
                 try:
                     for body_stmt in stmt.body:
@@ -1817,14 +1928,20 @@ class FlowEngine:
                             break
                     if state.context.get("__awaiting_input__"):
                         break
-                    # success if no exception and result not error-like
-                    if not self._is_error_result(last_output):
-                        break
-                    if attempt + 1 == attempts:
-                        break
-                except Namel3ssError:
+                    if self._is_error_result(last_output):
+                        if attempt + 1 == attempts:
+                            raise Namel3ssError(
+                                f"This retry block failed after {attempts} attempts.\nThe last result looked like an error: {self._format_condition_value(last_output)}."
+                            )
+                        if stmt.with_backoff:
+                            await self._sleep_backoff(attempt)
+                        continue
+                    break
+                except Exception as exc:
                     if attempt + 1 == attempts:
                         raise
+                    if stmt.with_backoff:
+                        await self._sleep_backoff(attempt)
                     continue
             state.set("last_output", last_output)
             return last_output
@@ -1947,6 +2064,8 @@ class FlowEngine:
                         pass
                 return None
 
+        resolved_kind = self._resolve_step_kind(node)
+        step_name = node.config.get("step_name", node.id)
         timeout = node.config.get("timeout_seconds")
         start = time.monotonic()
         if runtime_ctx.event_logger:
@@ -1956,8 +2075,9 @@ class FlowEngine:
                         "kind": "step",
                         "event_type": "start",
                         "flow_name": state.context.get("flow_name"),
-                        "step_name": node.id,
+                        "step_name": step_name,
                         "status": "running",
+                        "step_kind": resolved_kind,
                     }
                 )
             except Exception:
@@ -1965,7 +2085,7 @@ class FlowEngine:
         async def run_inner():
             if node.config.get("simulate_duration"):
                 await asyncio.sleep(float(node.config["simulate_duration"]))
-            return await self._execute_node(node, state, runtime_ctx)
+            return await self._execute_node(node, state, runtime_ctx, resolved_kind=resolved_kind)
 
         try:
             if timeout:
@@ -1981,9 +2101,10 @@ class FlowEngine:
                             "kind": "step",
                             "event_type": "error",
                             "flow_name": state.context.get("flow_name"),
-                            "step_name": node.id,
+                            "step_name": step_name,
                             "status": "error",
                             "message": str(exc),
+                            "step_kind": resolved_kind,
                         }
                     )
                 except Exception:
@@ -2004,8 +2125,9 @@ class FlowEngine:
                         "kind": "step",
                         "event_type": "end",
                         "flow_name": state.context.get("flow_name"),
-                        "step_name": node.id,
+                        "step_name": step_name,
                         "status": "success",
+                        "step_kind": resolved_kind,
                     }
                 )
             except Exception:
@@ -2085,8 +2207,24 @@ class FlowEngine:
                     elif hasattr(value, part):
                         value = getattr(value, part, None)
                     else:
-                        raise EvaluationError("N3-3300: unknown record field")
+                        raise EvaluationError(
+                            build_missing_field_error(
+                                part,
+                                value,
+                                context=f"I don't know field {part} on this record.",
+                            )
+                        )
                 return True, value
+            if runtime_ctx and runtime_ctx.frames and base in getattr(runtime_ctx.frames, "frames", {}):
+                current: Any = runtime_ctx.frames.query(base)
+                for part in parts[1:]:
+                    if isinstance(current, dict) and part in current:
+                        current = current.get(part)
+                    elif hasattr(current, part):
+                        current = getattr(current, part, None)
+                    else:
+                        return False, None
+                return True, current
             allowed_roots = {"state", "user", "secret", "input", "env", "step"}
             if base not in allowed_roots:
                 raise EvaluationError(
@@ -2170,7 +2308,13 @@ class FlowEngine:
                     elif hasattr(value, part):
                         value = getattr(value, part, None)
                     else:
-                        raise EvaluationError("N3-3300: unknown record field")
+                        raise EvaluationError(
+                            build_missing_field_error(
+                                part,
+                                value,
+                                context=f"I don't know field {part} on this record.",
+                            )
+                        )
                 return True, value
             return False, None
         if alias_map and name in alias_map:
@@ -2181,6 +2325,8 @@ class FlowEngine:
                     f"The step alias {name} refers to {step_name}, which hasn't run yet in this flow. Move the code that reads {name}.output after the {step_name} step."
                 )
             return True, state.get(output_key)
+        if runtime_ctx and runtime_ctx.frames and name in getattr(runtime_ctx.frames, "frames", {}):
+            return True, runtime_ctx.frames.query(name)
         return False, None
 
     def _call_helper(self, name: str, args: list[Any], state: FlowState, runtime_ctx: FlowRuntimeContext | None) -> Any:
@@ -2373,11 +2519,11 @@ class FlowEngine:
             resp_headers = dict(exc.headers.items()) if exc.headers else {}
             return exc.code, resp_headers, text
 
-    async def _execute_tool_call(self, node, state: FlowState, runtime_ctx: FlowRuntimeContext):
+    async def _execute_tool_call(self, node, state: FlowState, runtime_ctx: FlowRuntimeContext, tool_override=None):
         target = node.config.get("target") if isinstance(node.config, dict) else None
-        tool_cfg = runtime_ctx.tool_registry.get(target)
+        tool_cfg = tool_override or runtime_ctx.tool_registry.get(target)
         if not tool_cfg:
-            raise Namel3ssError(f"N3L-1400: Tool '{target}' is not declared.")
+            raise Namel3ssError(f'I couldn\'t find a tool named "{target}". Check your configuration or plugin setup.')
 
         evaluator = self._build_evaluator(state, runtime_ctx)
         params = node.config.get("params") or {}
@@ -2389,6 +2535,11 @@ class FlowEngine:
                     arg_values[k] = evaluator.evaluate(expr)
                 except Exception as exc:
                     raise Namel3ssError(f"Failed to evaluate input '{k}' for tool '{tool_cfg.name}': {exc}") from exc
+        if not arg_values:
+            default_message = state.get("last_output")
+            if default_message is None:
+                default_message = state.get("slug")
+            arg_values = {"message": default_message}
 
         required_inputs = list(getattr(tool_cfg, "input_fields", []) or [])
         missing_inputs = [field for field in required_inputs if field not in arg_values]
@@ -2404,7 +2555,7 @@ class FlowEngine:
             except Exception:
                 pass
 
-        if not hasattr(tool_cfg, "url_expr") and not hasattr(tool_cfg, "url_template"):
+        if getattr(tool_cfg, "url_expr", None) is None and getattr(tool_cfg, "url_template", None) is None:
             if callable(getattr(tool_cfg, "execute", None)):
                 return tool_cfg.execute(arg_values)
             if callable(tool_cfg):
@@ -2584,10 +2735,234 @@ class FlowEngine:
                 ) from exc
         return values
 
-    def _resolve_record_default_value(self, field) -> Any:
-        if getattr(field, "default", None) == "now":
-            return datetime.utcnow().isoformat()
-        return field.default
+    def _evaluate_where_conditions(
+        self,
+        conditions: object,
+        evaluator: ExpressionEvaluator,
+        step_name: str,
+        record: Any | None,
+    ) -> dict | None:
+        """Evaluate WHERE conditions into a normalized boolean tree."""
+        if not conditions:
+            return None
+        allowed_ops = {"eq", "neq", "gt", "lt", "ge", "le", "in", "is_null", "is_not_null"}
+
+        def _eval_leaf(cond_obj: object) -> dict:
+            if isinstance(cond_obj, (IRConditionLeaf, ast_nodes.ConditionLeaf, ast_nodes.RecordWhereCondition)):
+                field_name = cond_obj.field_name
+                op = cond_obj.op
+                value_expr = getattr(cond_obj, "value", None) or getattr(cond_obj, "value_expr", None)
+                cond_span = getattr(cond_obj, "span", None)
+            elif isinstance(cond_obj, dict) and {"field", "op"} <= set(cond_obj.keys()):
+                field_name = cond_obj.get("field")
+                op = cond_obj.get("op")
+                value_expr = cond_obj.get("value")
+                cond_span = cond_obj.get("span")
+            else:
+                raise Namel3ssError(
+                    "I don't understand this condition in a WHERE block. Use is, is not, is greater than, is at least, or is one of []."
+                )
+            if op not in allowed_ops:
+                raise Namel3ssError(
+                    "I don't understand this condition in a WHERE block. Use is, is not, is greater than, is at least, is at most, is one of, or null checks."
+                )
+            if record:
+                field = record.fields.get(field_name)
+                if not field:
+                    raise Namel3ssError(
+                        f"Record '{record.name}' has no field named '{field_name}' (step '{step_name}')."
+                    )
+            else:
+                field = None
+            if op in {"is_null", "is_not_null"}:
+                return {"type": "leaf", "field": field_name, "op": op, "value": None, "span": cond_span}
+            try:
+                raw_value = evaluator.evaluate(value_expr) if isinstance(value_expr, ast_nodes.Expr) else value_expr
+            except Exception as exc:
+                raise Namel3ssError(
+                    f"Failed to evaluate a WHERE condition for field '{field_name}' in step '{step_name}': {exc}"
+                ) from exc
+            if op == "in":
+                if not isinstance(raw_value, (list, tuple, set)):
+                    raise Namel3ssError(
+                        "I don't understand this condition in the WHERE block. 'is one of' needs a list of values."
+                    )
+                if field:
+                    value = [
+                        self._coerce_record_value(record.name, field, item, step_name) for item in list(raw_value)
+                    ]
+                else:
+                    value = list(raw_value)
+            else:
+                value = (
+                    self._coerce_record_value(record.name, field, raw_value, step_name)
+                    if field
+                    else raw_value
+                )
+            return {"type": "leaf", "field": field_name, "op": op, "value": value, "span": cond_span}
+
+        def _combine_list(children: list[dict | None]) -> dict | None:
+            valid = [c for c in children if c is not None]
+            if not valid:
+                return None
+            current = valid[0]
+            for child in valid[1:]:
+                current = {"type": "and", "left": current, "right": child}
+            return current
+
+        def _transform(cond_obj: object | None) -> dict | None:
+            if cond_obj is None:
+                return None
+            if isinstance(cond_obj, dict) and cond_obj.get("type") in {"leaf", "and", "or", "all", "any"}:
+                return cond_obj
+            if isinstance(cond_obj, (IRConditionLeaf, ast_nodes.ConditionLeaf, ast_nodes.RecordWhereCondition)):
+                return _eval_leaf(cond_obj)
+            if isinstance(cond_obj, IRConditionAnd) or isinstance(cond_obj, ast_nodes.ConditionAnd):
+                left = _transform(cond_obj.left)
+                right = _transform(cond_obj.right)
+                return {"type": "and", "left": left, "right": right, "span": getattr(cond_obj, "span", None)}
+            if isinstance(cond_obj, IRConditionOr) or isinstance(cond_obj, ast_nodes.ConditionOr):
+                left = _transform(cond_obj.left)
+                right = _transform(cond_obj.right)
+                return {"type": "or", "left": left, "right": right, "span": getattr(cond_obj, "span", None)}
+            if isinstance(cond_obj, IRConditionAllGroup) or isinstance(cond_obj, ast_nodes.ConditionAllGroup):
+                children = [_transform(c) for c in getattr(cond_obj, "children", [])]
+                children = [c for c in children if c is not None]
+                return {"type": "all", "children": children, "span": getattr(cond_obj, "span", None)}
+            if isinstance(cond_obj, IRConditionAnyGroup) or isinstance(cond_obj, ast_nodes.ConditionAnyGroup):
+                children = [_transform(c) for c in getattr(cond_obj, "children", [])]
+                children = [c for c in children if c is not None]
+                return {"type": "any", "children": children, "span": getattr(cond_obj, "span", None)}
+            if isinstance(cond_obj, list):
+                return _combine_list([_transform(c) for c in cond_obj])
+            if isinstance(cond_obj, dict):
+                # Treat dict with field/op/value as a single leaf.
+                return _eval_leaf(cond_obj)
+            raise Namel3ssError(
+                "I don't understand this condition in a WHERE block. Use is, is not, is greater than, is at least, is one of, or null checks."
+            )
+
+        return _transform(conditions)
+
+    def _condition_tree_matches(self, condition: dict | None, row: dict, alias: str) -> bool:
+        if condition is None:
+            return True
+
+        def _ensure_bool(value: Any) -> bool:
+            if isinstance(value, bool):
+                return value
+            raise Namel3ssError(
+                f"I expected this condition in find {alias} where: to be true or false, but it evaluated to {value!r} instead."
+            )
+
+        def _eval(node: dict | None) -> bool:
+            if node is None:
+                return True
+            ntype = node.get("type")
+            if ntype is None and "field" in node:
+                ntype = "leaf"
+            if ntype == "leaf":
+                field = node.get("field")
+                op = node.get("op")
+                value = node.get("value")
+                row_val = row.get(field)
+                try:
+                    if op == "eq":
+                        return _ensure_bool(row_val == value)
+                    if op == "neq":
+                        return _ensure_bool(row_val != value)
+                    if op == "gt":
+                        return _ensure_bool(row_val > value)
+                    if op == "lt":
+                        return _ensure_bool(row_val < value)
+                    if op == "ge":
+                        return _ensure_bool(row_val >= value)
+                    if op == "le":
+                        return _ensure_bool(row_val <= value)
+                    if op == "in":
+                        if not isinstance(value, (list, tuple, set)):
+                            raise Namel3ssError(
+                                f"I expected this condition in find {alias} where: to compare against a list."
+                            )
+                        return _ensure_bool(row_val in value)
+                    if op == "is_null":
+                        return _ensure_bool(row_val is None)
+                    if op == "is_not_null":
+                        return _ensure_bool(row_val is not None)
+                except Namel3ssError:
+                    raise
+                except Exception as exc:
+                    raise Namel3ssError(
+                        f"I couldn't evaluate this condition in find {alias} where: {exc}"
+                    ) from exc
+                raise Namel3ssError(
+                    "I don't understand this condition in a WHERE block. Use is, is not, is greater than, is at least, is one of, or null checks."
+                )
+            if ntype == "and":
+                left = node.get("left")
+                right = node.get("right")
+                return _eval(left) and _eval(right)
+            if ntype == "or":
+                left = node.get("left")
+                right = node.get("right")
+                return _eval(left) or _eval(right)
+            if ntype == "all":
+                for child in node.get("children") or []:
+                    if not _eval(child):
+                        return False
+                return True
+            if ntype == "any":
+                for child in node.get("children") or []:
+                    if _eval(child):
+                        return True
+                return False
+            raise Namel3ssError(
+                "I don't understand this condition in a WHERE block. Use is, is not, is greater than, is at least, is one of, or null checks."
+            )
+
+        return bool(_eval(condition))
+
+    def _sort_rows(self, rows: list[dict], order_by: list[Any], alias: str) -> list[dict]:
+        def get_value(row: dict, field: str):
+            if not isinstance(row, dict) or field not in row:
+                raise Namel3ssError(
+                    f"I can't sort {alias} by {field} because some rows don't have that field."
+                )
+            return row.get(field)
+
+        sorted_rows = list(rows)
+        for item in reversed(order_by):
+            field = getattr(item, "field_name", None) or (item.get("field_name") if isinstance(item, dict) else None)
+            direction = getattr(item, "direction", None) or (item.get("direction") if isinstance(item, dict) else None) or "asc"
+            reverse = str(direction).lower() == "desc"
+            try:
+                sorted_rows = sorted(sorted_rows, key=lambda r, f=field: get_value(r, f), reverse=reverse)
+            except Namel3ssError:
+                raise
+            except Exception as exc:
+                raise Namel3ssError(
+                    f"I couldn't sort {alias} because the sort keys are not comparable: {exc}"
+                ) from exc
+        return sorted_rows
+
+    def _resolve_record_default_value(self, record_name: str, field, step_name: str) -> Any:
+        default_value = getattr(field, "default", None)
+        if default_value is None:
+            return None
+        if default_value == "now":
+            if getattr(field, "type", None) != "datetime":
+                raise Namel3ssError(
+                    f"I can't use this default for field {field.name} on record {record_name} because it doesn't match the field type."
+                )
+            raw_value = datetime.utcnow()
+        else:
+            raw_value = default_value
+        try:
+            return self._coerce_record_value(record_name, field, raw_value, step_name)
+        except Namel3ssError:
+            raise Namel3ssError(
+                f"I can't use this default for field {field.name} on record {record_name} because it doesn't match the field type."
+            )
 
     def _coerce_record_value(self, record_name: str, field, value: Any, step_name: str) -> Any:
         if value is None:
@@ -2628,8 +3003,10 @@ class FlowEngine:
                 return text
             if ftype == "datetime":
                 if isinstance(value, datetime):
-                    return value.isoformat()
-                return str(value)
+                    return value
+                if isinstance(value, str):
+                    return datetime.fromisoformat(value)
+                raise ValueError("expected datetime or ISO-8601 string")
         except Exception as exc:
             raise Namel3ssError(
                 f"Field '{field.name}' on record '{record_name}' could not be coerced to type '{ftype}': {exc}"
@@ -2653,44 +3030,46 @@ class FlowEngine:
                 )
             coerced = self._coerce_record_value(record.name, field, raw, step_name)
             if coerced is None and enforce_required and (field.required or field.primary_key):
-                raise Namel3ssError(
-                    f"N3L-1502: Field '{key}' cannot be null when creating record '{record.name}'."
-                )
+                raise Namel3ssError(f"N3L-1502: I can't create a {record.name} record because required field {key} is missing.")
             normalized[key] = coerced
         if include_defaults:
             for key, field in record.fields.items():
                 if key in normalized:
                     continue
                 if field.default is not None:
-                    normalized[key] = self._resolve_record_default_value(field)
+                    normalized[key] = self._resolve_record_default_value(record.name, field, step_name)
                 elif enforce_required and field.required:
-                    raise Namel3ssError(
-                        f"N3L-1502: Step '{step_name}' must provide field '{key}' for record '{record.name}'."
-                    )
+                    raise Namel3ssError(f"N3L-1502: I can't create a {record.name} record because required field {key} is missing.")
+        if enforce_required:
+            for key, field in record.fields.items():
+                if (field.required or field.primary_key) and normalized.get(key) is None:
+                    raise Namel3ssError(f"N3L-1502: I can't create a {record.name} record because required field {key} is missing.")
         return normalized
 
-    def _evaluate_limit_expr(
+    def _evaluate_pagination_expr(
         self,
         expr: ast_nodes.Expr | None,
         evaluator: ExpressionEvaluator,
         step_name: str,
+        label: str,
+        default: int | None = None,
     ) -> int | None:
         if expr is None:
-            return None
+            return default
         try:
             value = evaluator.evaluate(expr) if isinstance(expr, ast_nodes.Expr) else expr
         except Exception as exc:
-            raise Namel3ssError(f"Failed to evaluate 'limit' for step '{step_name}': {exc}") from exc
+            raise Namel3ssError(f"I expected a non-negative number for {label}, but couldn't evaluate it: {exc}") from exc
         if value is None:
-            return None
+            return default
         if not isinstance(value, (int, float)):
             raise Namel3ssError(
-                f"'limit' must evaluate to a number in step '{step_name}'."
+                f"I expected a non-negative number for {label}, but got {value} instead."
             )
-        limit = int(value)
-        if limit < 0:
-            return 0
-        return limit
+        number = int(value)
+        if number < 0:
+            raise Namel3ssError(f"I expected a non-negative number for {label}, but got {value} instead.")
+        return number
 
     def _execute_record_step(
         self,
@@ -2720,35 +3099,62 @@ class FlowEngine:
             )
             frames.insert(frame_name, normalized)
             return dict(normalized)
-        if kind == "db_get":
+        if kind in {"find", "db_get"}:
+            query_obj = params.get("query")
+            alias = record.name.lower()
+            where_values = None
+            order_values = None
+            limit_expr = None
+            offset_expr = None
+            filters_tree = None
+            if isinstance(query_obj, IRRecordQuery):
+                alias = query_obj.alias or alias
+                where_values = query_obj.where_condition
+                order_values = query_obj.order_by
+                limit_expr = query_obj.limit_expr
+                offset_expr = query_obj.offset_expr
+            else:
+                where_values = params.get("where")
+                order_values = params.get("order_by")
+                limit_expr = params.get("limit")
+                offset_expr = params.get("offset")
             by_id_values = self._evaluate_expr_dict(params.get("by_id"), evaluator, step_name, "by id")
-            where_values = self._evaluate_expr_dict(params.get("where"), evaluator, step_name, "where")
-            filters: dict[str, Any] = {}
+            filters: list[dict[str, Any]] = []
             used_primary = False
             if record.primary_key and record.primary_key in by_id_values:
                 pk_field = record.fields.get(record.primary_key)
                 if pk_field:
-                    filters[record.primary_key] = self._coerce_record_value(
-                        record.name,
-                        pk_field,
-                        by_id_values[record.primary_key],
-                        step_name,
+                    filters.append(
+                        {
+                            "field": record.primary_key,
+                            "op": "eq",
+                            "value": self._coerce_record_value(
+                                record.name,
+                                pk_field,
+                                by_id_values[record.primary_key],
+                                step_name,
+                            ),
+                        }
                     )
                     used_primary = True
             elif where_values:
-                for key, raw in where_values.items():
-                    field = record.fields.get(key)
-                    if not field:
-                        raise Namel3ssError(
-                            f"Record '{record.name}' has no field named '{key}' (step '{step_name}')."
-                        )
-                    filters[key] = self._coerce_record_value(record.name, field, raw, step_name)
-            rows = frames.query(frame_name, filters)
+                filters_tree = self._evaluate_where_conditions(where_values, evaluator, step_name, record)
+            if used_primary:
+                rows = list(frames.query(frame_name, filters))
+            else:
+                rows = list(frames.query(frame_name, None))
+                if filters_tree:
+                    rows = [row for row in rows if self._condition_tree_matches(filters_tree, row, alias or record.name)]
+            if order_values:
+                rows = self._sort_rows(rows, order_values, alias or record.name)
+            offset_value = self._evaluate_pagination_expr(offset_expr, evaluator, step_name, f"offset {alias} by", default=0)
+            if offset_value:
+                rows = rows[offset_value:]
+            limit_value = self._evaluate_pagination_expr(limit_expr, evaluator, step_name, f"limit {alias} to")
+            if limit_value is not None:
+                rows = rows[:limit_value]
             if used_primary:
                 return dict(rows[0]) if rows else None
-            limit_value = self._evaluate_limit_expr(params.get("limit"), evaluator, step_name)
-            if limit_value is not None:
-                rows = rows[: limit_value or 0]
             return [dict(row) for row in rows]
         if kind == "db_update":
             by_id_values = self._evaluate_expr_dict(params.get("by_id"), evaluator, step_name, "by id")
@@ -2757,14 +3163,18 @@ class FlowEngine:
                     f"Step '{step_name}' must include primary key '{record.primary_key}' inside 'by id'."
                 )
             pk_field = record.fields.get(record.primary_key)
-            filters = {
-                record.primary_key: self._coerce_record_value(
-                    record.name,
-                    pk_field,
-                    by_id_values[record.primary_key],
-                    step_name,
-                )
-            }
+            filters = [
+                {
+                    "field": record.primary_key,
+                    "op": "eq",
+                    "value": self._coerce_record_value(
+                        record.name,
+                        pk_field,
+                        by_id_values[record.primary_key],
+                        step_name,
+                    ),
+                }
+            ]
             set_values = self._evaluate_expr_dict(params.get("set"), evaluator, step_name, "set")
             updates = self._prepare_record_values(
                 record,
@@ -2786,14 +3196,18 @@ class FlowEngine:
                     f"Step '{step_name}' must include primary key '{record.primary_key}' inside 'by id'."
                 )
             pk_field = record.fields.get(record.primary_key)
-            filters = {
-                record.primary_key: self._coerce_record_value(
-                    record.name,
-                    pk_field,
-                    by_id_values[record.primary_key],
-                    step_name,
-                )
-            }
+            filters = [
+                {
+                    "field": record.primary_key,
+                    "op": "eq",
+                    "value": self._coerce_record_value(
+                        record.name,
+                        pk_field,
+                        by_id_values[record.primary_key],
+                        step_name,
+                    ),
+                }
+            ]
             deleted = frames.delete(frame_name, filters)
             return {"ok": deleted > 0, "deleted": deleted}
         raise Namel3ssError(f"Unsupported record operation '{kind}'.")
@@ -2997,6 +3411,32 @@ class FlowEngine:
 
     def _pattern_to_repr(self, pattern: ast_nodes.PatternExpr) -> dict:
         return {pair.key: self._expr_to_str(pair.value) for pair in pattern.pairs}
+
+    def _require_list_iterable(self, value: Any, *, context: str, detail: str | None = None) -> list[Any]:
+        if value is None:
+            return []
+        if isinstance(value, (list, tuple)):
+            return list(value)
+        message = f"{context} expects a list, but I got {self._format_condition_value(value)} instead."
+        if detail:
+            message = f"{message}\n{detail}"
+        raise Namel3ssError(message)
+
+    def _coerce_non_negative_int(self, value: Any, *, context: str, unit: str) -> int:
+        message = f"{context} expects a non-negative number of {unit}, but I got {self._format_condition_value(value)} instead."
+        if isinstance(value, bool) or not isinstance(value, numbers.Real):
+            raise Namel3ssError(message)
+        if value < 0:
+            raise Namel3ssError(message)
+        if isinstance(value, float) and not value.is_integer():
+            raise Namel3ssError(message)
+        return int(value)
+
+    async def _sleep_backoff(self, attempt: int) -> None:
+        base = getattr(self, "retry_config", None).backoff_base if getattr(self, "retry_config", None) else 0
+        delay = base * (2**attempt)
+        if delay > 0:
+            await asyncio.sleep(delay)
 
     def _format_condition_value(self, value: Any) -> str:
         try:

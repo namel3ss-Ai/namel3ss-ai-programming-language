@@ -33,7 +33,8 @@ from .templates.manager import list_templates, scaffold_project
 from .examples.manager import list_examples, resolve_example_path
 from .version import __version__
 from .memory.inspection import inspect_memory_state
-from .migration.naming import migrate_path, migrate_file
+from .migration import naming as naming_migration
+from .migration import data_pipelines as data_migration
 
 
 def build_cli_parser() -> argparse.ArgumentParser:
@@ -104,6 +105,13 @@ def build_cli_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Conservatively rename simple camelCase locals to snake_case (or emit suggestions).",
     )
+    migrate_data_cmd = migrate_sub.add_parser(
+        "data-pipelines",
+        help="Rewrite legacy data/collection syntax (all ... from ..., map(...)) into collection pipelines where possible.",
+    )
+    migrate_data_cmd.add_argument("paths", nargs="*", type=Path, help="Files or directories containing .ai sources (defaults to current directory)")
+    migrate_data_cmd.add_argument("--write", action="store_true", help="Apply changes in place")
+    migrate_data_cmd.add_argument("--no-backup", action="store_true", help="Skip writing .bak backups when --write is used")
     page_ui_cmd = register("page-ui", help="Render UI for a page")
     page_ui_cmd.add_argument("--file", type=Path, required=True, help="Path to .ai file")
     page_ui_cmd.add_argument("--page", required=True, help="Page name to render")
@@ -445,7 +453,7 @@ def main(argv: list[str] | None = None) -> None:
             results = []
             if target_path.is_file() and target_path.suffix == ".ai":
                 results.append(
-                    migrate_file(
+                    naming_migration.migrate_file(
                         target_path,
                         write=args.write,
                         backup=not args.no_backup,
@@ -453,7 +461,7 @@ def main(argv: list[str] | None = None) -> None:
                     )
                 )
             else:
-                results = migrate_path(
+                results = naming_migration.migrate_path(
                     target_path,
                     write=args.write,
                     backup=not args.no_backup,
@@ -477,6 +485,30 @@ def main(argv: list[str] | None = None) -> None:
                         if r.suggested_names:
                             for old, new in r.suggested_names:
                                 print(f"  Suggest: rename {old} -> {new}")
+            return
+        if args.migrate_command == "data-pipelines":
+            targets = args.paths or [Path(".")]
+            results = []
+            for target in targets:
+                if not target.exists():
+                    print(f"Path '{target}' does not exist.", file=sys.stderr)
+                    continue
+                if target.is_file() and target.suffix == ".ai":
+                    results.append(
+                        data_migration.migrate_file(target, write=args.write, backup=not args.no_backup)
+                    )
+                else:
+                    results.extend(data_migration.migrate_path(target, write=args.write, backup=not args.no_backup))
+            rewrites = sum(r.rewrites for r in results)
+            if args.write:
+                print(f"Migrated {rewrites} legacy data block(s) across {len(results)} file(s).")
+            else:
+                print("Dry run. Re-run with --write to apply changes.")
+            for r in results:
+                for detail in r.details:
+                    print(f"- {r.path}: {detail}")
+                for warning in r.warnings:
+                    print(f"- {r.path}: {warning}")
             return
         print("Unknown migrate subcommand", file=sys.stderr)
         return

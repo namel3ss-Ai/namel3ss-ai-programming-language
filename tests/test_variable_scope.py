@@ -38,7 +38,7 @@ def test_valid_scope_with_state_user_and_steps():
         steps=[
             ast_nodes.FlowStepDecl(
                 name="load",
-                kind="db_get",
+                kind="find",
                 target="User",
                 params={"by_id": {"id": ast_nodes.VarRef(name="state.user_id", root="state", path=["user_id"], kind=ast_nodes.VarRefKind.UNKNOWN)}},
             ),
@@ -92,7 +92,7 @@ def test_step_before_definition():
         steps=[
             ast_nodes.FlowStepDecl(
                 name="second",
-                kind="db_get",
+                kind="find",
                 target="User",
                 params={
                     "by_id": {
@@ -107,7 +107,7 @@ def test_step_before_definition():
             ),
             ast_nodes.FlowStepDecl(
                 name="first",
-                kind="db_get",
+                kind="find",
                 target="User",
                 params={"by_id": {"id": ast_nodes.Literal(value="1")}},
             ),
@@ -159,7 +159,7 @@ def test_loop_variable_leak():
         steps=[
             ast_nodes.FlowStepDecl(
                 name="inner",
-                kind="db_get",
+                kind="find",
                 target="User",
                 params={"by_id": {"id": ast_nodes.VarRef(name="item", root="item", path=[], kind=ast_nodes.VarRefKind.UNKNOWN)}},
             )
@@ -171,7 +171,7 @@ def test_loop_variable_leak():
             loop,
             ast_nodes.FlowStepDecl(
                 name="after",
-                kind="db_get",
+                kind="find",
                 target="User",
                 params={"by_id": {"id": ast_nodes.VarRef(name="item", root="item", path=[], kind=ast_nodes.VarRefKind.UNKNOWN)}},
             ),

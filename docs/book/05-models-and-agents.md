@@ -1,7 +1,7 @@
 # Chapter 5 — Flows: Logic, Conditions, and Error Handling
 
 - **Syntax:** `flow is "name":` with ordered `step` blocks.
-- **Kinds:** `ai`, `set`, `db_create/get/update/delete`, `vector_index_frame`, `vector_query`, `tool`, `auth_register/login/logout`, and control constructs.
+- **Kinds:** `ai`, `set`, `db_create/update/delete`, `vector_index_frame`, `vector_query`, `tool`, `auth_register/login/logout`, and control constructs. Use `find <alias> where:` for record queries.
 - **Conditions:** `when <expr>` on a step.
 - **Loops:** `for each item in <expr>:` containing nested steps.
 - **Errors:** `on error:` with fallback steps.
@@ -10,15 +10,13 @@ Example:
 ```ai
 flow is "process_ticket":
   step is "load_user":
-    kind is "db_get"
-    record is "User"
-    where:
-      id: user.id
+    find users where:
+      id is user.id
 
   step is "maybe_assign":
     kind is "set"
     set:
-      state.assignee be "support" if step.load_user.output.tier == "premium" else "triage"
+      state.assignee be "support" if step.load_user.output[0].tier == "premium" else "triage"
 
   step is "notify":
     kind is "tool"

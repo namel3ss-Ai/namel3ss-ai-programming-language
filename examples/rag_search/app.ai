@@ -11,7 +11,7 @@ page is "home" at "/":
 model "default":
   provider "dummy"
 
-ai is \"rewrite":
+ai is "rewrite":
   model "default"
   input from "user_input"
 

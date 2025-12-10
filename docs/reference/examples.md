@@ -32,6 +32,15 @@ You can also load the new flagship examples:
 - `support_bot` — Support assistant using agents, flows, a logging tool step, and conversation memory.
   - CLI: `n3 example run support_bot`
   - Studio source: `http://localhost:8000/studio?example=support_bot`
+- `control_flow_demo` — Control Flow v1 walkthrough showing guard, match, loops, retry, and on error together.
+  - CLI: `n3 example run control_flow_demo`
+  - Studio source: `http://localhost:8000/studio?example=control_flow_demo`
+- `data_collections_demo` — Pipelines, grouping with aggregates, safe record access, and list helpers in one flow.
+  - CLI: `n3 example run data_collections_demo`
+  - Studio source: `http://localhost:8000/studio?example=data_collections_demo`
+- `records_queries_demo` — English record queries with `find`, ordering, and pagination over sample data.
+  - CLI: `n3 example run records_queries_demo`
+  - Studio source: `http://localhost:8000/studio?example=records_queries_demo`
 
 ## Inspecting traces in Studio
 If you have a trace id (from the CLI output), open:

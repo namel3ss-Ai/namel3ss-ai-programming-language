@@ -5,9 +5,23 @@ This document describes the Namel3ss V3 language as it exists today. It mirrors 
 Naming & variables follow **Naming Standard v1** (`docs/language/naming_v1.md`). The English-style surface is now frozen for the 1.0 line: headers use `is`, assignments use `be`, and legacy symbolic forms have been removed. See the walkthrough in `docs/book/variables_and_scope.md` and the guidance in `docs/language/style_guide.md` and `docs/language/lint_rules.md`.
 - For migrating legacy sources, use `n3 migrate naming-standard` (see `docs/language/migrating_to_english_syntax.md`).
 
+## Data & Collections
+- Core shapes: lists, records, frames (tabular rows), and collection pipelines attached to `let` bindings.
+- Pipelines support: `keep/drop rows where ...`, `group by ...: let ...`, `sort rows/groups by ... [descending]`, `take/skip first N`.
+- Aggregates: `sum/mean/minimum/maximum/count of list` (numeric lists for all except `count`).
+- Records: destructuring in `let`/loops, safe helpers `get record.field otherwise ...`, `has key "field" on record`, strict field access with rich diagnostics.
+- List helpers: `append`, `remove`, `insert` return new lists (no mutation).
+- Legacy `all ... from ...` / `map(...)` syntax is rejected; use pipelines. See `docs/language/data_collections.md` and `docs/book/data_and_collections.md`.
+
 ## Control Flow
 
 Control structures are English-first: `if` / `otherwise if` / `else`, `match` / `when` / `otherwise`, loops (`repeat for each`, `repeat up to N times`, flow-level `for each`), `retry up to N times [with backoff]`, `on error`, and core step kinds (`script`, `ai`, `agent`, `tool`). See `docs/language/control_flow.md` for the Control Flow v1 spec, examples, and out-of-scope items.
+
+Step kinds:
+- `script` is the default when `kind` is omitted on a step with script statements; it runs DSL logic (let/set, if/match, loops, retry, tool/ai/agent calls you place inside).
+- `ai`, `agent`, and `tool` require a `target` and surface English errors if the target is missing or not registered.
+- There is no `kind is "set"`; unsupported kinds yield a clear error listing the supported built-ins.
+- `guard CONDITION:` is available as a precondition helper; it runs its body only when the condition is false and shares the same boolean checks as `if`.
 
 ## Top-Level Declarations
 
@@ -119,7 +133,7 @@ Each block kind has required and optional fields aligned with the current IR:
 - Variables: `let <name> be <expression>` declares a variable in the current flow/agent scope. Redeclaring in the same scope is an error.
 - Constants: `let constant <name> be <expression>` declares an immutable local.
 - Mutation: `set state.<name> be <expression>` updates flow/page state. Assigning to an undefined local with `set` is an error.
-- Frames: frame values behave like lists of record rows and can be iterated (`repeat for each row in sales_data`), filtered/mapped (`all row from sales_data where ...`), and aggregated (`sum of all row.revenue from sales_data`).
+- Frames: frame values behave like lists of record rows in collection pipelines (`keep/drop rows`, `group by`, `sort`, `take/skip`) and loops (`repeat for each row in sales_data`).
 - Macros: `use macro "name"` expands AI-generated code at load-time; macro definitions capture description/sample/parameters.
 - Built-in AI macro `crud_ui` generates CRUD flows, forms, and UI pages for an entity:
   - `use macro "crud_ui" with: entity "Product" fields ["name", "price"]`
@@ -140,9 +154,9 @@ Each block kind has required and optional fields aligned with the current IR:
   - Functional: `min(list)`, `max(list)`, `mean(list)`, `round(value, precision)`, `abs(expr)`
   - Diagnostics: `N3-4100` aggregates require non-empty numeric list, `N3-4101` invalid precision for round, `N3-4102` invalid numeric type.
 - Boolean helpers:
-  - English: `any var in list where predicate`, `all var in list where predicate`
-  - Functional: `any(list, where: predicate)`, `all(list, where: predicate)`
-  - Diagnostics: `N3-4200` any/all requires list, `N3-4201` predicate must be boolean.
+  - English: `any var in list where predicate`
+  - Functional: `any(list, where: predicate)`
+  - Diagnostics: `N3-4200` any requires list, `N3-4201` predicate must be boolean.
 - Time/random helpers: `current timestamp`, `current date`, `random uuid` and their functional forms. Passing arguments raises `N3-4300`.
 
 ## AI Conversation Memory & Stores
@@ -287,12 +301,16 @@ Studio's Memory Inspector shows these policies (scope, retention, PII handling, 
   - `retry up to <expr> times:` with optional `with backoff`.
   - Count must be numeric and at least 1 (`N3-4500` / `N3-4501`).
 - Collections:
-- List literals `[a, b, c]`, indexing `xs[0]`, slicing `xs[1:3]`, prefix/suffix slices `xs[:2]` / `xs[2:]`. Negative indices are supported (Python-style): `xs[-1]`, `xs[-3:-1]`, `xs[:-2]`. Out-of-bounds indexing raises `N3-3205`.
-  - List built-ins available in English (`length of xs`, `first of xs`, `last of xs`, `sorted form of xs`, `reverse of xs`, `unique elements of xs`, `sum of xs`) and functional form (`length(xs)`, etc.). Non-list operands raise `N3-3200`; sorting incomparable elements raises `N3-3204`; `sum` requires numeric lists (`N3-3203`).
-  - Filtering and mapping: `all xs where item > 1`, `all user.email from users`, plus `filter(xs, where: ...)` and `map(xs, to: ...)`. Predicates must be boolean (`N3-3201`); `map` requires list sources.
+  - List literals `[a, b, c]`, indexing `xs[0]`, slicing `xs[1:3]`, prefix/suffix slices `xs[:2]` / `xs[2:]`. Negative indices are supported (Python-style): `xs[-1]`, `xs[-3:-1]`, `xs[:-2]`. Out-of-bounds indexing raises `N3-3205`.
+  - List helpers: `append xs with v`, `remove v from xs` (first occurrence), `insert v at i into xs` (0-based). Non-list operands raise `N3-3200`; invalid indices raise `N3-3206`.
+  - Aggregates: `sum/mean/minimum/maximum/count of xs`; numeric lists required except for `count`; empty lists error for mean/min/max; incomparable values error for min/max.
+  - Collection pipelines on lists or frames: `let result be source: keep/drop rows where ...; group by ...: let ...; sort rows/groups by ... [descending]; take/skip first N`. Conditions must be boolean (`N3-3201`); sorting incomparable elements raises `N3-3204`.
 - Records:
   - Literal dictionaries `{ key: expr, ... }` with identifier or string keys.
-  - Field access via `record.field`; missing fields raise `N3-3300`, invalid keys raise `N3-3301`.
+  - Field access via `record.field`; missing fields raise `N3-3300` with available-key suggestions; invalid keys raise `N3-3301`.
+  - Destructuring in lets/loops: `let { name, email } be user`, `repeat for each { name, total } in rows:`.
+  - Safe helpers: `get user.email otherwise "unknown"`, `has key "email" on user`.
+  - Record queries use English `find <alias> where:` with operators `is`, `is not`, `is greater than`, `is less than`, `is at least`, `is at most`, `is one of`, `is null`, `is not null`. Sorting/pagination use `order <alias> by field [ascending|descending]`, `limit <alias> to N`, `offset <alias> by N`. Missing sort fields and invalid pagination values raise English diagnostics.
 - User input:
   - Single prompt: `ask user for "Label" as name` with optional validation block (`type is text|number|boolean`, `must be at least <expr>`, `must be at most <expr>`). Missing or invalid validation rules raise `N3-5000` / `N3-5001`.
   - Forms: `form "Label" as signup:` followed by `field "Label" as name` lines, each with optional validation. Duplicate field identifiers raise `N3-5011`; invalid rules raise `N3-5012`.

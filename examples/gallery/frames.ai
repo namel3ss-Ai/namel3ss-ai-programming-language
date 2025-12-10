@@ -5,8 +5,13 @@ frame is "sales_data":
 
 flow is "be_revenue":
   step is "filter":
-    let be_sales be all row from sales_data where row.country is "BE"
-    let total be sum of all row.revenue from be_sales
+    let be_sales be sales_data:
+      keep rows where row.country is "BE"
+
+    let total be 0
+    repeat for each row in be_sales:
+      set total be total + row.revenue
+
     log info "Total BE revenue" with { total: total }
 
     repeat for each row in be_sales:

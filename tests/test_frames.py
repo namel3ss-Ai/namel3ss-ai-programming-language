@@ -60,37 +60,33 @@ def test_frame_loading_and_aggregate_sum():
     assert len(rows) == 2
     env = VariableEnvironment({"sales_data": rows})
     resolver = _resolver_from_env(env)
-    predicate = ast_nodes.BinaryOp(
-        left=ast_nodes.RecordFieldAccess(target=ast_nodes.Identifier(name="row"), field="country"),
-        op="==",
-        right=ast_nodes.Literal(value="BE"),
+    pipeline_src = (
+        'flow is "f":\n'
+        '  step is "s":\n'
+        '    let filtered be sales_data:\n'
+        '      keep rows where row.country is "BE"\n'
     )
-    filter_expr = ast_nodes.FilterExpression(
-        source=ast_nodes.Identifier(name="sales_data"),
-        var_name="row",
-        predicate=predicate,
-    )
-    map_expr = ast_nodes.MapExpression(
-        source=filter_expr,
-        var_name="row",
-        mapper=ast_nodes.RecordFieldAccess(target=ast_nodes.Identifier(name="row"), field="revenue"),
-    )
-    sum_call = ast_nodes.ListBuiltinCall(name="sum", expr=map_expr)
+    pipeline_module = parse_source(pipeline_src)
+    pipeline_ir = ast_to_ir(pipeline_module)
+    pipeline_expr = pipeline_ir.flows["f"].steps[0].statements[0].expr
     evaluator = ExpressionEvaluator(env, resolver=resolver)
-    total = evaluator.evaluate(sum_call)
-    assert total == 150
+    filtered_rows = evaluator.evaluate(pipeline_expr)
+    assert len(filtered_rows) == 2
+    revenues = [r["revenue"] for r in filtered_rows]
+    sum_expr = ast_nodes.ListBuiltinCall(name="sum", expr=ast_nodes.Literal(value=revenues))
+    assert evaluator.evaluate(sum_expr) == 150
 
 
 def test_all_expression_with_frame_where():
     src = (
         'flow is "f":\n'
         '  step is "s":\n'
-        '    let filtered be all row from sales_data where row.country is "BE"\n'
+        '    let filtered be sales_data:\n'
+        '      keep rows where row.country is "BE"\n'
     )
     module = parse_source(src)
     flow = next(d for d in module.declarations if isinstance(d, ast_nodes.FlowDecl))
     let_stmt = flow.steps[0].statements[0]
-    assert isinstance(let_stmt.expr, (ast_nodes.FilterExpression, ast_nodes.MapExpression))
     program = ast_to_ir(parse_source(
         'frame is "sales_data":\n'
         f'  from file "{FIXTURE_PATH}"\n'

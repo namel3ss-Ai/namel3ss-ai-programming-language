@@ -24,7 +24,11 @@ nav:
       - Errors: docs/reference/errors.md
       - English Conditions: docs/language/conditions.md
       - English Syntax: docs/language/english_syntax.md
+      - Data & Collections Reference: docs/language/data_collections.md
+      - Control Flow Walkthrough: docs/book/control_flow.md
       - Variables & Scope: docs/book/variables_and_scope.md
+      - Data & Collections Walkthrough: docs/book/data_and_collections.md
+      - Records & Queries Walkthrough: docs/book/records_and_queries.md
       - Migrating to English Syntax: docs/language/migrating_to_english_syntax.md
       - Examples: docs/reference/examples.md
   - Concepts:

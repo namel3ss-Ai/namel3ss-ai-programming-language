@@ -2,5 +2,8 @@
   "examples/hello_world/hello_world.ai",
   "examples/expressions.ai",
   "examples/getting_started/app.ai",
-  "examples/support_bot/support_bot.ai"
+  "examples/support_bot/support_bot.ai",
+  "examples/control_flow_demo/control_flow_demo.ai",
+  "examples/data_collections_demo/data_collections_demo.ai",
+  "examples/records_queries_demo/records_queries_demo.ai"
 ]

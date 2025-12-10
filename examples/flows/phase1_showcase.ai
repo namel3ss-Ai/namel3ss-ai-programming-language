@@ -1,4 +1,4 @@
-ai is \"support_bot":
+ai is "support_bot":
   model "gpt-4.1-mini"
   system "You are a helpful support assistant."
 

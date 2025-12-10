@@ -246,6 +246,70 @@ class RecordDecl:
 
 
 @dataclass
+class RecordWhereCondition:
+    field_name: str
+    op: str
+    value_expr: "Expr | None" = None
+    span: Optional[Span] = None
+
+
+class BooleanCondition:
+    """Base class for boolean WHERE conditions."""
+
+
+@dataclass
+class ConditionLeaf(BooleanCondition):
+    field_name: str
+    op: str
+    value_expr: "Expr | None" = None
+    span: Optional[Span] = None
+
+
+@dataclass
+class ConditionAnd(BooleanCondition):
+    left: BooleanCondition
+    right: BooleanCondition
+    span: Optional[Span] = None
+
+
+@dataclass
+class ConditionOr(BooleanCondition):
+    left: BooleanCondition
+    right: BooleanCondition
+    span: Optional[Span] = None
+
+
+@dataclass
+class ConditionAllGroup(BooleanCondition):
+    children: list[BooleanCondition] = field(default_factory=list)
+    span: Optional[Span] = None
+
+
+@dataclass
+class ConditionAnyGroup(BooleanCondition):
+    children: list[BooleanCondition] = field(default_factory=list)
+    span: Optional[Span] = None
+
+
+@dataclass
+class RecordOrderBy:
+    field_name: str
+    direction: str  # "asc" or "desc"
+    span: Optional[Span] = None
+
+
+@dataclass
+class RecordQuery:
+    alias: str
+    record_name: str | None = None
+    where_condition: BooleanCondition | None = None
+    order_by: list[RecordOrderBy] | None = None
+    limit_expr: "Expr | None" = None
+    offset_expr: "Expr | None" = None
+    span: Optional[Span] = None
+
+
+@dataclass
 class AuthDecl:
     backend: str | None = None
     user_record: str | None = None
@@ -384,7 +448,7 @@ class FlowStepDecl:
     kind: str
     target: str
     message: Optional[str] = None
-    params: Dict[str, Expr] = field(default_factory=dict)
+    params: Dict[str, Any] = field(default_factory=dict)
     statements: List["Statement | FlowAction"] = field(default_factory=list)
     conditional_branches: Optional[list["ConditionalBranch"]] = None
     when_expr: Optional[Expr] = None
@@ -566,6 +630,19 @@ class AllExpression(Expr):
 
 
 @dataclass
+class GetRecordFieldWithDefault(Expr):
+    record: Expr | None = None
+    field: str | None = None
+    default: Expr | None = None
+
+
+@dataclass
+class HasKeyOnRecord(Expr):
+    record: Expr | None = None
+    key: str | None = None
+
+
+@dataclass
 class Statement:
     span: Optional[Span] = None
 
@@ -600,6 +677,7 @@ class SetStatement(Statement):
 @dataclass
 class ForEachLoop(Statement):
     var_name: str = "item"
+    pattern: DestructuringPattern | None = None
     iterable: Expr | None = None
     body: List["Statement | FlowAction"] = field(default_factory=list)
 
@@ -608,6 +686,56 @@ class ForEachLoop(Statement):
 class RepeatUpToLoop(Statement):
     count: Expr | None = None
     body: List["Statement | FlowAction"] = field(default_factory=list)
+
+
+@dataclass
+class GuardStatement(Statement):
+    condition: Expr | None = None
+    body: List["Statement | FlowAction"] = field(default_factory=list)
+
+
+@dataclass
+class CollectionPipeline(Expr):
+    source: Expr | None = None
+    steps: List["CollectionPipelineStep"] = field(default_factory=list)
+
+
+@dataclass
+class CollectionPipelineStep:
+    span: Optional[Span] = None
+
+
+@dataclass
+class CollectionKeepRowsStep(CollectionPipelineStep):
+    condition: Expr | None = None
+
+
+@dataclass
+class CollectionDropRowsStep(CollectionPipelineStep):
+    condition: Expr | None = None
+
+
+@dataclass
+class CollectionGroupByStep(CollectionPipelineStep):
+    key: Expr | None = None
+    body: List["Statement | FlowAction"] = field(default_factory=list)
+
+
+@dataclass
+class CollectionSortStep(CollectionPipelineStep):
+    kind: Literal["rows", "groups"] = "rows"
+    key: Expr | None = None
+    direction: Literal["asc", "desc"] = "asc"
+
+
+@dataclass
+class CollectionTakeStep(CollectionPipelineStep):
+    count: Expr | None = None
+
+
+@dataclass
+class CollectionSkipStep(CollectionPipelineStep):
+    count: Expr | None = None
 
 
 @dataclass
@@ -709,7 +837,7 @@ class FlowAction:
     kind: str
     target: str
     message: Optional[str] = None
-    args: Dict[str, Expr] = field(default_factory=dict)
+    args: Dict[str, Any] = field(default_factory=dict)
     span: Optional[Span] = None
 
 

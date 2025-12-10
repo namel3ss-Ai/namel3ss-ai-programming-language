@@ -50,21 +50,15 @@ flow is "create_document":
     value is step.create.output.id
 ```
 
-Fetching by primary key or filters:
+Querying with English filters, ordering, and pagination:
 
 ```
-step is "load":
-  kind is "db_get"
-  record is "Document"
-  by id:
-    id: state.document_id
-
 step is "list":
-  kind is "db_get"
-  record is "Document"
-  where:
-    project_id: state.project_id
-  limit is 20
+  find documents where:
+    project_id is state.project_id
+
+  order documents by created_at descending
+  limit documents to 20
 ```
 
 Updating and deleting:
@@ -85,4 +79,4 @@ step is "remove":
     id: state.document_id
 ```
 
-`db_create`/`db_update` coerce and validate fields against the record schema, fill defaults (including `now`), and output the resulting record. `db_get` returns a record or a list depending on whether `by id` or `where` is used. `db_delete` returns an `{ "ok": bool, "deleted": count }` payload.
+`db_create`/`db_update` coerce and validate fields against the record schema, fill defaults (including `now`), and output the resulting record. Queries go through `find <alias> where:` so WHERE conditions, ordering, and pagination share the same pipeline. `db_delete` returns an `{ "ok": bool, "deleted": count }` payload.

@@ -5,6 +5,7 @@ Agent execution engine with reflection, planning, and retries.
 from __future__ import annotations
 
 import time
+import numbers
 import urllib.error
 from typing import Any, Optional
 
@@ -39,7 +40,12 @@ from ..ir import (
 from ..observability.metrics import default_metrics
 from ..observability.tracing import default_tracer
 from ..runtime.context import ExecutionContext, execute_ai_call_with_registry
-from ..runtime.expressions import EvaluationError, ExpressionEvaluator, VariableEnvironment
+from ..runtime.expressions import (
+    EvaluationError,
+    ExpressionEvaluator,
+    VariableEnvironment,
+    build_missing_field_error,
+)
 from ..runtime.frames import FrameRegistry
 from ..runtime.retries import get_default_retry_config, run_with_retries_and_timeout
 from ..runtime.circuit_breaker import default_circuit_breaker
@@ -75,15 +81,22 @@ class AgentRunner:
         self._planner = AgentPlanner(router=self.router, agent_config=self.config)
         self._evaluator = AgentEvaluator(router=self.router)
         self.frame_registry = FrameRegistry(program.frames if program else {})
+        self.retry_config = get_default_retry_config()
 
     def _apply_destructuring(self, pattern, value, env, context, *, is_constant: bool = False) -> None:
         if pattern.kind == "record":
             if not isinstance(value, dict):
-                raise Namel3ssError("Cannot destructure record; expected an object with fields.")
+                raise Namel3ssError("N3-3300: I can only destructure fields from a record value.")
             for field in pattern.fields:
                 target_name = field.alias or field.name
                 if field.name not in value:
-                    raise Namel3ssError(f"Cannot destructure field {field.name}; this value has no {field.name} field.")
+                    raise Namel3ssError(
+                        build_missing_field_error(
+                            field.name,
+                            value,
+                            context=f"I can't destructure field {field.name} from this record.",
+                        )
+                    )
                 env.declare(target_name, value.get(field.name), is_constant=is_constant)
                 context.metadata[target_name] = value.get(field.name)
             return
@@ -485,7 +498,7 @@ class AgentRunner:
         elif parts[0] in getattr(context, "variables", {}):
             current = context.variables.get(parts[0])
         elif self.frame_registry and parts[0] in getattr(self.frame_registry, "frames", {}):
-            current = self.frame_registry.get_rows(parts[0])
+            current = self.frame_registry.query(parts[0])
         else:
             return False, None
         for part in parts[1:]:
@@ -562,6 +575,32 @@ class AgentRunner:
         if isinstance(value, dict) and "error" in value:
             return value.get("error")
         return value
+
+    def _require_list_iterable(self, value: Any, *, context: str, detail: str | None = None) -> list[Any]:
+        if value is None:
+            return []
+        if isinstance(value, (list, tuple)):
+            return list(value)
+        message = f"{context} expects a list, but I got {self._format_condition_value(value)} instead."
+        if detail:
+            message = f"{message}\n{detail}"
+        raise Namel3ssError(message)
+
+    def _coerce_non_negative_int(self, value: Any, *, context: str, unit: str) -> int:
+        message = f"{context} expects a non-negative number of {unit}, but I got {self._format_condition_value(value)} instead."
+        if isinstance(value, bool) or not isinstance(value, numbers.Real):
+            raise Namel3ssError(message)
+        if value < 0:
+            raise Namel3ssError(message)
+        if isinstance(value, float) and not value.is_integer():
+            raise Namel3ssError(message)
+        return int(value)
+
+    def _sleep_backoff(self, attempt: int) -> None:
+        base = getattr(self, "retry_config", None).backoff_base if getattr(self, "retry_config", None) else 0
+        delay = base * (2**attempt)
+        if delay > 0:
+            time.sleep(delay)
 
     def _match_branch(self, br: IRMatchBranch, target_val: Any, evaluator: ExpressionEvaluator, context: ExecutionContext) -> bool:
         pattern = br.pattern
@@ -856,60 +895,133 @@ class AgentRunner:
             return context.metadata.get("last_output")
         if isinstance(stmt, IRForEach):
             iterable_val = evaluator.evaluate(stmt.iterable) if stmt.iterable is not None else None
-            if not isinstance(iterable_val, list):
-                raise Namel3ssError("N3-3400: for-each loop requires a list value")
-            had_prev = env.has(stmt.var_name)
-            prev_val = env.resolve(stmt.var_name) if had_prev else None
-            declared_new = not had_prev
-            for idx, item in enumerate(iterable_val):
-                if had_prev or not declared_new:
-                    env.assign(stmt.var_name, item)
-                else:
-                    env.declare(stmt.var_name, item)
-                    declared_new = False
-                context.variables = env.values
-                context.metadata[stmt.var_name] = item
-                for body_stmt in stmt.body:
-                    self._execute_statement(body_stmt, context, allow_return=allow_return)
-            if had_prev:
-                env.assign(stmt.var_name, prev_val)
-                context.metadata[stmt.var_name] = prev_val
+            items = self._require_list_iterable(
+                iterable_val,
+                context="repeat for each",
+                detail="Make sure the expression after in evaluates to a list of items.",
+            )
+            if stmt.pattern:
+                pattern = stmt.pattern
+                target_names = (
+                    [f.alias or f.name for f in pattern.fields] if pattern.kind == "record" else list(pattern.fields)
+                )
+                prev_values = {name: env.resolve(name) for name in target_names if env.has(name)}
+                declared: set[str] = set()
+                for idx, item in enumerate(items):
+                    if pattern.kind == "record":
+                        if not isinstance(item, dict):
+                            raise Namel3ssError("N3-3300: repeat for each requires a list of records for this pattern.")
+                        for field in pattern.fields:
+                            target_name = field.alias or field.name
+                            if field.name not in item:
+                                raise Namel3ssError(
+                                    build_missing_field_error(
+                                        field.name,
+                                        item,
+                                        context=f"I can't destructure field {field.name} from this record.",
+                                    )
+                                )
+                            if env.has(target_name):
+                                env.assign(target_name, item.get(field.name))
+                            else:
+                                env.declare(target_name, item.get(field.name))
+                                declared.add(target_name)
+                            context.metadata[target_name] = item.get(field.name)
+                    elif pattern.kind == "list":
+                        if not isinstance(item, (list, tuple)):
+                            raise Namel3ssError("Cannot destructure list; expected a list/sequence.")
+                        fields = pattern.fields
+                        if len(item) < len(fields):
+                            raise Namel3ssError(
+                                f"Cannot destructure list into [{', '.join(fields)}]; it has only {len(item)} elements."
+                            )
+                        for idx_name, name in enumerate(fields):
+                            value = item[idx_name] if idx_name < len(item) else None
+                            if env.has(name):
+                                env.assign(name, value)
+                            else:
+                                env.declare(name, value)
+                                declared.add(name)
+                            context.metadata[name] = value
+                    context.variables = env.values
+                    for body_stmt in stmt.body:
+                        self._execute_statement(body_stmt, context, allow_return=allow_return)
+                        if context.metadata.get("__awaiting_input__"):
+                            break
+                    if context.metadata.get("__awaiting_input__"):
+                        break
+                for name in target_names:
+                    if name in prev_values:
+                        env.assign(name, prev_values[name])
+                        context.metadata[name] = prev_values[name]
+                    else:
+                        env.remove(name)
+                        context.metadata.pop(name, None)
+                return context.metadata.get("last_output")
             else:
-                env.remove(stmt.var_name)
-                context.metadata.pop(stmt.var_name, None)
-            return context.metadata.get("last_output")
+                had_prev = env.has(stmt.var_name)
+                prev_val = env.resolve(stmt.var_name) if had_prev else None
+                declared_new = False
+                for idx, item in enumerate(items):
+                    if had_prev or declared_new:
+                        env.assign(stmt.var_name, item)
+                    else:
+                        env.declare(stmt.var_name, item)
+                        declared_new = True
+                    context.variables = env.values
+                    context.metadata[stmt.var_name] = item
+                    for body_stmt in stmt.body:
+                        self._execute_statement(body_stmt, context, allow_return=allow_return)
+                        if context.metadata.get("__awaiting_input__"):
+                            break
+                    if context.metadata.get("__awaiting_input__"):
+                        break
+                if had_prev:
+                    env.assign(stmt.var_name, prev_val)
+                    context.metadata[stmt.var_name] = prev_val
+                else:
+                    env.remove(stmt.var_name)
+                    context.metadata.pop(stmt.var_name, None)
+                return context.metadata.get("last_output")
         if isinstance(stmt, IRRepeatUpTo):
             count_val = evaluator.evaluate(stmt.count) if stmt.count is not None else 0
-            try:
-                count_num = int(count_val)
-            except Exception:
-                raise Namel3ssError("N3-3401: repeat-up-to requires numeric count")
-            if count_num < 0:
-                raise Namel3ssError("N3-3402: loop count must be non-negative")
+            count_num = self._coerce_non_negative_int(count_val, context="repeat up to", unit="times")
             for idx in range(count_num):
                 for body_stmt in stmt.body:
                     self._execute_statement(body_stmt, context, allow_return=allow_return)
+                    if context.metadata.get("__awaiting_input__"):
+                        break
+                if context.metadata.get("__awaiting_input__"):
+                    break
             return context.metadata.get("last_output")
         if isinstance(stmt, IRRetry):
             count_val = evaluator.evaluate(stmt.count) if stmt.count is not None else 0
-            try:
-                attempts = int(count_val)
-            except Exception:
-                raise Namel3ssError("N3-4500: retry requires numeric max attempts")
-            if attempts < 1:
-                raise Namel3ssError("N3-4501: retry max attempts must be at least 1")
-            last_output = None
+            attempts = self._coerce_non_negative_int(count_val, context="retry up to", unit="attempts")
+            if attempts == 0:
+                return context.metadata.get("last_output")
+            last_output = context.metadata.get("last_output")
             for attempt in range(attempts):
                 try:
                     for body_stmt in stmt.body:
-                        last_output = self._execute_statement(body_stmt, context)
-                    if not self._is_error_result(last_output):
+                        last_output = self._execute_statement(body_stmt, context, allow_return=allow_return)
+                        if context.metadata.get("__awaiting_input__"):
+                            break
+                    if context.metadata.get("__awaiting_input__"):
                         break
-                    if attempt + 1 == attempts:
-                        break
-                except Namel3ssError:
+                    if self._is_error_result(last_output):
+                        if attempt + 1 == attempts:
+                            raise Namel3ssError(
+                                f"This retry block failed after {attempts} attempts.\nThe last result looked like an error: {self._format_condition_value(last_output)}."
+                            )
+                        if stmt.with_backoff:
+                            self._sleep_backoff(attempt)
+                        continue
+                    break
+                except Exception:
                     if attempt + 1 == attempts:
                         raise
+                    if stmt.with_backoff:
+                        self._sleep_backoff(attempt)
                     continue
             context.metadata["last_output"] = last_output
             return last_output

@@ -2,7 +2,7 @@
 
 - **Record:** Typed schema over a frame.
 - **Fields:** `type`, `primary_key`, `required`, `default`.
-- **CRUD steps:** `db_create`, `db_get`, `db_update`, `db_delete` with `values`, `where`, `by id`, `set`.
+- **CRUD steps:** `db_create`, `db_update`, `db_delete` with `values`, `by id`, `set`; queries use the English `find <alias> where:` surface with ordering and pagination.
 
 Example:
 ```ai
@@ -38,10 +38,9 @@ flow is "create_project":
 
 flow is "list_projects":
   step is "list":
-    kind is "db_get"
-    record is "Project"
-    where:
-      owner_id: user.id
+    find projects where:
+      owner_id is user.id
+    order projects by name ascending
 
 flow is "update_project":
   step is "update":

@@ -1,0 +1,39 @@
+app is "data_collections_demo":
+  entry_page "summary"
+  description "Showcases collection pipelines, grouping, aggregates, safe records, and list helpers."
+
+page is "summary" at "/data":
+  section "intro":
+    heading "Data & Collections Demo"
+    text "Run summarize_sales to see pipelines, grouping, and safe record access in action."
+
+flow is "summarize_sales":
+  description "Filter paid BE sales, group by customer, and log the top customers."
+  step is "build_summary":
+    let sales be [{ customer_id: "c1", country: "BE", amount: 120, status: "paid" }, { customer_id: "c1", country: "BE", amount: 80, status: "paid" }, { customer_id: "c2", country: "BE", amount: 50, status: "paid" }, { customer_id: "c3", country: "US", amount: 30, status: "paid" }, { customer_id: "c4", country: "BE", amount: 20, status: "pending" }]
+
+    let summary be sales:
+      keep rows where row.status is "paid"
+      keep rows where row.country is "BE"
+      group by row.customer_id:
+        let total_spent be sum of row.amount
+        let orders_count be count of rows
+        let avg_order_value be mean of row.amount
+      sort groups by total_spent descending
+      take first 10
+
+    repeat for each { customer_id, total_spent, orders_count, avg_order_value } in summary:
+      log info "Top customer" with { customer_id: customer_id, total_spent: total_spent, orders_count: orders_count, avg_order_value: avg_order_value }
+
+    # Safe record access with defaults
+    let customers be [{ id: "c1", email: "alice@example.com" }, { id: "c2" }, { id: "c3", email: "carol@example.com" }]
+    repeat for each customer in customers:
+      let email be get customer.email otherwise "unknown"
+      log info "Email lookup" with { id: customer.id, email: email }
+
+    # List helpers (pure functions)
+    let amounts be [1, 2, 3]
+    let with_more be append amounts with 4
+    let cleaned be remove 2 from with_more
+    let reordered be insert 0 at 0 into cleaned
+    log info "List helpers" with { original: amounts, appended: with_more, cleaned: cleaned, reordered: reordered }

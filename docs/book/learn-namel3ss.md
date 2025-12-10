@@ -128,7 +128,7 @@ Cross-reference: parser expression/scope rules in `src/namel3ss/parser.py`; eval
 
 ## 5. Flows: Logic, Conditions, and Error Handling
 - **Syntax:** `flow is "name":` with `step` blocks.
-- **Kinds:** `ai`, `set`, `db_create/get/update/delete`, `vector_index_frame`, `vector_query`, `tool`, `auth_register/login/logout`, and control constructs.
+- **Kinds:** `ai`, `set`, `db_create/update/delete`, `vector_index_frame`, `vector_query`, `tool`, `auth_register/login/logout`, and control constructs. Use `find <alias> where:` for record queries.
 - **Conditions:** `when <expr>` on a step.
 - **Loops:** `for each item in <expr>:` containing nested steps.
 - **Errors:** `on error:` with fallback steps.
@@ -137,15 +137,13 @@ Example:
 ```ai
 flow is "process_ticket":
   step is "load_user":
-    kind is "db_get"
-    record is "User"
-    where:
-      id: user.id
+    find users where:
+      id is user.id
 
   step is "maybe_assign":
     kind is "set"
     set:
-      state.assignee be "support" if step.load_user.output.tier == "premium" else "triage"
+      state.assignee be "support" if step.load_user.output[0].tier == "premium" else "triage"
 
   step is "notify":
     kind is "tool"
@@ -287,7 +285,7 @@ Cross-reference: parser data/vector rules `src/namel3ss/parser.py`; runtime RAG 
 ## 9. Records & CRUD: Building Data-Backed Apps
 - **Record:** Typed schema over a frame.
 - **Fields:** `type`, `primary_key`, `required`, `default`.
-- **CRUD steps:** `db_create`, `db_get`, `db_update`, `db_delete` with `values`, `where`, `by id`, `set`.
+- **CRUD:** `db_create`, `db_update`, `db_delete` for mutation; use `find <alias> where:` for querying with English filters, ordering, and pagination.
 
 Example:
 ```ai
@@ -323,10 +321,10 @@ flow is "create_project":
 
 flow is "list_projects":
   step is "list":
-    kind is "db_get"
-    record is "Project"
-    where:
-      owner_id: user.id
+    find projects where:
+      owner_id is user.id
+    order projects by name ascending
+    limit projects to 20
 
 flow is "update_project":
   step is "update":
@@ -570,10 +568,8 @@ flow is "create_project":
 
 flow is "list_projects":
   step is "list":
-    kind is "db_get"
-    record is "Project"
-    where:
-      owner_id: user.id
+    find projects where:
+      owner_id is user.id
 
 flow is "ask_weather":
   step is "fetch":
@@ -633,7 +629,7 @@ Cross-reference: parser and runtime modules from earlier chapters; tests across 
 - **Memory:** Declare `memory is "name": type is "conversation"`; in AI `memory: kinds: short_term/long_term/profile` with `window`, `store`, `scope`, `retention_days`, `pii_policy`, `pipeline`; `recall` list.
 - **Flows:** `flow is "name": step is "s": kind is "..."; when <expr>; for each <var> in <expr>: ...; on error: ...; let <local> be ...; set state.<field> be ...; read `step.<name>.output`.
 - **Data & RAG:** `frame is "name": backend/table`; `vector_store is "name": frame is "..."; text_column/id_column/embedding_model`; steps `vector_index_frame`, `vector_query`.
-- **Records & CRUD:** `record is "Name": frame is "..."; fields: <field>: type/primary_key/required/default`; steps `db_create`, `db_get`, `db_update`, `db_delete` with `values`, `where`, `by id`, `set`.
+- **Records & CRUD:** `record is "Name": frame is "..."; fields: <field>: type/primary_key/required/default`; steps `db_create`, `db_update`, `db_delete` with `values`, `by id`, `set`, and English `find <alias> where:` for querying with filters, ordering, and pagination.
 - **Tools:** `tool is "name": kind is "http_json"; method/url/query/headers/body`; flow step `kind is "tool"` with `input`; AI `tools` list for tool-calling.
 - **Auth:** `auth:` with `user_record`, `id_field`, `identifier_field`, `password_hash_field`; steps `auth_register/login/logout`; expressions under `user.*`.
 - **Providers:** per-model/AI `provider`; config in `namel3ss.config.*`; errors `N3L-1800`, `N3P-1801`, `N3P-1802`.

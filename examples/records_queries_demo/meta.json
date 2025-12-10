@@ -1,0 +1,6 @@
+{
+  "name": "Records & Queries Demo",
+  "category": "records",
+  "description": "Demonstrates record definitions plus English find queries with ordering and pagination.",
+  "tags": ["records", "queries", "ordering", "pagination", "find"]
+}

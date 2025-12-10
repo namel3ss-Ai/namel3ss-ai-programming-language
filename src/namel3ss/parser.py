@@ -290,9 +290,13 @@ class Parser:
                 continue
             field_token = self.consume("KEYWORD")
             if field_token.value == "description":
+                if self.match_value("KEYWORD", "is"):
+                    pass
                 desc_token = self.consume("STRING")
                 description = desc_token.value
             elif field_token.value == "entry_page":
+                if self.match_value("KEYWORD", "is"):
+                    pass
                 entry_token = self.consume("STRING")
                 entry_page = entry_token.value
             else:
@@ -3264,6 +3268,188 @@ class Parser:
             when_expr,
         )
 
+    def _parse_where_conditions(self) -> ast_nodes.BooleanCondition:
+        """Parse English-style WHERE conditions into a boolean condition tree."""
+        self.consume("COLON")
+        self.consume("NEWLINE")
+        self.consume("INDENT")
+        conditions: list[ast_nodes.BooleanCondition] = []
+        connectors: list[str | None] = []
+        while not self.check("DEDENT"):
+            if self.match("NEWLINE"):
+                continue
+            leading: str | None = None
+            if self.peek().value in {"and", "or"}:
+                leading_tok = self.consume("KEYWORD")
+                leading = leading_tok.value
+            cond = self._parse_condition_expr()
+            conditions.append(cond)
+            connectors.append(leading)
+            self.optional_newline()
+        self.consume("DEDENT")
+        if not conditions:
+            raise self.error("A WHERE block needs at least one condition.", self.peek())
+        if connectors[0] is not None:
+            raise self.error(
+                "I expected a condition before this connector. Write something like 'is_active is true and status is \"vip\"'.",
+                self.peek(),
+            )
+        return self._combine_conditions(conditions, connectors)
+
+    def _combine_conditions(
+        self, conditions: list[ast_nodes.BooleanCondition], connectors: list[str | None]
+    ) -> ast_nodes.BooleanCondition:
+        if not conditions:
+            raise self.error("A WHERE block needs at least one condition.", self.peek())
+        # Default connector is AND when omitted.
+        segments: list[ast_nodes.BooleanCondition] = []
+        current = conditions[0]
+        for idx in range(1, len(conditions)):
+            op = connectors[idx] or "and"
+            right = conditions[idx]
+            if op == "and":
+                current = ast_nodes.ConditionAnd(left=current, right=right, span=self._span(self.peek()))
+            elif op == "or":
+                segments.append(current)
+                current = right
+            else:
+                raise self.error("I don't understand this connector. Use 'and' or 'or'.", self.peek())
+        segments.append(current)
+        result = segments[0]
+        for seg in segments[1:]:
+            result = ast_nodes.ConditionOr(left=result, right=seg, span=self._span(self.peek()))
+        return result
+
+    def _parse_condition_expr(self) -> ast_nodes.BooleanCondition:
+        left = self._parse_condition_and()
+        while not (self.check("NEWLINE") or self.check("DEDENT")) and self.match_value("KEYWORD", "or"):
+            right = self._parse_condition_and()
+            left = ast_nodes.ConditionOr(left=left, right=right, span=self._span(self.peek()))
+        return left
+
+    def _parse_condition_and(self) -> ast_nodes.BooleanCondition:
+        left = self._parse_condition_primary()
+        while not (self.check("NEWLINE") or self.check("DEDENT")) and self.match_value("KEYWORD", "and"):
+            right = self._parse_condition_primary()
+            left = ast_nodes.ConditionAnd(left=left, right=right, span=self._span(self.peek()))
+        return left
+
+    def _parse_condition_primary(self) -> ast_nodes.BooleanCondition:
+        tok = self.peek()
+        # Grouping: all of / any of
+        if tok.value in {"all", "any"} and self.peek_offset(1).value == "of":
+            is_all = tok.value == "all"
+            self.advance()  # consume all/any
+            self.consume("KEYWORD", "of")
+            self.consume("COLON")
+            self.consume("NEWLINE")
+            self.consume("INDENT")
+            children: list[ast_nodes.BooleanCondition] = []
+            connectors: list[str | None] = []
+            while not self.check("DEDENT"):
+                if self.match("NEWLINE"):
+                    continue
+                leading: str | None = None
+                if self.peek().value in {"and", "or"}:
+                    leading = self.consume("KEYWORD").value
+                child = self._parse_condition_expr()
+                children.append(child)
+                connectors.append(leading)
+                self.optional_newline()
+            self.consume("DEDENT")
+            if not children:
+                raise self.error(
+                    f"'{'all' if is_all else 'any'} of:' needs at least one condition inside.",
+                    tok,
+                )
+            return (
+                ast_nodes.ConditionAllGroup(children=children, span=self._span(tok))
+                if is_all
+                else ast_nodes.ConditionAnyGroup(children=children, span=self._span(tok))
+            )
+
+        field_tok = self.consume_any({"IDENT", "KEYWORD", "STRING"})
+        field_name = field_tok.value or ""
+        start_span = self._span(field_tok)
+        if not field_name:
+            raise self.error("Field name missing in WHERE condition.", field_tok)
+        if not self.match_value("KEYWORD", "is"):
+            raise self.error(
+                "I don't understand this condition in a WHERE block. Use is, is not, is greater than, is at least, is one of, or null checks.",
+                self.peek(),
+            )
+        next_tok = self.peek()
+        if next_tok.type == "KEYWORD" and next_tok.value not in {
+            "not",
+            "null",
+            "greater",
+            "less",
+            "at",
+            "one",
+            "true",
+            "false",
+        }:
+            raise self.error(
+                "I don't understand this condition in a WHERE block. Use is, is not, is greater than, is at least, is one of, or null checks.",
+                next_tok,
+            )
+        op = "eq"
+        value_expr: ast_nodes.Expr | None = None
+        if self.match_value("KEYWORD", "not"):
+            if self.match_value("KEYWORD", "null") or self.match_value("IDENT", "null"):
+                op = "is_not_null"
+            else:
+                op = "neq"
+                value_expr = self.parse_expression()
+        elif self.match_value("KEYWORD", "null") or self.match_value("IDENT", "null"):
+            op = "is_null"
+        elif self.match_value("KEYWORD", "greater"):
+            self.consume("KEYWORD", "than")
+            op = "gt"
+            value_expr = self.parse_expression()
+        elif self.match_value("KEYWORD", "less"):
+            self.consume("KEYWORD", "than")
+            op = "lt"
+            value_expr = self.parse_expression()
+        elif self.match_value("KEYWORD", "at"):
+            limiter = self.consume("KEYWORD")
+            if limiter.value == "least":
+                op = "ge"
+            elif limiter.value == "most":
+                op = "le"
+            else:
+                raise self.error(
+                    "I don't understand this condition in a WHERE block. Use 'at least' or 'at most'.",
+                    limiter,
+                )
+            value_expr = self.parse_expression()
+        elif self.peek().value == "one":
+            self.advance()
+            self.consume("KEYWORD", "of")
+            op = "in"
+            value_expr = self.parse_expression()
+        else:
+            value_expr = self.parse_expression()
+        if op in {"eq", "neq", "gt", "lt", "ge", "le", "in"} and value_expr is None:
+            raise self.error(
+                "I don't understand this condition in a WHERE block. Use 'field is value', 'field is greater than value', or 'field is one of [...]'.",
+                self.peek(),
+            )
+        return self._expr_to_condition(field_name, op, value_expr, start_span)
+
+    def _expr_to_condition(
+        self, field_name: str, op: str, expr: ast_nodes.Expr | None, span: ast_nodes.Span | None
+    ) -> ast_nodes.BooleanCondition:
+        if isinstance(expr, ast_nodes.BinaryOp) and expr.op in {"and", "or"}:
+            left_cond = self._expr_to_condition(field_name, op, expr.left, span)
+            right_cond = self._expr_to_condition(field_name, op, expr.right, span)
+            if expr.op == "and":
+                return ast_nodes.ConditionAnd(left=left_cond, right=right_cond, span=span)
+            return ast_nodes.ConditionOr(left=left_cond, right=right_cond, span=span)
+        if isinstance(expr, ast_nodes.BinaryOp) and expr.op == "==" and isinstance(expr.left, ast_nodes.VarRef):
+            return ast_nodes.ConditionLeaf(field_name=expr.left.name, op="eq", value_expr=expr.right, span=span)
+        return ast_nodes.ConditionLeaf(field_name=field_name, op=op, value_expr=expr, span=span)
+
     def _parse_step_body(
         self, allow_fields: bool = True
     ) -> tuple[
@@ -3310,10 +3496,108 @@ class Parser:
             "stream_mode",
         } if allow_fields else set()
         script_mode = False
+        find_query: ast_nodes.RecordQuery | None = None
         while not self.check("DEDENT"):
             if self.match("NEWLINE"):
                 continue
             token = self.peek()
+            if token.value == "find":
+                self.advance()
+                alias_tok = self.consume_any({"IDENT", "KEYWORD"})
+                alias = alias_tok.value or ""
+                if find_query is not None:
+                    raise self.error(
+                        "Only one find ... where block is allowed per step.",
+                        alias_tok,
+                    )
+                if not self.match_value("KEYWORD", "where"):
+                    raise self.error(
+                        "find ... where ... must include a where block using 'find <alias> where:'.",
+                        self.peek(),
+                    )
+                conds = self._parse_where_conditions()
+                find_query = ast_nodes.RecordQuery(alias=alias, where_condition=conds, span=self._span(alias_tok))
+                kind = kind or "find"
+                target = target or alias
+                extra_params["query"] = find_query
+                self.optional_newline()
+                continue
+            if token.value == "order":
+                self.advance()
+                alias_tok = self.consume_any({"IDENT", "KEYWORD"})
+                alias = alias_tok.value or ""
+                if find_query is None or find_query.alias != alias:
+                    raise self.error(
+                        f"I don't know what {alias} refers to here. Use find {alias} where: before order {alias} by ....",
+                        alias_tok,
+                    )
+                self.consume("KEYWORD", "by")
+                order_items: list[ast_nodes.RecordOrderBy] = []
+                while True:
+                    field_tok = self.consume_any({"IDENT", "KEYWORD", "STRING"})
+                    field_name = field_tok.value or ""
+                    direction = "asc"
+                    if self.match_value("KEYWORD", "ascending"):
+                        direction = "asc"
+                    elif self.match_value("KEYWORD", "descending"):
+                        direction = "desc"
+                    elif self.peek().type == "KEYWORD" and self.peek().value in {"asc", "desc"}:
+                        dir_tok = self.consume_any({"KEYWORD"})
+                        if dir_tok.value == "asc":
+                            direction = "asc"
+                        elif dir_tok.value == "desc":
+                            direction = "desc"
+                        else:
+                            raise self.error(
+                                "I don't understand this sort direction. Use ascending or descending.",
+                                dir_tok,
+                            )
+                    if direction not in {"asc", "desc"}:
+                        raise self.error(
+                            "I don't understand this sort direction. Use ascending or descending.",
+                            field_tok,
+                        )
+                    order_items.append(
+                        ast_nodes.RecordOrderBy(field_name=field_name, direction=direction, span=self._span(field_tok))
+                    )
+                    if not self.match("COMMA"):
+                        break
+                find_query.order_by = order_items
+                extra_params["query"] = find_query
+                self.optional_newline()
+                continue
+            if token.value == "limit":
+                self.advance()
+                alias_tok = self.consume_any({"IDENT", "KEYWORD"})
+                alias = alias_tok.value or ""
+                if find_query is None or find_query.alias != alias:
+                    raise self.error(
+                        f"I don't know what {alias} refers to here. Use find {alias} where: before limit {alias} to ....",
+                        alias_tok,
+                    )
+                if not self.match_value("KEYWORD", "to"):
+                    raise self.error("Use 'limit <alias> to <number>' to set a limit.", self.peek())
+                expr = self.parse_expression()
+                find_query.limit_expr = expr
+                extra_params["query"] = find_query
+                self.optional_newline()
+                continue
+            if token.value == "offset":
+                self.advance()
+                alias_tok = self.consume_any({"IDENT", "KEYWORD"})
+                alias = alias_tok.value or ""
+                if find_query is None or find_query.alias != alias:
+                    raise self.error(
+                        f"I don't know what {alias} refers to here. Use find {alias} where: before offset {alias} by ....",
+                        alias_tok,
+                    )
+                if not self.match_value("KEYWORD", "by"):
+                    raise self.error("Use 'offset <alias> by <number>' to set an offset.", self.peek())
+                expr = self.parse_expression()
+                find_query.offset_expr = expr
+                extra_params["query"] = find_query
+                self.optional_newline()
+                continue
             if token.value == "set" and allow_fields and kind in {"frame_update"} and not script_mode:
                 field_token = self.consume("KEYWORD")
                 if field_token.value not in allowed_fields:
@@ -3341,7 +3625,7 @@ class Parser:
                 goto_action = self.parse_goto_action()
                 self.optional_newline()
                 continue
-            if token.value in {"let", "set", "do", "repeat", "match", "retry", "ask", "form", "log", "note", "checkpoint", "return", "try"} or (token.value == "go" and script_mode):
+            if token.value in {"let", "set", "do", "repeat", "match", "retry", "ask", "form", "log", "note", "checkpoint", "return", "try", "guard"} or (token.value == "go" and script_mode):
                 if token.value == "match":
                     script_mode = True
                     statements.append(self.parse_match_statement())
@@ -3381,6 +3665,11 @@ class Parser:
                     script_mode = True
                     statements.append(self.parse_if_statement())
                 continue
+            if token.value == "all":
+                raise self.error(
+                    "The legacy 'all ...' data syntax is no longer supported. Use a collection pipeline instead (e.g. keep rows where ...).",
+                    token,
+                )
             if not allow_fields:
                 raise self.error(
                     f"Unexpected field '{token.value}' in step block",
@@ -3410,6 +3699,11 @@ class Parser:
                     )
                 kind_token = self.consume_any({"STRING", "IDENT", "KEYWORD"})
                 kind = kind_token.value
+                if kind == "db_get":
+                    raise self.error(
+                        "db_get is no longer supported. Write find <alias> where: instead, for example:\nfind users where:\n  is_active is true",
+                        kind_token,
+                    )
                 if kind_token.value == "script":
                     script_mode = True
             elif field_token.value == "target":
@@ -3551,7 +3845,9 @@ class Parser:
                 self.consume("DEDENT")
                 extra_params["by_id"] = entries
                 self.optional_newline()
-            elif field_token.value in {"values", "where", "set", "args", "input"}:
+            elif field_token.value == "where":
+                extra_params[field_token.value] = self._parse_where_conditions()
+            elif field_token.value in {"values", "set", "args", "input"}:
                 self.consume("COLON")
                 self.consume("NEWLINE")
                 self.consume("INDENT")
@@ -3576,9 +3872,9 @@ class Parser:
             "vector_index_frame",
             "vector_query",
             "db_create",
-            "db_get",
             "db_update",
             "db_delete",
+            "find",
             "auth_register",
             "auth_login",
             "auth_logout",
@@ -3589,7 +3885,7 @@ class Parser:
                 args={
                     k: v
                     for k, v in extra_params.items()
-                    if k in {"values", "where", "set", "vector_store", "query_text", "top_k", "by_id", "limit", "input"}
+                    if k in {"values", "where", "set", "vector_store", "query_text", "top_k", "by_id", "limit", "input", "query", "offset", "order_by"}
                 },
                 span=None,
             )
@@ -3723,6 +4019,8 @@ class Parser:
             return self.parse_retry_statement()
         if token.value == "match":
             return self.parse_match_statement()
+        if token.value == "guard":
+            return self.parse_guard_statement()
         if token.value == "ask":
             return self.parse_ask_statement()
         if token.value == "form":
@@ -3876,6 +4174,20 @@ class Parser:
         self.optional_newline()
         return ast_nodes.MatchStatement(target=target_expr, branches=branches, span=self._span(start_tok))
 
+    def parse_guard_statement(self) -> ast_nodes.GuardStatement:
+        start_tok = self.consume("KEYWORD", "guard")
+        if self.check("COLON"):
+            raise self.error("Expected a condition after guard.", self.peek())
+        condition = self.parse_condition_expr()
+        if not self.match("COLON"):
+            raise self.error("Expected ':' after the guard condition.", self.peek())
+        self.consume("NEWLINE")
+        self.consume("INDENT")
+        body = self.parse_statement_block()
+        self.consume("DEDENT")
+        self.optional_newline()
+        return ast_nodes.GuardStatement(condition=condition, body=body, span=self._span(start_tok))
+
     def parse_try_catch_statement(self) -> ast_nodes.TryCatchStatement:
         start_tok = self.consume("KEYWORD", "try")
         self.consume("COLON")
@@ -3903,14 +4215,7 @@ class Parser:
             span=self._span(start_tok),
         )
 
-    def parse_let_statement(self) -> ast_nodes.LetStatement:
-        start = self.consume("KEYWORD", "let")
-        is_constant = False
-        if self.peek().value == "constant":
-            self.advance()
-            is_constant = True
-        pattern: ast_nodes.DestructuringPattern | None = None
-        name_tok = None
+    def _parse_destructuring_pattern(self) -> ast_nodes.DestructuringPattern | None:
         if self.match("LBRACE"):
             fields: list[ast_nodes.DestructuringField] = []
             while not self.check("RBRACE"):
@@ -3926,8 +4231,8 @@ class Parser:
                     break
                 raise self.error("Expected ',' or '}' in destructuring pattern", self.peek())
             self.consume("RBRACE")
-            pattern = ast_nodes.DestructuringPattern(kind="record", fields=fields)
-        elif self.match("LBRACKET"):
+            return ast_nodes.DestructuringPattern(kind="record", fields=fields)
+        if self.match("LBRACKET"):
             elements: list[str] = []
             while not self.check("RBRACKET"):
                 elt_tok = self.consume_any({"IDENT", "KEYWORD"})
@@ -3938,8 +4243,35 @@ class Parser:
                     break
                 raise self.error("Expected ',' or ']' in list destructuring pattern", self.peek())
             self.consume("RBRACKET")
-            pattern = ast_nodes.DestructuringPattern(kind="list", fields=elements)
-        else:
+            return ast_nodes.DestructuringPattern(kind="list", fields=elements)
+        return None
+
+    def _split_field_access_expr(self, expr: ast_nodes.Expr) -> tuple[ast_nodes.Expr | None, str | None]:
+        if isinstance(expr, ast_nodes.RecordFieldAccess):
+            return expr.target, expr.field
+        if isinstance(expr, ast_nodes.VarRef) and expr.path:
+            base_path = expr.path[:-1]
+            field = expr.path[-1]
+            dotted = ".".join([expr.root] + base_path) if base_path else expr.root
+            base_expr = ast_nodes.VarRef(
+                name=dotted,
+                root=expr.root,
+                path=base_path,
+                kind=expr.kind,
+                span=expr.span,
+            )
+            return base_expr, field
+        return None, None
+
+    def parse_let_statement(self) -> ast_nodes.LetStatement:
+        start = self.consume("KEYWORD", "let")
+        is_constant = False
+        if self.peek().value == "constant":
+            self.advance()
+            is_constant = True
+        pattern = self._parse_destructuring_pattern()
+        name_tok = None
+        if not pattern:
             name_tok = self.consume_any({"IDENT", "KEYWORD"})
         if self.match_value("KEYWORD", "be"):
             expr = self.parse_expression()
@@ -3953,6 +4285,13 @@ class Parser:
                 "Inline conditional expressions like value if condition else other are not supported. Use an if / otherwise if / else block instead.",
                 self.peek(),
             )
+        if self.match("COLON"):
+            self.consume("NEWLINE")
+            self.consume("INDENT")
+            pipeline_steps = self.parse_collection_pipeline_steps()
+            self.consume("DEDENT")
+            expr = ast_nodes.CollectionPipeline(source=expr, steps=pipeline_steps, span=self._span(start))
+            self.optional_newline()
         return ast_nodes.LetStatement(
             name=name_tok.value if name_tok else "",
             expr=expr,
@@ -3961,6 +4300,82 @@ class Parser:
             pattern=pattern,
             span=self._span(start),
         )
+
+    def parse_collection_pipeline_steps(self) -> list[ast_nodes.CollectionPipelineStep]:
+        steps: list[ast_nodes.CollectionPipelineStep] = []
+        while not self.check("DEDENT"):
+            if self.match("NEWLINE"):
+                continue
+            token = self.peek()
+            if token.value == "keep":
+                keep_tok = self.consume("KEYWORD", "keep")
+                if not self.match_value("KEYWORD", "rows"):
+                    raise self.error("Expected 'rows' after keep in collection pipeline.", self.peek())
+                if not self.match_value("KEYWORD", "where"):
+                    raise self.error("Expected 'where' in keep rows pipeline step.", self.peek())
+                condition = self.parse_expression()
+                steps.append(ast_nodes.CollectionKeepRowsStep(condition=condition, span=self._span(keep_tok)))
+                self.optional_newline()
+                continue
+            if token.value == "drop":
+                drop_tok = self.consume("KEYWORD", "drop")
+                if not self.match_value("KEYWORD", "rows"):
+                    raise self.error("Expected 'rows' after drop in collection pipeline.", self.peek())
+                if not self.match_value("KEYWORD", "where"):
+                    raise self.error("Expected 'where' in drop rows pipeline step.", self.peek())
+                condition = self.parse_expression()
+                steps.append(ast_nodes.CollectionDropRowsStep(condition=condition, span=self._span(drop_tok)))
+                self.optional_newline()
+                continue
+            if token.value == "group":
+                group_tok = self.consume("KEYWORD", "group")
+                if not self.match_value("KEYWORD", "by"):
+                    raise self.error("Expected 'by' after group in collection pipeline.", self.peek())
+                key_expr = self.parse_expression()
+                if not self.match("COLON"):
+                    raise self.error("Expected ':' after group by key.", self.peek())
+                self.consume("NEWLINE")
+                self.consume("INDENT")
+                body = self.parse_statement_block()
+                self.consume("DEDENT")
+                steps.append(ast_nodes.CollectionGroupByStep(key=key_expr, body=body, span=self._span(group_tok)))
+                self.optional_newline()
+                continue
+            if token.value == "sort":
+                sort_tok = self.consume("KEYWORD", "sort")
+                kind_token = self.consume("KEYWORD")
+                if kind_token.value not in {"rows", "groups"}:
+                    raise self.error("sort must specify 'rows' or 'groups' before 'by'.", kind_token)
+                if not self.match_value("KEYWORD", "by"):
+                    raise self.error("Expected 'by' in sort pipeline step.", self.peek())
+                key_expr = self.parse_expression()
+                direction = "asc"
+                if self.peek().value in {"descending", "ascending"}:
+                    dir_tok = self.consume("KEYWORD")
+                    direction = "desc" if dir_tok.value == "descending" else "asc"
+                steps.append(
+                    ast_nodes.CollectionSortStep(kind=kind_token.value, key=key_expr, direction=direction, span=self._span(sort_tok))
+                )
+                self.optional_newline()
+                continue
+            if token.value == "take":
+                take_tok = self.consume("KEYWORD", "take")
+                if not self.match_value("KEYWORD", "first"):
+                    raise self.error("Expected 'first' after take in collection pipeline.", self.peek())
+                count_expr = self.parse_expression()
+                steps.append(ast_nodes.CollectionTakeStep(count=count_expr, span=self._span(take_tok)))
+                self.optional_newline()
+                continue
+            if token.value == "skip":
+                skip_tok = self.consume("KEYWORD", "skip")
+                if not self.match_value("KEYWORD", "first"):
+                    raise self.error("Expected 'first' after skip in collection pipeline.", self.peek())
+                count_expr = self.parse_expression()
+                steps.append(ast_nodes.CollectionSkipStep(count=count_expr, span=self._span(skip_tok)))
+                self.optional_newline()
+                continue
+            raise self.error("Unexpected statement in collection pipeline.", token)
+        return steps
 
     def parse_set_statement(self) -> ast_nodes.SetStatement:
         start = self.consume("KEYWORD", "set")
@@ -3988,7 +4403,10 @@ class Parser:
         if self.peek().value == "for":
             self.consume("KEYWORD", "for")
             self.consume("KEYWORD", "each")
-            var_tok = self.consume_any({"IDENT", "KEYWORD"})
+            pattern = self._parse_destructuring_pattern()
+            var_tok = None
+            if not pattern:
+                var_tok = self.consume_any({"IDENT", "KEYWORD"})
             self.consume("KEYWORD", "in")
             if self.peek().value == "step" and self.peek_offset(1).type == "STRING":
                 step_tok = self.consume("KEYWORD", "step")
@@ -4004,7 +4422,13 @@ class Parser:
             body = self.parse_statement_block()
             self.consume("DEDENT")
             self.optional_newline()
-            return ast_nodes.ForEachLoop(var_name=var_tok.value or "item", iterable=iterable_expr, body=body, span=self._span(repeat_tok))
+            return ast_nodes.ForEachLoop(
+                var_name=var_tok.value if var_tok else "item",
+                pattern=pattern,
+                iterable=iterable_expr,
+                body=body,
+                span=self._span(repeat_tok),
+            )
         if self.peek().value == "up":
             self.consume("KEYWORD", "up")
             self.consume("KEYWORD", "to")
@@ -4365,7 +4789,7 @@ class Parser:
                 actions.append(self.parse_goto_action())
                 self.optional_newline()
                 continue
-            if self.peek().value in {"let", "set", "if", "when", "otherwise", "unless", "match", "retry", "ask", "form", "log", "note", "checkpoint", "return"}:
+            if self.peek().value in {"let", "set", "if", "when", "otherwise", "unless", "match", "retry", "ask", "form", "log", "note", "checkpoint", "return", "guard"}:
                 actions.append(self.parse_statement_or_action())
                 continue
             actions.append(self._parse_do_action())
@@ -4526,6 +4950,25 @@ class Parser:
         if self.match_value("KEYWORD", "minus"):
             return ast_nodes.UnaryOp(op="-", operand=self.parse_unary())
         token = self.peek()
+        if token.value == "get":
+            start = self.consume_any({"IDENT", "KEYWORD"})
+            target_expr = self.parse_expression()
+            self.consume("KEYWORD", "otherwise")
+            default_expr = self.parse_expression()
+            record_expr, field_name = self._split_field_access_expr(target_expr)
+            if not field_name or record_expr is None:
+                raise self.error(
+                    "get ... otherwise ... requires a field access like record.field",
+                    start,
+                )
+            return ast_nodes.GetRecordFieldWithDefault(record=record_expr, field=field_name, default=default_expr, span=self._span(start))
+        if token.value == "has" and self.peek_offset(1).value == "key":
+            start = self.consume_any({"IDENT", "KEYWORD"})
+            self.consume("KEYWORD", "key")
+            key_tok = self.consume("STRING")
+            self.consume("KEYWORD", "on")
+            record_expr = self.parse_expression()
+            return ast_nodes.HasKeyOnRecord(record=record_expr, key=key_tok.value or "", span=self._span(start))
         builtin_call_names = {
             "length",
             "first",
@@ -4534,6 +4977,10 @@ class Parser:
             "reverse",
             "unique",
             "sum",
+            "count",
+            "append",
+            "remove",
+            "insert",
             "trim",
             "lowercase",
             "uppercase",
@@ -4563,7 +5010,7 @@ class Parser:
             return self.parse_english_any()
         if token.type == "KEYWORD" and token.value == "all":
             return self.parse_english_all()
-        if token.type == "KEYWORD" and token.value in {"length", "first", "last", "sorted", "reverse", "unique", "sum", "trim", "lowercase", "uppercase", "replace", "split", "join", "slugify", "minimum", "maximum", "mean", "round", "absolute", "current", "random"}:
+        if token.type == "KEYWORD" and token.value in {"length", "first", "last", "sorted", "reverse", "unique", "sum", "count", "append", "remove", "insert", "trim", "lowercase", "uppercase", "replace", "split", "join", "slugify", "minimum", "maximum", "mean", "round", "absolute", "current", "random"}:
             return self.parse_english_builtin()
         return self.parse_primary()
 
@@ -4590,7 +5037,7 @@ class Parser:
             return self.parse_postfix(self.parse_record_literal())
         if token.type in {"IDENT", "KEYWORD"}:
             # Function-style builtins
-            if self.peek_offset(1).type == "LPAREN" and token.value in {"length", "first", "last", "sorted", "reverse", "unique", "sum", "filter", "map", "trim", "lowercase", "uppercase", "replace", "split", "join", "slugify", "minimum", "maximum", "mean", "min", "max", "average", "round", "abs", "current_timestamp", "current_date", "random_uuid", "any", "all"}:
+            if self.peek_offset(1).type == "LPAREN" and token.value in {"length", "first", "last", "sorted", "reverse", "unique", "sum", "count", "append", "remove", "insert", "filter", "map", "trim", "lowercase", "uppercase", "replace", "split", "join", "slugify", "minimum", "maximum", "mean", "min", "max", "average", "round", "abs", "current_timestamp", "current_date", "random_uuid", "any", "all"}:
                 return self.parse_builtin_call()
             if self.peek_offset(1).type == "LPAREN":
                 return self.parse_postfix(self.parse_function_call())
@@ -4688,7 +5135,7 @@ class Parser:
                 self.consume("KEYWORD", "of")
             operand = self.parse_unary()
             return ast_nodes.ListBuiltinCall(name=name, expr=operand)
-        elif name in {"length", "first", "last", "reverse", "sum"}:
+        elif name in {"length", "first", "last", "reverse", "sum", "count"}:
             if self.peek().value == "of":
                 self.consume("KEYWORD", "of")
             operand = self.parse_unary()
@@ -4705,6 +5152,23 @@ class Parser:
             self.consume("KEYWORD", "in")
             base_expr = self.parse_expression()
             return ast_nodes.BuiltinCall(name="replace", args=[base_expr, pattern_expr, replacement_expr])
+        elif name == "append":
+            list_expr = self.parse_expression()
+            self.consume("KEYWORD", "with")
+            value_expr = self.parse_expression()
+            return ast_nodes.BuiltinCall(name="append", args=[list_expr, value_expr])
+        elif name == "remove":
+            value_expr = self.parse_expression()
+            self.consume("KEYWORD", "from")
+            list_expr = self.parse_expression()
+            return ast_nodes.BuiltinCall(name="remove", args=[list_expr, value_expr])
+        elif name == "insert":
+            value_expr = self.parse_expression()
+            self.consume("KEYWORD", "at")
+            index_expr = self.parse_expression()
+            self.consume("KEYWORD", "into")
+            list_expr = self.parse_expression()
+            return ast_nodes.BuiltinCall(name="insert", args=[list_expr, index_expr, value_expr])
         elif name == "split":
             base_expr = self.parse_expression()
             self.consume("KEYWORD", "by")
@@ -4719,7 +5183,7 @@ class Parser:
             if self.peek().value == "of":
                 self.consume("KEYWORD", "of")
             operand = self.parse_unary()
-            return ast_nodes.BuiltinCall(name=name, args=[operand])
+            return ast_nodes.ListBuiltinCall(name=name, expr=operand)
         elif name == "round":
             value_expr = self.parse_unary()
             if self.peek().value == "to":
@@ -4749,41 +5213,14 @@ class Parser:
         raise self.error(f"Unsupported builtin '{name}'", tok)
 
     def parse_english_all(self) -> ast_nodes.Expr:
-        self.consume("KEYWORD", "all")
-        first_tok = self.consume_any({"IDENT"})
-        first_val = first_tok.value or ""
-        if "." in first_val:
-            parts = first_val.split(".")
-            first_expr: ast_nodes.Expr = ast_nodes.Identifier(name=parts[0], span=self._span(first_tok))
-            for part in parts[1:]:
-                first_expr = ast_nodes.RecordFieldAccess(target=first_expr, field=part)
-        else:
-            first_expr = ast_nodes.Identifier(name=first_val, span=self._span(first_tok))
-        if self.peek().value == "in":
-            self.consume("KEYWORD", "in")
-            source_expr = self.parse_expression()
-            self.consume("KEYWORD", "where")
-            predicate = self.parse_expression()
-            return ast_nodes.AllExpression(source=source_expr, var_name=first_tok.value or "item", predicate=predicate)
-        if self.peek().value == "where":
-            self.consume("KEYWORD", "where")
-            predicate = self.parse_expression()
-            return ast_nodes.FilterExpression(source=first_expr, var_name="item", predicate=predicate)
-        if self.peek().value == "from":
-            self.consume("KEYWORD", "from")
-            source_expr = self.parse_expression()
-            predicate = None
-            if self.peek().value == "where":
-                self.consume("KEYWORD", "where")
-                predicate = self.parse_expression()
-            var_name = first_tok.value.split(".")[0] if first_tok.value else "item"
-            if predicate is not None:
-                filtered = ast_nodes.FilterExpression(source=source_expr, var_name=var_name, predicate=predicate)
-                if isinstance(first_expr, ast_nodes.Identifier) and first_expr.name == var_name:
-                    return filtered
-                return ast_nodes.MapExpression(source=filtered, var_name=var_name, mapper=first_expr)
-            return ast_nodes.MapExpression(source=source_expr, var_name=var_name, mapper=first_expr)
-        raise self.error("Expected 'where' or 'from' after 'all' expression", self.peek())
+        start = self.consume("KEYWORD", "all")
+        # Legacy data syntax is no longer supported; guide users to pipelines.
+        raise self.error(
+            "The legacy 'all ...' data syntax is no longer supported. Use a collection pipeline instead, for example:\n"
+            "let filtered be <source>:\n"
+            "  keep rows where ...",
+            start,
+        )
 
     def parse_english_any(self) -> ast_nodes.Expr:
         self.consume("KEYWORD", "any")
@@ -4799,54 +5236,15 @@ class Parser:
         name = name_tok.value or ""
         self.consume("LPAREN")
         if name in {"filter", "map"}:
-            source_expr = self.parse_expression()
-            predicate = None
-            mapper = None
-            var_name = "item"
-            if self.match("COMMA"):
-                label_tok = self.consume_any({"KEYWORD"})
-                if label_tok.value == "where":
-                    if self.match("COLON"):
-                        pass
-                    predicate = self.parse_expression()
-                elif label_tok.value == "to":
-                    if self.match("COLON"):
-                        pass
-                    mapper = self.parse_expression()
-                else:
-                    raise self.error("Expected 'where' or 'to' keyword argument", label_tok)
-            if not self.match("RPAREN"):
-                if self.check("RPAREN"):
-                    self.consume("RPAREN")
-                else:
-                    raise self.error("Expected ')' to close call", self.peek())
-            if name == "filter":
-                if predicate is None:
-                    raise self.error("filter requires 'where' predicate", name_tok)
-                return ast_nodes.FilterExpression(source=source_expr, var_name=var_name, predicate=predicate)
-            if mapper is None:
-                raise self.error("map requires 'to' mapper", name_tok)
-            return ast_nodes.MapExpression(source=source_expr, var_name=var_name, mapper=mapper)
+            raise self.error(
+                "filter(...) / map(...) are no longer supported. Use a collection pipeline instead (for example: keep rows where ...).",
+                name_tok,
+            )
         if name in {"any", "all"}:
-            source_expr = self.parse_expression() if not self.check("RPAREN") else ast_nodes.Literal(value=[])
-            predicate = None
-            if self.match("COMMA"):
-                label_tok = self.consume_any({"KEYWORD"})
-                if label_tok.value != "where":
-                    raise self.error("Expected 'where' keyword argument", label_tok)
-                if self.match("COLON"):
-                    pass
-                predicate = self.parse_expression()
-            if not self.match("RPAREN"):
-                if self.check("RPAREN"):
-                    self.consume("RPAREN")
-                else:
-                    raise self.error("Expected ')' to close call", self.peek())
-            if predicate is None:
-                raise self.error(f"{name} requires a 'where' predicate", name_tok)
-            if name == "any":
-                return ast_nodes.AnyExpression(source=source_expr, var_name="item", predicate=predicate)
-            return ast_nodes.AllExpression(source=source_expr, var_name="item", predicate=predicate)
+            raise self.error(
+                f"The legacy '{name}(...)' data syntax is no longer supported. Rewrite this as a collection pipeline with keep rows where ....",
+                name_tok,
+            )
         args: list[ast_nodes.Expr] = []
         if not self.check("RPAREN"):
             args.append(self.parse_expression())

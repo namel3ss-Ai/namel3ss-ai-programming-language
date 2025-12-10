@@ -2,6 +2,8 @@
 
 Namel3ss uses English-style control structures for flows and script steps. This page defines the supported forms for version 1 and highlights what is intentionally out of scope for now. All examples use the English surface (`flow is "..."`, `step is "..."`, `let ... be ...`, `set state... be ...`).
 
+For a full working sample, see `examples/control_flow_demo/control_flow_demo.ai`.
+
 ## If / Otherwise If / Else
 
 Canonical form:
@@ -76,6 +78,40 @@ Rules:
 - `repeat for each` expects a list/iterable; non-list values yield a runtime error.
 - `repeat up to N times` expects a non-negative number `N` (literal or variable).
 - Nested loops are allowed; inner loop variables do not leak outside their loop.
+- If the iterable is `None`, the loop runs zero times.
+- Failures inside a loop behave like any other step failure: the loop stops, and an `on error` handler (if present) runs before the flow proceeds.
+
+## Guard
+
+`guard` expresses a precondition: when the condition is false, the guard body runs; when true, the guard body is skipped.
+
+```ai
+step is "checkout":
+  guard user is present:
+    set state.error be "not_authenticated"
+    # optionally stop/redirect here
+
+  set state.status be "ok"
+```
+
+Rules:
+- `guard CONDITION:` evaluates the condition once.
+- If the condition is true, the body is skipped and execution continues after the guard.
+- If the condition is false, the body runs, then execution continues after the guard.
+- Conditions must evaluate to boolean values (same rules/diagnostics as `if`). Non-boolean conditions raise: `This guard condition did not evaluate to a boolean value. I got <value> instead. Make sure the condition returns true or false.`
+- Guards are valid anywhere statements are allowed (script steps, inside loops, inside retry blocks).
+
+## Step kinds
+
+Steps declare what they do with `kind is "..."`:
+- **script** (default when omitted for steps with a script body): runs DSL logic (let/set, if/match, loops, retry, logging). External calls only happen if you make them inside the script.
+- **ai:** calls a named AI model. Fails if `target` is missing or the model name is unknown. Output is stored on `step.<name>.output` (and aliases).
+- **agent:** delegates to an agent by name. Fails if `target` is missing or unknown. Output is stored on `step.<name>.output`.
+- **tool:** calls a registered tool by name. Fails if `target` is missing or the tool is unknown. If no args are provided, the last output is passed as the default payload.
+
+Notes:
+- There is no `kind is "set"`; script is the default.
+- Unknown kinds produce an English error listing the supported built-ins (`script`, `ai`, `agent`, `tool`). Extension kinds arrive via plugins, not ad-hoc strings.
 
 ## Retry
 
@@ -93,6 +129,7 @@ Rules:
 - Runs the block up to `N` times until it succeeds or attempts are exhausted.
 - `N` may be a literal or a variable.
 - `with backoff` applies the configured backoff policy (see runtime defaults).
+- `retry up to` expects a non-negative number of attempts; `0` skips the block. After all attempts fail, the error propagates so an `on error` handler can catch it.
 
 ## On Error
 

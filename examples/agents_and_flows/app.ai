@@ -9,7 +9,7 @@ page is "home" at "/":
 model "default":
   provider "dummy"
 
-agent is \"writer":
+agent "writer":
   goal "Write a short statement about a topic."
 
 flow is "orchestrate":
@@ -23,6 +23,6 @@ flow is "orchestrate":
     kind "tool"
     target "echo"
 
-ai is \"decide":
+ai is "decide":
   model "default"
   input from "user_input"

@@ -116,3 +116,41 @@ def test_inline_ternary_rejected():
     with pytest.raises(ParseError) as excinfo:
         parse_source(source)
     assert "Inline conditional expressions" in str(excinfo.value)
+
+
+def test_guard_parses():
+    source = (
+        'flow is "f":\n'
+        '  step is "s":\n'
+        "    guard user is present:\n"
+        '      set state.error be "missing"\n'
+        "    set state.done be true\n"
+    )
+    module = parse_source(source)
+    flow = next(d for d in module.declarations if isinstance(d, ast_nodes.FlowDecl))
+    guard_stmt = next(s for s in flow.steps[0].statements if isinstance(s, ast_nodes.GuardStatement))
+    assert isinstance(guard_stmt, ast_nodes.GuardStatement)
+
+
+def test_guard_missing_condition_errors():
+    source = (
+        'flow is "f":\n'
+        '  step is "s":\n'
+        "    guard:\n"
+        '      set state.error be true\n'
+    )
+    with pytest.raises(ParseError) as excinfo:
+        parse_source(source)
+    assert "Expected a condition after guard." in str(excinfo.value)
+
+
+def test_guard_missing_colon_errors():
+    source = (
+        'flow is "f":\n'
+        '  step is "s":\n'
+        "    guard true\n"
+        '      set state.error be true\n'
+    )
+    with pytest.raises(ParseError) as excinfo:
+        parse_source(source)
+    assert "Expected ':' after the guard condition." in str(excinfo.value)

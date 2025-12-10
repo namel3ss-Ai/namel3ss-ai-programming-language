@@ -1,0 +1,6 @@
+{
+  "name": "Data & Collections Demo",
+  "category": "data-collections",
+  "description": "Demonstrates collection pipelines, grouping with aggregates, safe records, and list helpers.",
+  "tags": ["data", "collections", "pipelines", "lists", "records"]
+}

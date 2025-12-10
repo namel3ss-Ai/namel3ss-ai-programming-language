@@ -1,0 +1,98 @@
+app is "records_queries_demo":
+  entry_page "home"
+  description "Demo app for English find queries with ordering and pagination."
+
+frame is "users":
+  backend "memory"
+  table "users"
+
+record "User":
+  frame is "users"
+  fields:
+    id:
+      type "string"
+      primary_key true
+    name:
+      type "string"
+      required true
+    is_active:
+      type "bool"
+      default true
+    country:
+      type "string"
+    created_at:
+      type "int"
+      required true
+
+flow is "seed_sample_data":
+  description "Insert a handful of sample users."
+  step is "alice":
+    kind is "db_create"
+    record "User"
+    values:
+      id: "u1"
+      name: "Alice"
+      is_active: true
+      country: "BE"
+      created_at: 3
+  step is "bob":
+    kind is "db_create"
+    record "User"
+    values:
+      id: "u2"
+      name: "Bob"
+      is_active: false
+      country: "US"
+      created_at: 2
+  step is "carol":
+    kind is "db_create"
+    record "User"
+    values:
+      id: "u3"
+      name: "Carol"
+      is_active: true
+      country: "BE"
+      created_at: 5
+  step is "dave":
+    kind is "db_create"
+    record "User"
+    values:
+      id: "u4"
+      name: "Dave"
+      is_active: true
+      country: "NL"
+      created_at: 1
+
+flow is "list_active_users":
+  description "Filter active users, sort by created_at then name, and paginate."
+  step is "query":
+    find users where:
+      is_active is true
+
+    order users by created_at descending, name ascending
+    limit users to 3
+    offset users by 0
+
+  step is "log_active":
+    repeat for each { id, name, country, created_at } in step.query.output:
+      log info "Active user" with { id: id, name: name, country: country, created_at: created_at }
+
+flow is "be_or_nl_users":
+  description "Filter by country using 'is one of' and demonstrate offset pagination."
+  step is "query":
+    find users where:
+      country is one of ["BE", "NL"]
+
+    order users by created_at descending
+    offset users by 1
+    limit users to 2
+
+  step is "log_results":
+    repeat for each { id, name, country, created_at } in step.query.output:
+      log info "Benelux user" with { id: id, name: name, country: country, created_at: created_at }
+
+page is "home" at "/records-demo":
+  section "about":
+    heading "Records & Queries Demo"
+    text "Use seed_sample_data to insert demo users, then list_active_users or be_or_nl_users to see the English find syntax, ordering, and pagination."
+    text "Inspect logs to view query results."

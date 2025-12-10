@@ -4,15 +4,15 @@ memory "debate_memory":
 model "debate-llm":
   provider "openai"
 
-agent is \"pro_agent":
+agent "pro_agent":
   goal "Argue in favor of the topic with concise reasoning."
   personality "optimistic and evidence-focused"
 
-agent is \"con_agent":
+agent "con_agent":
   goal "Argue against the topic highlighting risks or gaps."
   personality "skeptical and pragmatic"
 
-agent is \"judge_agent":
+agent "judge_agent":
   goal "Review both sides and deliver a short verdict."
   personality "neutral and structured"
 

@@ -9,11 +9,11 @@ page is "home" at "/":
 model "default":
   provider "dummy"
 
-ai is \"greet":
+ai is "greet":
   model "default"
   input from "user_input"
 
 flow is "pipeline":
   step is "call":
-    kind "ai"
+    kind is "ai"
     target "greet"

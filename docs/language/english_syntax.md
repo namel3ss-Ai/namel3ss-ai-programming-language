@@ -57,7 +57,7 @@ page "support_home":
 - `use model "name" provided by "provider"` → model definition.
 - `ai "name": when called: ...` → AI block with `model`, `input`, and optional `description`.
 - `agent "name": the goal is "..."; the personality is "..."` → agent definition.
-- `flow "name": this flow will: ... do ai/agent/tool ...` → flow with ordered steps; `first/then/finally` are readability sugar.
+- `flow "name": this flow will: ... do ai/agent/tool ...` → flow with ordered steps; `first/then/finally` are readability sugar. Use `find <alias> where:` for record queries.
 - `app "name": starts at page "home"` → app entry page + description.
 - `page "name": found at route "/"; titled "..."` → page declaration; `show text:` / `show form asking:` map to text/form components.
 
@@ -278,10 +278,8 @@ flow "manage_document":
       title: state.title
 
   step "load":
-    kind "db_get"
-    record "Document"
-    by id:
-      id: state.doc_id
+    find documents where:
+      id is state.doc_id
 
   step "rename":
     kind "db_update"
@@ -300,8 +298,8 @@ flow "manage_document":
 
 - `record` declarations tie a typed schema to an existing frame. Field types supported in this phase: `string`, `text`, `int`, `float`, `bool`, `uuid`, and `datetime`. One field must be marked `primary_key`.
 - `db_create` requires a `values` block. Required (or primary-key) fields must be present unless a default is defined. Defaults can be literals or `"now"` for datetime columns.
-- `db_get` returns either a single record when `by id:` is provided, or a list when using `where:` filters. Add `limit is 10` to slice the list.
 - `db_update` and `db_delete` operate on a single record via the `by id:` block. `db_update` returns the updated record; `db_delete` reports `{ ok: true, deleted: 1 }` when a row was removed.
+- Queries use the English `find <alias> where:` surface with operators like `is`, `is not`, `is greater than`, `is at least`, `is one of`, `is null`, and `is not null`. Add `order <alias> by field [ascending|descending]`, `limit <alias> to N`, and `offset <alias> by N` for sorting and pagination.
 
 These steps reuse the existing frame backend, so records automatically persist wherever the frame points (memory, sqlite, postgres). Future phases will add migrations, relations, and richer querying.
 
