@@ -107,6 +107,8 @@ def _format_decl(decl: ast_nodes.Declaration, level: int) -> List[str]:
         if decl.memory_type:
             body.append(_indent(level + 1, f"type {_q(decl.memory_type)}"))
         return [_indent(level, f"memory {_q(decl.name)}:")] + body
+    if isinstance(decl, ast_nodes.MemoryProfileDecl):
+        return [_indent(level, f"memory profile {_q(decl.name)}:")]
     if isinstance(decl, ast_nodes.PluginDecl):
         if decl.description:
             return [

@@ -192,9 +192,9 @@ Cross-reference: AI/model parsing in `src/namel3ss/parser.py`; runtime routing i
 ---
 
 ## 7. Memory: Conversation, Long-Term, and Profiles
-- **Kinds:** `short_term`, `long_term`, `profile`.
+- **Kinds:** `short_term`, `long_term`, `episodic`, `semantic`, `profile`.
 - **Recall:** Ordered rules pulling from each kind.
-- **Pipelines:** `llm_summarizer`, `llm_fact_extractor` steps for compaction/facts.
+- **Pipelines:** `llm_summariser`, `llm_fact_extractor`, and `vectoriser` steps run after each AI call to compress chats, extract facts, or prepare semantic snippets.
 - **Policy:** `scope` (`per_session`, `per_user`, `shared`), `retention_days`, `pii_policy`.
 
 Example:
@@ -215,14 +215,14 @@ ai is "support_ai":
         retention_days is 30
         pii_policy is "strip-email"
         pipeline:
-          - step is "summarize"
-            type is "llm_summarizer"
+          step is "summarize":
+            type is "llm_summariser"
             max_tokens is 256
       profile:
         store is "default_memory"
         extract_facts is true
         pipeline:
-          - step is "facts"
+          step is "facts":
             type is "llm_fact_extractor"
     recall:
       - source is "short_term"
@@ -233,7 +233,69 @@ ai is "support_ai":
         include is true
 ```
 
-Cross-reference: parser memory rules `src/namel3ss/parser.py`; runtime memory stores/pipelines `src/namel3ss/memory/*`, integration `src/namel3ss/runtime/context.py`; tests `tests/test_memory_conversation.py`, `tests/test_memory_multikind.py`, `tests/test_memory_retention.py`, `tests/test_memory_inspector_api.py`; example `examples/support_bot/support_bot.ai`.
+- `short_term` defaults to window `20`, scope `per_session`, and gets an automatic recall rule if you omit one.
+- `long_term`, `episodic`, and `semantic` default to `top_k` recall (5/5/8 respectively) and use `per_user` or `shared` scopes unless you override them.
+- `profile` defaults to `per_user`, `extract_facts false`, and `include true`. Using `include` on any other kind produces a friendly `N3L-1202`.
+
+Multi-kind memory feels natural in English:
+
+```ai
+ai is "trip_planner":
+  model is "planner-llm"
+  memory:
+    kinds:
+      short_term
+      episodic:
+        store is "trip_episodes"
+        retention_days is 365
+      semantic:
+        store is "travel_kb"
+      profile:
+        store is "user_profiles"
+        extract_facts is true
+    recall:
+      - source is "short_term"
+        count is 16
+      - source is "episodic"
+        top_k is 10
+      - source is "semantic"
+        top_k is 8
+      - source is "profile"
+        include is true
+```
+
+If a recall rule references `episodic` but the AI never declared that kind, the compiler calls it out with `Add 'episodic' under 'kinds:' or update the recall rule.` style guidance.
+
+### Memory profiles in practice
+
+Profiles capture that boilerplate once so AIs can opt-in with `use memory profile` and keep a single inline override block:
+
+```ai
+memory profile is "conversational_short":
+  kinds:
+    short_term
+
+memory profile is "customer_facts":
+  kinds:
+    profile:
+      store is "user_profiles"
+      extract_facts is true
+
+ai is "support_ai":
+  model is "support-llm"
+  use memory profile "conversational_short"
+  use memory profile "customer_facts"
+  memory:
+    kinds:
+      short_term:
+        window is 32
+```
+
+- Bare `short_term` (or `short_term:` with an empty block) automatically injects the default window (`20`), scope (`per_session`), and a matching recall rule.
+- Profiles merge in the order you list them; there can still be **only one** inline `memory:` block per AI, and it wins last for overrides such as bumping the window or changing the store.
+- Helpful diagnostics cover duplicate profiles, unknown names, missing stores, or multiple inline `memory:` blocks so you always end up with a single merged config per AI.
+
+Cross-reference: parser memory rules `src/namel3ss/parser.py`; runtime memory stores/pipelines `src/namel3ss/memory/*`, integration `src/namel3ss/runtime/context.py`; tests `tests/test_memory_conversation.py`, `tests/test_memory_multikind.py`, `tests/test_memory_profiles.py`, `tests/test_memory_store_validation.py`; examples `examples/memory_profiles_demo/memory_profiles_demo.ai`, `examples/memory_multikind_demo/memory_multikind_demo.ai`.
 
 ---
 

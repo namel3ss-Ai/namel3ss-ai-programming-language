@@ -20,8 +20,10 @@ import {
   FmtPreviewResponse,
   PluginMetadata,
   PluginsResponse,
+  MemoryPlanResponse,
   MemorySessionDetail,
   MemorySessionsResponse,
+  MemoryStateResponse,
   NamingMigrationResponse,
 } from "./types";
 
@@ -198,6 +200,35 @@ export const ApiClient = {
     request<MemorySessionsResponse>(`/api/memory/ai/${encodeURIComponent(aiId)}/sessions`, {
       method: "GET",
     }),
+  fetchMemoryPlan: (aiId: string) =>
+    request<MemoryPlanResponse>(`/api/memory/ai/${encodeURIComponent(aiId)}/plan`, {
+      method: "GET",
+    }),
+  fetchMemoryState: (
+    aiId: string,
+    params: { sessionId?: string | null; userId?: string | null; limit?: number } | null,
+  ) => {
+    if (!params) {
+      throw new Error("Provide sessionId or userId to inspect memory state.");
+    }
+    const search = new URLSearchParams();
+    if (params.sessionId) {
+      search.set("session_id", params.sessionId);
+    }
+    if (params.userId) {
+      search.set("user_id", params.userId);
+    }
+    if (params.limit) {
+      search.set("limit", String(params.limit));
+    }
+    const qs = search.toString();
+    return request<MemoryStateResponse>(
+      `/api/memory/ai/${encodeURIComponent(aiId)}/state${qs ? `?${qs}` : ""}`,
+      {
+        method: "GET",
+      },
+    );
+  },
   fetchMemorySessionDetail: (aiId: string, sessionId: string) =>
     request<MemorySessionDetail>(
       `/api/memory/ai/${encodeURIComponent(aiId)}/sessions/${encodeURIComponent(sessionId)}`,

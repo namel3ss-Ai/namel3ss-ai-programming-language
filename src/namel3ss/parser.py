@@ -11,6 +11,8 @@ from . import ast_nodes
 from .errors import ParseError
 from .lexer import Lexer, Token
 
+SUPPORTED_MEMORY_KINDS = ("short_term", "long_term", "episodic", "semantic", "profile")
+
 
 class Parser:
     def __init__(self, tokens: List[Token]) -> None:
@@ -26,6 +28,7 @@ class Parser:
             "describe",
             "description",
             "memory",
+            "use",
             "tools",
         }
         self._transaction_depth = 0
@@ -82,6 +85,8 @@ class Parser:
         if token.value == "agent":
             return self.parse_agent()
         if token.value == "memory":
+            if (self.peek_offset(1).value or "") == "profile":
+                return self.parse_memory_profile()
             return self.parse_memory()
         if token.value == "record":
             return self.parse_record()
@@ -512,6 +517,7 @@ class Parser:
         system_prompt = None
         memory_name = None
         memory_config: ast_nodes.AiMemoryConfig | None = None
+        memory_profiles: list[str] = []
         tool_bindings: list[ast_nodes.AiToolBinding] = []
         while not self.check("DEDENT"):
             if self.match("NEWLINE"):
@@ -590,7 +596,10 @@ class Parser:
                 self.optional_newline()
             elif field_token.value == "memory":
                 if memory_name is not None or memory_config is not None:
-                    raise self.error("N3L-802: memory may only appear once inside an ai block.", field_token)
+                    raise self.error(
+                        f"N3L-802: AI '{name.value or ''}' has more than one 'memory:' section. I can only use one. Combine your settings into a single 'memory:' block, or move shared settings into a 'memory profile'.",
+                        field_token,
+                    )
                 self.advance()
                 if self.match_value("KEYWORD", "is"):
                     mem_tok = self.consume("STRING")
@@ -607,7 +616,18 @@ class Parser:
                     memory_name = value_token.value
                     self.optional_newline()
                 else:
-                    memory_config = self._parse_ai_memory_block(name.value or "", field_token)
+                    memory_config = self._parse_memory_block(f"AI '{name.value or ''}'", field_token)
+            elif field_token.value == "use" and (self.peek_offset(1).value or "") == "memory":
+                self.advance()
+                self.consume("KEYWORD", "memory")
+                self.consume("KEYWORD", "profile")
+                profile_tok = self.consume("STRING")
+                profile_name = profile_tok.value or ""
+                if not profile_name:
+                    raise self.error("Memory profile names must be non-empty.", profile_tok)
+                if profile_name not in memory_profiles:
+                    memory_profiles.append(profile_name)
+                self.optional_newline()
             elif field_token.value == "tools":
                 self.advance()
                 tool_bindings.extend(self._parse_ai_tools_block())
@@ -633,6 +653,7 @@ class Parser:
             system_prompt=system_prompt,
             memory_name=memory_name,
             memory=memory_config,
+            memory_profiles=memory_profiles,
             tools=tool_bindings,
             span=self._span(start),
         )
@@ -711,7 +732,7 @@ class Parser:
             tok,
         )
 
-    def _parse_ai_memory_block(self, ai_name: str, field_token: Token) -> ast_nodes.AiMemoryConfig:
+    def _parse_memory_block(self, owner_label: str, field_token: Token) -> ast_nodes.AiMemoryConfig:
         start_span = self._span(field_token)
         self.consume("COLON")
         self.consume("NEWLINE")
@@ -721,6 +742,8 @@ class Parser:
         mem_store: str | None = None
         short_term_cfg: ast_nodes.AiShortTermMemoryConfig | None = None
         long_term_cfg: ast_nodes.AiLongTermMemoryConfig | None = None
+        episodic_cfg: ast_nodes.AiEpisodicMemoryConfig | None = None
+        semantic_cfg: ast_nodes.AiSemanticMemoryConfig | None = None
         profile_cfg: ast_nodes.AiProfileMemoryConfig | None = None
         recall_rules: list[ast_nodes.AiRecallRule] = []
         while not self.check("DEDENT"):
@@ -745,7 +768,13 @@ class Parser:
                 if not mem_store:
                     raise self.error("N3L-1203: memory store must be a non-empty string.", store_tok)
             elif field_name == "kinds":
-                short_term_cfg, long_term_cfg, profile_cfg = self._parse_memory_kinds_block()
+                (
+                    short_term_cfg,
+                    long_term_cfg,
+                    episodic_cfg,
+                    semantic_cfg,
+                    profile_cfg,
+                ) = self._parse_memory_kinds_block(owner_label)
                 continue
             elif field_name == "recall":
                 recall_rules = self._parse_memory_recall_block()
@@ -761,16 +790,25 @@ class Parser:
             store=mem_store,
             short_term=short_term_cfg,
             long_term=long_term_cfg,
+            episodic=episodic_cfg,
+            semantic=semantic_cfg,
             profile=profile_cfg,
             recall=recall_rules,
             span=start_span,
         )
 
+    def _suggest_memory_kind(self, name: str) -> str | None:
+        matches = get_close_matches(name, SUPPORTED_MEMORY_KINDS, n=1, cutoff=0.6)
+        return matches[0] if matches else None
+
     def _parse_memory_kinds_block(
         self,
+        owner_label: str,
     ) -> tuple[
         ast_nodes.AiShortTermMemoryConfig | None,
         ast_nodes.AiLongTermMemoryConfig | None,
+        ast_nodes.AiEpisodicMemoryConfig | None,
+        ast_nodes.AiSemanticMemoryConfig | None,
         ast_nodes.AiProfileMemoryConfig | None,
     ]:
         self.consume("COLON")
@@ -778,44 +816,100 @@ class Parser:
         self.consume("INDENT")
         short_term_cfg: ast_nodes.AiShortTermMemoryConfig | None = None
         long_term_cfg: ast_nodes.AiLongTermMemoryConfig | None = None
+        episodic_cfg: ast_nodes.AiEpisodicMemoryConfig | None = None
+        semantic_cfg: ast_nodes.AiSemanticMemoryConfig | None = None
         profile_cfg: ast_nodes.AiProfileMemoryConfig | None = None
+        defined_kinds: set[str] = set()
         while not self.check("DEDENT"):
             if self.match("NEWLINE"):
                 continue
             kind_tok = self.consume_any({"KEYWORD", "IDENT"})
-            kind_name = kind_tok.value or ""
-            self.consume("COLON")
-            self.consume("NEWLINE")
-            self.consume("INDENT")
-            if kind_name == "short_term":
-                if short_term_cfg is not None:
-                    raise self.error("short_term memory kind may only be defined once.", kind_tok)
-                short_term_cfg = self._parse_short_term_kind()
-            elif kind_name == "long_term":
-                if long_term_cfg is not None:
-                    raise self.error("long_term memory kind may only be defined once.", kind_tok)
-                long_term_cfg = self._parse_long_term_kind()
-            elif kind_name == "profile":
-                if profile_cfg is not None:
-                    raise self.error("profile memory kind may only be defined once.", kind_tok)
-                profile_cfg = self._parse_profile_kind()
-            else:
+            kind_name_raw = kind_tok.value or ""
+            kind_name = (kind_name_raw or "").strip()
+            bare_entry = False
+            if not kind_name:
+                raise self.error("Memory kind name cannot be empty.", kind_tok)
+            if kind_name not in SUPPORTED_MEMORY_KINDS:
+                suggestion = self._suggest_memory_kind(kind_name)
+                hint = f" Did you mean '{suggestion}'?" if suggestion else ""
                 raise self.error(
-                    f"Unexpected memory kind '{kind_name}' (expected short_term, long_term, or profile).",
+                    f"Memory kind '{kind_name}' is not supported.{hint} Supported kinds are: {', '.join(SUPPORTED_MEMORY_KINDS)}.",
                     kind_tok,
                 )
-            self.consume("DEDENT")
+            if kind_name in defined_kinds:
+                raise self.error(
+                    f"Memory kind '{kind_name}' is declared more than once for {owner_label}. Combine your settings into a single entry.",
+                    kind_tok,
+                )
+            bare_entry = False
+            if self.match("COLON"):
+                self.consume("NEWLINE")
+                if self.check("INDENT"):
+                    self.consume("INDENT")
+                    if self.check("DEDENT"):
+                        self.consume("DEDENT")
+                        bare_entry = True
+                    else:
+                        if kind_name == "short_term":
+                            if short_term_cfg is not None:
+                                raise self.error("short_term memory kind may only be defined once.", kind_tok)
+                            short_term_cfg = self._parse_short_term_kind(owner_label)
+                        elif kind_name == "long_term":
+                            if long_term_cfg is not None:
+                                raise self.error("long_term memory kind may only be defined once.", kind_tok)
+                            long_term_cfg = self._parse_long_term_kind(owner_label)
+                        elif kind_name == "episodic":
+                            if episodic_cfg is not None:
+                                raise self.error("episodic memory kind may only be defined once.", kind_tok)
+                            episodic_cfg = self._parse_episodic_kind(owner_label)
+                        elif kind_name == "semantic":
+                            if semantic_cfg is not None:
+                                raise self.error("semantic memory kind may only be defined once.", kind_tok)
+                            semantic_cfg = self._parse_semantic_kind(owner_label)
+                        elif kind_name == "profile":
+                            if profile_cfg is not None:
+                                raise self.error("profile memory kind may only be defined once.", kind_tok)
+                            profile_cfg = self._parse_profile_kind(owner_label)
+                        self.consume("DEDENT")
+                else:
+                    bare_entry = True
+            else:
+                bare_entry = True
+
+            if bare_entry:
+                if kind_name == "short_term":
+                    if short_term_cfg is not None:
+                        raise self.error("short_term memory kind may only be defined once.", kind_tok)
+                    short_term_cfg = ast_nodes.AiShortTermMemoryConfig(span=self._span(kind_tok))
+                elif kind_name == "long_term":
+                    if long_term_cfg is not None:
+                        raise self.error("long_term memory kind may only be defined once.", kind_tok)
+                    long_term_cfg = ast_nodes.AiLongTermMemoryConfig(span=self._span(kind_tok))
+                elif kind_name == "episodic":
+                    if episodic_cfg is not None:
+                        raise self.error("episodic memory kind may only be defined once.", kind_tok)
+                    episodic_cfg = ast_nodes.AiEpisodicMemoryConfig(span=self._span(kind_tok))
+                elif kind_name == "semantic":
+                    if semantic_cfg is not None:
+                        raise self.error("semantic memory kind may only be defined once.", kind_tok)
+                    semantic_cfg = ast_nodes.AiSemanticMemoryConfig(span=self._span(kind_tok))
+                elif kind_name == "profile":
+                    if profile_cfg is not None:
+                        raise self.error("profile memory kind may only be defined once.", kind_tok)
+                    profile_cfg = ast_nodes.AiProfileMemoryConfig(span=self._span(kind_tok))
+            defined_kinds.add(kind_name)
             self.optional_newline()
         self.consume("DEDENT")
         self.optional_newline()
-        return short_term_cfg, long_term_cfg, profile_cfg
+        return short_term_cfg, long_term_cfg, episodic_cfg, semantic_cfg, profile_cfg
 
-    def _parse_short_term_kind(self) -> ast_nodes.AiShortTermMemoryConfig:
+    def _parse_short_term_kind(self, owner_label: str) -> ast_nodes.AiShortTermMemoryConfig:
         window: int | None = None
         store: str | None = None
         retention_days: int | None = None
         pii_policy: str | None = None
         scope: str | None = None
+        pipeline: list[ast_nodes.AiMemoryPipelineStep] | None = None
         while not self.check("DEDENT"):
             if self.match("NEWLINE"):
                 continue
@@ -847,6 +941,8 @@ class Parser:
                 self.consume("KEYWORD", "is")
                 scope_tok = self.consume("STRING")
                 scope = (scope_tok.value or "").strip()
+            elif field_name == "pipeline":
+                pipeline = self._parse_memory_pipeline_block()
             else:
                 raise self.error(f"Unexpected field '{field_name}' in short_term memory kind.", field_tok)
             self.optional_newline()
@@ -856,14 +952,16 @@ class Parser:
             retention_days=retention_days,
             pii_policy=pii_policy,
             scope=scope,
+            pipeline=pipeline,
         )
 
-    def _parse_long_term_kind(self) -> ast_nodes.AiLongTermMemoryConfig:
+    def _parse_long_term_kind(self, owner_label: str) -> ast_nodes.AiLongTermMemoryConfig:
         store: str | None = None
         pipeline: list[ast_nodes.AiMemoryPipelineStep] | None = None
         retention_days: int | None = None
         pii_policy: str | None = None
         scope: str | None = None
+        time_decay: ast_nodes.AiTimeDecayConfig | None = None
         while not self.check("DEDENT"):
             if self.match("NEWLINE"):
                 continue
@@ -891,20 +989,28 @@ class Parser:
                 self.consume("KEYWORD", "is")
                 scope_tok = self.consume("STRING")
                 scope = (scope_tok.value or "").strip()
+            elif field_name == "time_decay":
+                if time_decay is not None:
+                    raise self.error("time_decay may only be defined once in a long_term block.", field_tok)
+                time_decay = self._parse_time_decay_block("long_term", field_tok)
             else:
                 raise self.error(f"Unexpected field '{field_name}' in long_term memory kind.", field_tok)
             self.optional_newline()
         if not store:
-            raise self.error("long_term memory kind requires a store.", self.peek())
+            raise self.error(
+                f"long_term memory kind on {owner_label} requires a 'store is \"...\"' entry.",
+                self.peek(),
+            )
         return ast_nodes.AiLongTermMemoryConfig(
             store=store,
             pipeline=pipeline,
             retention_days=retention_days,
             pii_policy=pii_policy,
             scope=scope,
+            time_decay=time_decay,
         )
 
-    def _parse_profile_kind(self) -> ast_nodes.AiProfileMemoryConfig:
+    def _parse_profile_kind(self, owner_label: str) -> ast_nodes.AiProfileMemoryConfig:
         store: str | None = None
         extract_facts: bool | None = None
         pipeline: list[ast_nodes.AiMemoryPipelineStep] | None = None
@@ -948,7 +1054,10 @@ class Parser:
                 raise self.error(f"Unexpected field '{field_name}' in profile memory kind.", field_tok)
             self.optional_newline()
         if not store:
-            raise self.error("profile memory kind requires a store.", self.peek())
+            raise self.error(
+                f"profile memory kind on {owner_label} requires a 'store is \"...\"' entry.",
+                self.peek(),
+            )
         return ast_nodes.AiProfileMemoryConfig(
             store=store,
             extract_facts=extract_facts,
@@ -957,6 +1066,141 @@ class Parser:
             pii_policy=pii_policy,
             scope=scope,
         )
+
+    def _parse_episodic_kind(self, owner_label: str) -> ast_nodes.AiEpisodicMemoryConfig:
+        store: str | None = None
+        retention_days: int | None = None
+        pii_policy: str | None = None
+        scope: str | None = None
+        pipeline: list[ast_nodes.AiMemoryPipelineStep] | None = None
+        time_decay: ast_nodes.AiTimeDecayConfig | None = None
+        while not self.check("DEDENT"):
+            if self.match("NEWLINE"):
+                continue
+            field_tok = self.consume_any({"KEYWORD", "IDENT"})
+            field_name = field_tok.value or ""
+            if field_name == "store":
+                self.consume("KEYWORD", "is")
+                store_tok = self.consume("STRING")
+                store = store_tok.value or ""
+                if not store:
+                    raise self.error("N3L-1203: memory store must be a non-empty string.", store_tok)
+            elif field_name == "retention_days":
+                self.consume("KEYWORD", "is")
+                num_tok = self.consume("NUMBER")
+                retention_days = self._consume_positive_int(
+                    num_tok, "N3L-1202: retention_days must be a positive integer."
+                )
+            elif field_name == "pii_policy":
+                self.consume("KEYWORD", "is")
+                policy_tok = self.consume("STRING")
+                pii_policy = (policy_tok.value or "").strip()
+            elif field_name == "scope":
+                self.consume("KEYWORD", "is")
+                scope_tok = self.consume("STRING")
+                scope = (scope_tok.value or "").strip()
+            elif field_name == "pipeline":
+                pipeline = self._parse_memory_pipeline_block()
+            elif field_name == "time_decay":
+                if time_decay is not None:
+                    raise self.error("time_decay may only be defined once in an episodic block.", field_tok)
+                time_decay = self._parse_time_decay_block("episodic", field_tok)
+            else:
+                raise self.error(f"Unexpected field '{field_name}' in episodic memory kind.", field_tok)
+            self.optional_newline()
+        return ast_nodes.AiEpisodicMemoryConfig(
+            store=store,
+            retention_days=retention_days,
+            pii_policy=pii_policy,
+            scope=scope,
+            pipeline=pipeline,
+            time_decay=time_decay,
+        )
+
+    def _parse_semantic_kind(self, owner_label: str) -> ast_nodes.AiSemanticMemoryConfig:
+        store: str | None = None
+        retention_days: int | None = None
+        pii_policy: str | None = None
+        scope: str | None = None
+        pipeline: list[ast_nodes.AiMemoryPipelineStep] | None = None
+        time_decay: ast_nodes.AiTimeDecayConfig | None = None
+        while not self.check("DEDENT"):
+            if self.match("NEWLINE"):
+                continue
+            field_tok = self.consume_any({"KEYWORD", "IDENT"})
+            field_name = field_tok.value or ""
+            if field_name == "store":
+                self.consume("KEYWORD", "is")
+                store_tok = self.consume("STRING")
+                store = store_tok.value or ""
+                if not store:
+                    raise self.error("N3L-1203: memory store must be a non-empty string.", store_tok)
+            elif field_name == "retention_days":
+                self.consume("KEYWORD", "is")
+                num_tok = self.consume("NUMBER")
+                retention_days = self._consume_positive_int(
+                    num_tok, "N3L-1202: retention_days must be a positive integer."
+                )
+            elif field_name == "pii_policy":
+                self.consume("KEYWORD", "is")
+                policy_tok = self.consume("STRING")
+                pii_policy = (policy_tok.value or "").strip()
+            elif field_name == "scope":
+                self.consume("KEYWORD", "is")
+                scope_tok = self.consume("STRING")
+                scope = (scope_tok.value or "").strip()
+            elif field_name == "pipeline":
+                pipeline = self._parse_memory_pipeline_block()
+            elif field_name == "time_decay":
+                if time_decay is not None:
+                    raise self.error("time_decay may only be defined once in a semantic block.", field_tok)
+                time_decay = self._parse_time_decay_block("semantic", field_tok)
+            else:
+                raise self.error(f"Unexpected field '{field_name}' in semantic memory kind.", field_tok)
+            self.optional_newline()
+        return ast_nodes.AiSemanticMemoryConfig(
+            store=store,
+            retention_days=retention_days,
+            pii_policy=pii_policy,
+            scope=scope,
+            pipeline=pipeline,
+            time_decay=time_decay,
+        )
+
+    def _parse_time_decay_block(self, kind_name: str, field_token: Token) -> ast_nodes.AiTimeDecayConfig:
+        if self.match_value("KEYWORD", "is"):
+            raise self.error(
+                f"time_decay on {kind_name} memory uses block syntax. Try:\n  time_decay:\n    half_life_days is 30",
+                field_token,
+            )
+        self.consume("COLON")
+        self.consume("NEWLINE")
+        self.consume("INDENT")
+        half_life_days: int | None = None
+        while not self.check("DEDENT"):
+            if self.match("NEWLINE"):
+                continue
+            inner_tok = self.consume_any({"KEYWORD", "IDENT"})
+            inner_name = inner_tok.value or ""
+            if inner_name == "half_life_days":
+                self.consume("KEYWORD", "is")
+                num_tok = self.consume("NUMBER")
+                half_life_days = self._consume_positive_int(
+                    num_tok, "time_decay half_life_days must be a positive integer."
+                )
+            else:
+                raise self.error(
+                    f"Unknown field '{inner_name}' inside time_decay for {kind_name} memory. Supported: half_life_days.",
+                    inner_tok,
+                )
+            self.optional_newline()
+        self.consume("DEDENT")
+        if half_life_days is None:
+            raise self.error(
+                f"time_decay on {kind_name} memory requires 'half_life_days is <number>'.",
+                field_token,
+            )
+        return ast_nodes.AiTimeDecayConfig(half_life_days=half_life_days, span=self._span(field_token))
 
     def _parse_memory_recall_block(self) -> list[ast_nodes.AiRecallRule]:
         self.consume("COLON")
@@ -986,10 +1230,12 @@ class Parser:
                 if field_name == "source":
                     self.consume("KEYWORD", "is")
                     source_tok = self.consume_any({"STRING", "IDENT", "KEYWORD"})
-                    rule.source = (source_tok.value or "").strip()
-                    if rule.source not in {"short_term", "long_term", "profile"}:
+                    rule.source = ((source_tok.value or "").strip()).lower()
+                    if rule.source not in SUPPORTED_MEMORY_KINDS:
+                        suggestion = self._suggest_memory_kind(rule.source)
+                        hint = f" Did you mean '{suggestion}'?" if suggestion else ""
                         raise self.error(
-                            "N3L-1202: Recall rule source must be one of short_term, long_term, or profile.",
+                            f"N3L-1202: Memory recall source '{rule.source}' is not a supported memory kind.{hint} Supported kinds are: {', '.join(SUPPORTED_MEMORY_KINDS)}.",
                             source_tok,
                         )
                 elif field_name == "count":
@@ -1030,49 +1276,97 @@ class Parser:
         while not self.check("DEDENT"):
             if self.match("NEWLINE"):
                 continue
-            self.consume("DASH")
-            step = ast_nodes.AiMemoryPipelineStep()
-            start_tok = self.peek()
-            nested_indent = 0
-            while True:
-                if nested_indent == 0 and (self.check("DEDENT") or self.check("DASH")):
-                    break
-                if self.match("NEWLINE"):
-                    continue
-                if self.match("INDENT"):
-                    nested_indent += 1
-                    continue
-                if nested_indent > 0 and self.match("DEDENT"):
-                    nested_indent -= 1
-                    continue
-                field_tok = self.consume_any({"KEYWORD", "IDENT"})
-                field_name = field_tok.value or ""
-                if field_name == "step":
-                    self.consume("KEYWORD", "is")
-                    name_tok = self.consume("STRING")
-                    step.name = (name_tok.value or "").strip()
-                elif field_name == "type":
-                    self.consume("KEYWORD", "is")
-                    type_tok = self.consume_any({"STRING", "IDENT", "KEYWORD"})
-                    step.type = (type_tok.value or "").strip()
-                elif field_name == "max_tokens":
-                    self.consume("KEYWORD", "is")
-                    num_tok = self.consume("NUMBER")
-                    step.max_tokens = self._consume_positive_int(
-                        num_tok, "N3L-1202: max_tokens must be a positive integer."
-                    )
-                else:
-                    raise self.error(f"Unexpected field '{field_name}' in memory pipeline step.", field_tok)
-                self.optional_newline()
-            if not step.name:
-                raise self.error("Memory pipeline step requires a non-empty 'step' name.", start_tok)
-            if not step.type:
-                raise self.error("Memory pipeline step requires a 'type'.", start_tok)
-            step.span = self._span(start_tok)
-            steps.append(step)
+            if self.check("DASH"):
+                steps.append(self._parse_legacy_pipeline_step())
+                continue
+            steps.append(self._parse_block_pipeline_step())
         self.consume("DEDENT")
         self.optional_newline()
         return steps
+
+    def _parse_block_pipeline_step(self) -> ast_nodes.AiMemoryPipelineStep:
+        start_tok = self.consume_any({"KEYWORD", "IDENT"})
+        if (start_tok.value or "") != "step":
+            raise self.error("Expected 'step is \"name\"' inside pipeline.", start_tok)
+        self.consume("KEYWORD", "is")
+        name_tok = self.consume("STRING")
+        step = ast_nodes.AiMemoryPipelineStep(name=(name_tok.value or "").strip(), span=self._span(start_tok))
+        self.consume("COLON")
+        self.consume("NEWLINE")
+        self.consume("INDENT")
+        while not self.check("DEDENT"):
+            if self.match("NEWLINE"):
+                continue
+            field_tok = self.consume_any({"KEYWORD", "IDENT"})
+            self._assign_pipeline_step_field(step, field_tok)
+            self.optional_newline()
+        self.consume("DEDENT")
+        self._finalize_pipeline_step(step, start_tok)
+        return step
+
+    def _parse_legacy_pipeline_step(self) -> ast_nodes.AiMemoryPipelineStep:
+        self.consume("DASH")
+        step = ast_nodes.AiMemoryPipelineStep()
+        start_tok = self.peek()
+        nested_indent = 0
+        while True:
+            if nested_indent == 0 and (self.check("DEDENT") or self.check("DASH")):
+                break
+            if self.match("NEWLINE"):
+                continue
+            if self.match("INDENT"):
+                nested_indent += 1
+                continue
+            if nested_indent > 0 and self.match("DEDENT"):
+                nested_indent -= 1
+                continue
+            field_tok = self.consume_any({"KEYWORD", "IDENT"})
+            self._assign_pipeline_step_field(step, field_tok)
+            self.optional_newline()
+        self._finalize_pipeline_step(step, start_tok)
+        return step
+
+    def _assign_pipeline_step_field(
+        self,
+        step: ast_nodes.AiMemoryPipelineStep,
+        field_tok: Token,
+    ) -> None:
+        field_name = field_tok.value or ""
+        if field_name == "step":
+            self.consume("KEYWORD", "is")
+            name_tok = self.consume("STRING")
+            step.name = (name_tok.value or "").strip()
+        elif field_name == "type":
+            self.consume("KEYWORD", "is")
+            type_tok = self.consume_any({"STRING", "IDENT", "KEYWORD"})
+            step.type = (type_tok.value or "").strip()
+        elif field_name == "max_tokens":
+            self.consume("KEYWORD", "is")
+            num_tok = self.consume("NUMBER")
+            step.max_tokens = self._consume_positive_int(
+                num_tok, "N3L-1202: max_tokens must be a positive integer."
+            )
+        elif field_name == "target_kind":
+            self.consume("KEYWORD", "is")
+            target_tok = self.consume_any({"STRING", "IDENT", "KEYWORD"})
+            step.target_kind = (target_tok.value or "").strip()
+        elif field_name == "embedding_model":
+            self.consume("KEYWORD", "is")
+            embed_tok = self.consume("STRING")
+            step.embedding_model = (embed_tok.value or "").strip()
+        else:
+            raise self.error(f"Unexpected field '{field_name}' in memory pipeline step.", field_tok)
+
+    def _finalize_pipeline_step(
+        self,
+        step: ast_nodes.AiMemoryPipelineStep,
+        start_tok: Token,
+    ) -> None:
+        if not (step.name or "").strip():
+            raise self.error("Memory pipeline step requires a non-empty 'step' name.", start_tok)
+        if not (step.type or "").strip():
+            raise self.error("Memory pipeline step requires a 'type'.", start_tok)
+        step.span = self._span(start_tok)
 
     def _consume_positive_int(self, token: Token, error_msg: str) -> int:
         try:
@@ -1244,6 +1538,17 @@ class Parser:
         return ast_nodes.MemoryDecl(
             name=name.value or "", memory_type=memory_type, retention=retention, span=self._span(start)
         )
+
+    def parse_memory_profile(self) -> ast_nodes.MemoryProfileDecl:
+        start = self.consume("KEYWORD", "memory")
+        profile_tok = self.consume_any({"KEYWORD", "IDENT"})
+        if (profile_tok.value or "").lower() != "profile":
+            raise self.error("Expected 'profile' after memory when declaring a memory profile.", profile_tok)
+        self.consume("KEYWORD", "is")
+        name_tok = self.consume("STRING")
+        owner_label = f"memory profile '{name_tok.value or ''}'"
+        config = self._parse_memory_block(owner_label, start)
+        return ast_nodes.MemoryProfileDecl(name=name_tok.value or "", config=config, span=self._span(start))
 
     def parse_record(self) -> ast_nodes.RecordDecl:
         start = self.consume("KEYWORD", "record")

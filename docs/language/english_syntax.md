@@ -194,6 +194,87 @@ ai "support_bot":
 
 When this AI is called, recent messages from `support_chat` (for the current session/request) are loaded and prepended. The new user + assistant messages are appended back to the same memory. For now, only `type "conversation"` is supported; retention is stored for future policies.
 
+### Memory profiles and friendly defaults
+
+Reusable memory configs live in `memory profile` blocks and can be mixed into any AI:
+
+```
+memory profile is "conversational_short":
+  kinds:
+    short_term
+
+memory profile is "long_user_profile":
+  kinds:
+    profile:
+      store is "user_profiles"
+      extract_facts is true
+
+ai is "support_bot":
+  model is "gpt-4.1-mini"
+  use memory profile "conversational_short"
+  use memory profile "long_user_profile"
+  memory:
+    kinds:
+      short_term:
+        window is 32
+```
+
+- Bare `short_term` (or `short_term:` with no nested fields) uses the friendly defaults: window `20`, scope `per_session`, and a matching recall rule.
+- Profile references are merged in order, and a single inline `memory:` block can override anything that came from a profile.
+- Referencing an unknown profile or adding more than one inline `memory:` block produces clear `IRError`s.
+- Supported kinds are `short_term`, `long_term`, `episodic`, `semantic`, and `profile`. Typos surface suggestions (`Did you mean "short_term"?`), and `include` is only allowed on `profile` recall rules.
+- Any kind can add a `pipeline:` of post-call steps:
+
+```
+memory:
+  kinds:
+    short_term:
+      pipeline:
+        step is "summarise_short":
+          type is "llm_summariser"
+          target_kind is "episodic"
+    profile:
+      pipeline:
+        step is "extract_user_facts":
+          type is "llm_fact_extractor"
+    semantic:
+      pipeline:
+        step is "vectorise_memories":
+          type is "vectoriser"
+          embedding_model is "default_embedding"
+```
+
+Pipelines run in declaration order. Each `step` needs a friendly name plus a supported `type`. Unknown types, missing `target_kind`, or invalid embedding configs produce clear compiler errors.
+
+Mix and match kinds inside an AI; recall rules can reference any of them:
+
+```
+ai is "travel_planner":
+  model is "gpt-4.1-mini"
+  memory:
+    kinds:
+      short_term
+      episodic:
+        store is "trip_episodes"
+        retention_days is 365
+      semantic:
+        store is "travel_kb"
+      profile:
+        store is "user_profiles"
+        extract_facts is true
+    recall:
+      - source is "short_term"
+        count is 16
+      - source is "episodic"
+        top_k is 10
+      - source is "semantic"
+        top_k is 8
+      - source is "profile"
+        include is true
+```
+
+If a recall rule mentions `episodic` but the AI does not define it under `kinds:`, the compiler explains how to add the missing entry.
+
 ## Frames & persistence
 
 Declare a named frame that maps to real storage (memory/sqlite/postgres) and use it from flows:

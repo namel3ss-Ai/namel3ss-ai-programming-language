@@ -8,12 +8,30 @@ import copy
 from dataclasses import dataclass, field
 from datetime import datetime, timezone, timedelta
 from typing import Any, Dict, List, Optional, TypedDict
+import math
 import re
 from types import SimpleNamespace
 
 from ..ai.registry import ModelRegistry
 from ..ai.router import ModelRouter
-from ..ir import IRAgent, IRAiCall, IRAiShortTermMemoryConfig, IRApp, IRMemory, IRPage, IRProgram
+from ..ir import (
+    IRAgent,
+    IRAiCall,
+    IRAiShortTermMemoryConfig,
+    IRApp,
+    IRMemory,
+    IRPage,
+    IRProgram,
+    DEFAULT_SHORT_TERM_WINDOW,
+    DEFAULT_SHORT_TERM_SCOPE,
+    DEFAULT_LONG_TERM_TOP_K,
+    DEFAULT_EPISODIC_TOP_K,
+    DEFAULT_SEMANTIC_TOP_K,
+    DEFAULT_LONG_TERM_SCOPE,
+    DEFAULT_EPISODIC_SCOPE,
+    DEFAULT_SEMANTIC_SCOPE,
+    DEFAULT_PROFILE_SCOPE,
+)
 from ..memory.engine import MemoryEngine
 from ..metrics.tracker import MetricsTracker
 from ..errors import Namel3ssError, ProviderAuthError, ProviderConfigError, ProviderTimeoutError
@@ -49,10 +67,7 @@ from .circuit_breaker import default_circuit_breaker
 from .vectorstores import VectorStoreRegistry
 
 
-DEFAULT_SHORT_TERM_WINDOW = 20
-DEFAULT_LONG_TERM_TOP_K = 5
 PROFILE_HISTORY_WINDOW = 50
-DEFAULT_SHORT_TERM_SCOPE = "per_session"
 EMAIL_PATTERN = re.compile(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}", re.IGNORECASE)
 IP_PATTERN = re.compile(r"\b\d{1,3}(?:\.\d{1,3}){3}\b")
 
@@ -91,8 +106,14 @@ def _retention_cutoff_iso(retention_days: int | None) -> str | None:
 def _default_scope_for_kind(kind: str, user_id: str | None) -> str:
     if kind == "short_term":
         return DEFAULT_SHORT_TERM_SCOPE
-    if kind in {"long_term", "profile"}:
-        return "per_user" if user_id else "per_session"
+    if kind == "long_term":
+        return DEFAULT_LONG_TERM_SCOPE if user_id else "per_session"
+    if kind == "episodic":
+        return DEFAULT_EPISODIC_SCOPE if user_id else "per_session"
+    if kind == "profile":
+        return DEFAULT_PROFILE_SCOPE if user_id else "per_session"
+    if kind == "semantic":
+        return DEFAULT_SEMANTIC_SCOPE
     return "per_session"
 
 
@@ -117,6 +138,30 @@ def _compute_scope_keys(
     else:
         session_key = session_id
     return base_ai_key, session_key, scope, fallback
+
+
+def _select_entries_with_time_decay(
+    entries: list[Dict[str, Any]] | None,
+    limit: int,
+    time_decay_cfg: Any,
+) -> list[Dict[str, Any]]:
+    if not entries or limit <= 0:
+        return []
+    if not time_decay_cfg or not getattr(time_decay_cfg, "half_life_days", None):
+        return list(entries[-limit:])
+    half_life = max(1, int(getattr(time_decay_cfg, "half_life_days", 0) or 0))
+    now = datetime.now(timezone.utc)
+    scored: list[tuple[float, float, Dict[str, Any]]] = []
+    for entry in entries:
+        ts = _parse_timestamp(entry.get("created_at"))
+        age_days = 0.0
+        if ts:
+            delta = now - ts
+            age_days = max(0.0, delta.total_seconds() / 86400.0)
+        decay = math.exp(-age_days / half_life)
+        scored.append((decay, age_days, entry))
+    scored.sort(key=lambda item: (-item[0], item[1]))
+    return [entry for _, _, entry in scored[:limit]]
 
 
 def filter_turns_by_retention(turns: list[Dict[str, str]], retention_days: int | None) -> list[Dict[str, str]]:
@@ -182,10 +227,29 @@ def _cleanup_state_retention(state: Dict[str, Any]) -> None:
         backend.cleanup_retention(state.get("ai_key"), state.get("session_key"), cutoff_iso)
 
 
+def vacuum_memory_state(memory_state: Dict[str, Any] | None) -> None:
+    if not memory_state:
+        return
+    for kind in ("short_term", "long_term", "profile", "episodic", "semantic"):
+        state = memory_state.get(kind) if isinstance(memory_state, dict) else None
+        if state:
+            _cleanup_state_retention(state)
+
+
 def _normalize_user_id(value: Any) -> str | None:
     if value is None:
         return None
     return str(value)
+
+
+def vacuum_memory_retention(
+    ai_call: IRAiCall,
+    context: ExecutionContext,
+    session_id: str,
+    user_id: str | None,
+) -> None:
+    memory_state, _ = build_memory_messages(ai_call, context, session_id, user_id)
+    vacuum_memory_state(memory_state)
 
 
 class UserContext(TypedDict, total=False):
@@ -415,6 +479,7 @@ def record_recall_snapshot(
     session_id: str,
     rules: List[Any] | None,
     messages: List[Dict[str, Any]],
+    diagnostics: List[Dict[str, Any]] | None = None,
 ) -> None:
     if not ai_id or not session_id:
         return
@@ -423,6 +488,8 @@ def record_recall_snapshot(
         "rules": [_serialize_recall_rule(rule) for rule in (rules or [])],
         "messages": copy.deepcopy(messages),
     }
+    if diagnostics:
+        snapshot["diagnostics"] = copy.deepcopy(diagnostics)
     _RECALL_SNAPSHOTS[(ai_id, session_id)] = snapshot
 
 
@@ -460,6 +527,15 @@ def _serialize_recall_rule(rule: Any) -> Dict[str, Any]:
     }
 
 
+def _serialize_time_decay(cfg: Any | None) -> Dict[str, Any] | None:
+    if not cfg:
+        return None
+    half_life = getattr(cfg, "half_life_days", None)
+    if half_life is None:
+        return None
+    return {"half_life_days": half_life}
+
+
 def build_memory_messages(
     ai_call: IRAiCall,
     context: ExecutionContext,
@@ -482,6 +558,8 @@ def build_memory_messages(
         "short_term": None,
         "long_term": None,
         "profile": None,
+        "episodic": None,
+        "semantic": None,
         "user_id": _normalize_user_id(user_id),
     }
     recall_messages: list[Dict[str, str]] = []
@@ -495,7 +573,7 @@ def build_memory_messages(
         backend = memory_stores.get(resolved)
         if backend is None:
             raise Namel3ssError(
-                f"N3L-1201: Memory store '{resolved}' referenced on AI '{ai_call.name}' is not configured for this project."
+                f"N3L-1201: AI '{ai_call.name}' refers to memory store '{resolved}', but that store is not configured. Add it to your configuration file, or change the store name to one of the configured stores."
             )
         return backend, resolved
 
@@ -586,6 +664,7 @@ def build_memory_messages(
             "scope_fallback": scope_fallback,
             "retention_days": getattr(long_term_cfg, "retention_days", None),
             "pii_policy": getattr(long_term_cfg, "pii_policy", None),
+            "time_decay": getattr(long_term_cfg, "time_decay", None),
         }
         memory_state["long_term"] = long_state
 
@@ -632,14 +711,124 @@ def build_memory_messages(
         }
         memory_state["profile"] = profile_state
 
+    episodic_state = None
+    episodic_cfg = getattr(mem_cfg, "episodic", None)
+    if episodic_cfg:
+        backend, resolved = _require_backend(getattr(episodic_cfg, "store", None))
+        episodic_rules = [rule for rule in recall_plan if getattr(rule, "source", "") == "episodic"]
+        needed = DEFAULT_EPISODIC_TOP_K
+        if episodic_rules:
+            needed = max(
+                DEFAULT_EPISODIC_TOP_K,
+                max(
+                    (getattr(rule, "top_k", None) or getattr(rule, "count", None) or DEFAULT_EPISODIC_TOP_K)
+                    for rule in episodic_rules
+                ),
+            )
+        history = []
+        base_key = f"{ai_call.name}::episodic"
+        try:
+            ai_key, session_key, resolved_scope, scope_fallback = _compute_scope_keys(
+                base_key,
+                getattr(episodic_cfg, "scope", None),
+                _default_scope_for_kind("episodic", resolved_user_id),
+                session_id,
+                resolved_user_id,
+            )
+            if episodic_rules:
+                history = backend.load_history(ai_key, session_key, needed)
+                history = filter_items_by_retention(history, getattr(episodic_cfg, "retention_days", None))
+        except Exception as exc:
+            raise Namel3ssError(f"Failed to load episodic memory for AI '{ai_call.name}': {exc}")
+        episodic_state = {
+            "backend": backend,
+            "store": resolved,
+            "history": history,
+            "ai_key": ai_key,
+            "session_key": session_key,
+            "scope": resolved_scope,
+            "scope_fallback": scope_fallback,
+            "retention_days": getattr(episodic_cfg, "retention_days", None),
+            "pii_policy": getattr(episodic_cfg, "pii_policy", None),
+            "time_decay": getattr(episodic_cfg, "time_decay", None),
+        }
+        memory_state["episodic"] = episodic_state
+
+    semantic_state = None
+    semantic_cfg = getattr(mem_cfg, "semantic", None)
+    if semantic_cfg:
+        backend, resolved = _require_backend(getattr(semantic_cfg, "store", None))
+        semantic_rules = [rule for rule in recall_plan if getattr(rule, "source", "") == "semantic"]
+        needed = DEFAULT_SEMANTIC_TOP_K
+        if semantic_rules:
+            needed = max(
+                DEFAULT_SEMANTIC_TOP_K,
+                max(
+                    (getattr(rule, "top_k", None) or getattr(rule, "count", None) or DEFAULT_SEMANTIC_TOP_K)
+                    for rule in semantic_rules
+                ),
+            )
+        history = []
+        base_key = f"{ai_call.name}::semantic"
+        try:
+            ai_key, session_key, resolved_scope, scope_fallback = _compute_scope_keys(
+                base_key,
+                getattr(semantic_cfg, "scope", None),
+                _default_scope_for_kind("semantic", resolved_user_id),
+                session_id,
+                resolved_user_id,
+            )
+            if semantic_rules:
+                history = backend.load_history(ai_key, session_key, needed)
+                history = filter_items_by_retention(history, getattr(semantic_cfg, "retention_days", None))
+        except Exception as exc:
+            raise Namel3ssError(f"Failed to load semantic memory for AI '{ai_call.name}': {exc}")
+        semantic_state = {
+            "backend": backend,
+            "store": resolved,
+            "history": history,
+            "ai_key": ai_key,
+            "session_key": session_key,
+            "scope": resolved_scope,
+            "scope_fallback": scope_fallback,
+            "retention_days": getattr(semantic_cfg, "retention_days", None),
+            "pii_policy": getattr(semantic_cfg, "pii_policy", None),
+            "time_decay": getattr(semantic_cfg, "time_decay", None),
+        }
+        memory_state["semantic"] = semantic_state
+
+    recall_diagnostics: list[Dict[str, Any]] = []
     for rule in recall_plan:
         source = getattr(rule, "source", "")
+        diag_entry: Dict[str, Any] = {
+            "source": source,
+            "requested": {
+                "count": getattr(rule, "count", None),
+                "top_k": getattr(rule, "top_k", None),
+                "include": getattr(rule, "include", None),
+            },
+        }
         if source == "short_term" and short_state:
             count = getattr(rule, "count", None) or short_state["window"] or DEFAULT_SHORT_TERM_WINDOW
-            recall_messages.extend(_turns_to_messages(short_state.get("history", [])[-count:]))
+            selected_turns = _turns_to_messages(short_state.get("history", [])[-count:])
+            recall_messages.extend(selected_turns)
+            diag_entry["selected_count"] = len(selected_turns)
+            diag_entry["scope"] = short_state.get("scope")
+            diag_entry["scope_fallback"] = short_state.get("scope_fallback")
+            diag_entry["limit"] = count
         elif source == "long_term" and long_state:
             top_k = getattr(rule, "top_k", None) or DEFAULT_LONG_TERM_TOP_K
-            recall_messages.extend(_turns_to_messages(long_state.get("history", [])[-top_k:]))
+            selected = _select_entries_with_time_decay(
+                long_state.get("history", []),
+                top_k,
+                long_state.get("time_decay"),
+            )
+            recall_messages.extend(_turns_to_messages(selected))
+            diag_entry["selected_count"] = len(selected)
+            diag_entry["scope"] = long_state.get("scope")
+            diag_entry["scope_fallback"] = long_state.get("scope_fallback")
+            diag_entry["limit"] = top_k
+            diag_entry["time_decay"] = _serialize_time_decay(long_state.get("time_decay"))
         elif source == "profile" and profile_state:
             include = getattr(rule, "include", None)
             include = True if include is None else include
@@ -647,7 +836,41 @@ def build_memory_messages(
                 profile_text = _profile_text_from_history(profile_state.get("history", []))
                 if profile_text:
                     recall_messages.append({"role": "system", "content": profile_text})
+                diag_entry["selected_count"] = len(profile_state.get("history", []) or [])
+            else:
+                diag_entry = None
+        elif source == "episodic" and episodic_state:
+            top_k = getattr(rule, "top_k", None) or getattr(rule, "count", None) or DEFAULT_EPISODIC_TOP_K
+            selected = _select_entries_with_time_decay(
+                episodic_state.get("history", []),
+                top_k,
+                episodic_state.get("time_decay"),
+            )
+            recall_messages.extend(_labeled_memory_messages("episodic", selected))
+            diag_entry["selected_count"] = len(selected)
+            diag_entry["scope"] = episodic_state.get("scope")
+            diag_entry["scope_fallback"] = episodic_state.get("scope_fallback")
+            diag_entry["limit"] = top_k
+            diag_entry["time_decay"] = _serialize_time_decay(episodic_state.get("time_decay"))
+        elif source == "semantic" and semantic_state:
+            top_k = getattr(rule, "top_k", None) or getattr(rule, "count", None) or DEFAULT_SEMANTIC_TOP_K
+            selected = _select_entries_with_time_decay(
+                semantic_state.get("history", []),
+                top_k,
+                semantic_state.get("time_decay"),
+            )
+            recall_messages.extend(_labeled_memory_messages("semantic", selected))
+            diag_entry["selected_count"] = len(selected)
+            diag_entry["scope"] = semantic_state.get("scope")
+            diag_entry["scope_fallback"] = semantic_state.get("scope_fallback")
+            diag_entry["limit"] = top_k
+            diag_entry["time_decay"] = _serialize_time_decay(semantic_state.get("time_decay"))
+        else:
+            diag_entry = None
+        if diag_entry:
+            recall_diagnostics.append(diag_entry)
 
+    memory_state["last_recall_diagnostics"] = recall_diagnostics
     return memory_state, recall_messages
 
 
@@ -671,15 +894,16 @@ def persist_memory_state(
     ]
     if short_state and short_state.get("backend"):
         try:
+            short_turns = _apply_pii_policy_to_turns(turns, short_state.get("pii_policy"))
             short_state["backend"].append_turns(
                 short_state["ai_key"],
                 short_state["session_key"],
-                turns,
+                short_turns,
                 resolved_user_id,
             )
             history = short_state.setdefault("history", [])
             if isinstance(history, list):
-                history.extend(turns)
+                history.extend(short_turns)
             _cleanup_state_retention(short_state)
         except Exception:
             pass
@@ -734,55 +958,104 @@ def run_memory_pipelines(
         "assistant_text": assistant_content,
         "short_term_history": list(short_history or []),
     }
-    long_state = memory_state.get("long_term") if memory_state else None
-    if getattr(mem_cfg, "long_term", None) and getattr(mem_cfg.long_term, "pipeline", None) and long_state:
-        for step in mem_cfg.long_term.pipeline or []:
-            _execute_memory_pipeline_step("long_term", step, long_state, pipeline_ctx, provider, provider_model)
-    profile_state = memory_state.get("profile") if memory_state else None
-    if getattr(mem_cfg, "profile", None) and getattr(mem_cfg.profile, "pipeline", None) and profile_state:
-        for step in mem_cfg.profile.pipeline or []:
-            _execute_memory_pipeline_step("profile", step, profile_state, pipeline_ctx, provider, provider_model)
+    kind_cfgs = {
+        "short_term": getattr(mem_cfg, "short_term", None),
+        "long_term": getattr(mem_cfg, "long_term", None),
+        "episodic": getattr(mem_cfg, "episodic", None),
+        "semantic": getattr(mem_cfg, "semantic", None),
+        "profile": getattr(mem_cfg, "profile", None),
+    }
+    for kind, cfg in kind_cfgs.items():
+        if not cfg:
+            continue
+        steps = getattr(cfg, "pipeline", None) or []
+        if not steps:
+            continue
+        for step in steps:
+            _execute_memory_pipeline_step(
+                kind,
+                step,
+                memory_state,
+                pipeline_ctx,
+                provider,
+                provider_model,
+            )
 
 
 def _execute_memory_pipeline_step(
-    kind: str,
+    source_kind: str,
     step: Any,
-    state: Dict[str, Any],
+    memory_state: Dict[str, Any],
     pipeline_ctx: MemoryPipelineContext,
     provider: Any,
     provider_model: str | None,
 ) -> None:
     step_type = getattr(step, "type", None)
-    if step_type == "llm_summarizer":
-        _run_llm_summarizer_step(step, state, pipeline_ctx, provider, provider_model, state.get("pii_policy"))
+    target_kind = getattr(step, "target_kind", None) or source_kind
+    source_state = memory_state.get(source_kind) if memory_state else None
+    target_state = memory_state.get(target_kind) if memory_state else None
+    if step_type == "llm_summariser":
+        _run_llm_summarizer_step(
+            step,
+            source_kind,
+            source_state,
+            target_kind,
+            target_state,
+            pipeline_ctx,
+            provider,
+            provider_model,
+        )
     elif step_type == "llm_fact_extractor":
-        _run_llm_fact_extractor_step(step, state, pipeline_ctx, provider, provider_model, state.get("pii_policy"))
+        _run_llm_fact_extractor_step(
+            step,
+            source_kind,
+            source_state,
+            target_state,
+            pipeline_ctx,
+            provider,
+            provider_model,
+        )
+    elif step_type == "vectoriser":
+        _run_vectoriser_step(
+            step,
+            source_kind,
+            source_state,
+            target_kind,
+            target_state,
+            pipeline_ctx,
+        )
 
 
 def _run_llm_summarizer_step(
     step: Any,
-    state: Dict[str, Any],
+    source_kind: str,
+    source_state: Dict[str, Any] | None,
+    target_kind: str,
+    target_state: Dict[str, Any] | None,
     pipeline_ctx: MemoryPipelineContext,
     provider: Any,
     provider_model: str | None,
-    pii_policy: str | None,
 ) -> None:
-    backend = state.get("backend")
-    ai_key = state.get("ai_key") or state.get("key")
-    session_key = state.get("session_key") or pipeline_ctx.get("session_id")
+    if not source_state or not target_state:
+        return
+    backend = target_state.get("backend")
+    ai_key = target_state.get("ai_key") or target_state.get("key")
+    session_key = target_state.get("session_key") or pipeline_ctx.get("session_id")
     if not backend or not ai_key or not session_key:
         return
-    transcript = _format_turns_for_pipeline(
-        pipeline_ctx.get("short_term_history", []),
-        pipeline_ctx.get("user_text", ""),
-        pipeline_ctx.get("assistant_text", ""),
-    )
+    transcript = _build_pipeline_transcript(source_kind, source_state, pipeline_ctx)
+    if not transcript.strip() and source_kind != "short_term":
+        transcript = _format_turns_for_pipeline(
+            pipeline_ctx.get("short_term_history", []),
+            pipeline_ctx.get("user_text", ""),
+            pipeline_ctx.get("assistant_text", ""),
+        )
     if not transcript.strip():
         return
     max_tokens = getattr(step, "max_tokens", None)
-    system_prompt = "You summarize recent conversations for long-term memory."
+    system_prompt = "You summarize recent conversations for memory."
     user_prompt_lines = [
-        "Summarize the following conversation so it can be stored as long-term memory.",
+        f"Summarize the following {source_kind.replace('_', ' ')} records so they can be stored as {target_kind.replace('_', ' ')} memory.",
         "Focus on key decisions, commitments, and facts.",
     ]
     if max_tokens:
@@ -796,32 +1069,37 @@ def _run_llm_summarizer_step(
     summary = _invoke_pipeline_model(provider, provider_model, messages).strip()
     if not summary:
         return
-    summary = _apply_pii_policy_to_text(summary, pii_policy)
+    summary = _apply_pii_policy_to_text(summary, target_state.get("pii_policy"))
     entry = _append_summary_entry(backend, ai_key, session_key, summary)
     if entry:
-        history = state.setdefault("history", [])
+        history = target_state.setdefault("history", [])
         if isinstance(history, list):
             history.append(entry)
 
 
 def _run_llm_fact_extractor_step(
     step: Any,
-    state: Dict[str, Any],
+    source_kind: str,
+    source_state: Dict[str, Any] | None,
+    target_state: Dict[str, Any] | None,
     pipeline_ctx: MemoryPipelineContext,
     provider: Any,
     provider_model: str | None,
-    pii_policy: str | None,
 ) -> None:
-    backend = state.get("backend")
-    ai_key = state.get("ai_key") or state.get("key")
-    session_key = state.get("session_key") or pipeline_ctx.get("session_id")
+    if not source_state or not target_state:
+        return
+    backend = target_state.get("backend")
+    ai_key = target_state.get("ai_key") or target_state.get("key")
+    session_key = target_state.get("session_key") or pipeline_ctx.get("session_id")
     if not backend or not ai_key or not session_key:
         return
-    transcript = _format_turns_for_pipeline(
-        pipeline_ctx.get("short_term_history", []),
-        pipeline_ctx.get("user_text", ""),
-        pipeline_ctx.get("assistant_text", ""),
-    )
+    transcript = _build_pipeline_transcript(source_kind, source_state, pipeline_ctx)
+    if not transcript.strip() and source_kind != "short_term":
+        transcript = _format_turns_for_pipeline(
+            pipeline_ctx.get("short_term_history", []),
+            pipeline_ctx.get("user_text", ""),
+            pipeline_ctx.get("assistant_text", ""),
+        )
     if not transcript.strip():
         return
     instructions = (
@@ -834,14 +1112,51 @@ def _run_llm_fact_extractor_step(
     ]
     facts_text = _invoke_pipeline_model(provider, provider_model, messages).strip()
     facts = _normalize_facts_from_text(facts_text)
-    facts = _apply_pii_policy_to_list(facts, pii_policy)
+    facts = _apply_pii_policy_to_list(facts, target_state.get("pii_policy"))
     if not facts:
         return
     entries = _append_fact_entries(backend, ai_key, session_key, facts)
     if entries:
-        history = state.setdefault("history", [])
+        history = target_state.setdefault("history", [])
         if isinstance(history, list):
             history.extend(entries)
+
+
+def _run_vectoriser_step(
+    step: Any,
+    source_kind: str,
+    source_state: Dict[str, Any] | None,
+    target_kind: str,
+    target_state: Dict[str, Any] | None,
+    pipeline_ctx: MemoryPipelineContext,
+) -> None:
+    if not source_state or not target_state:
+        return
+    backend = target_state.get("backend")
+    ai_key = target_state.get("ai_key") or target_state.get("key")
+    session_key = target_state.get("session_key") or pipeline_ctx.get("session_id")
+    if not backend or not ai_key or not session_key:
+        return
+    history = source_state.get("history") or []
+    if not history:
+        return
+    snippet = "\n".join((turn.get("content") or "").strip() for turn in history[-5:] if (turn.get("content") or "").strip())
+    if not snippet:
+        return
+    marker = getattr(step, "embedding_model", None) or "embedding"
+    entry_text = f"[vectoriser:{marker}] {snippet}"
+    entry_text = _apply_pii_policy_to_text(entry_text, target_state.get("pii_policy"))
+    try:
+        backend.append_turns(
+            ai_key,
+            session_key,
+            [{"role": "system", "content": entry_text}],
+        )
+    except Exception:
+        return
+    history_bucket = target_state.setdefault("history", [])
+    if isinstance(history_bucket, list):
+        history_bucket.append({"role": "system", "content": entry_text})
 
 
 def _invoke_pipeline_model(provider: Any, model_name: str | None, messages: List[Dict[str, str]]) -> str:
@@ -875,6 +1190,17 @@ def _format_turns_for_pipeline(
     if assistant_text:
         lines.append(f"assistant: {assistant_text.strip()}")
     return "\n".join(lines)
+
+
+def _build_pipeline_transcript(
+    kind: str,
+    state: Dict[str, Any] | None,
+    pipeline_ctx: MemoryPipelineContext,
+) -> str:
+    history = list((state or {}).get("history", []) or [])
+    user_text = pipeline_ctx.get("user_text", "") if kind == "short_term" else ""
+    assistant_text = pipeline_ctx.get("assistant_text", "") if kind == "short_term" else ""
+    return _format_turns_for_pipeline(history, user_text, assistant_text)
 
 
 def _append_summary_entry(backend: Any, key: str, session_id: str, summary: str) -> Dict[str, str] | None:
@@ -939,6 +1265,19 @@ def _profile_text_from_history(turns: list[Dict[str, str]]) -> str:
     if not lines:
         return ""
     return "User profile:\n" + "\n".join(lines)
+
+
+def _labeled_memory_messages(kind: str, entries: list[Dict[str, Any]]) -> list[Dict[str, str]]:
+    if not entries:
+        return []
+    label = "Episodic memory" if kind == "episodic" else "Semantic memory"
+    messages: list[Dict[str, str]] = []
+    for idx, entry in enumerate(entries, start=1):
+        text = (entry.get("content") or entry.get("summary") or "").strip()
+        if not text:
+            continue
+        messages.append({"role": "system", "content": f"{label} {idx}: {text}"})
+    return messages
 
 
 def execute_ai_call_with_registry(
@@ -1014,6 +1353,7 @@ def execute_ai_call_with_registry(
             session_id,
             list(getattr(memory_cfg, "recall", []) or []),
             messages,
+            diagnostics=memory_state.get("last_recall_diagnostics"),
         )
 
     def _http_json_request(method: str, url: str, headers: dict[str, str], body: bytes | None, provider_key: str | None = None, provider_cache: ProviderCacheBackend | None = None) -> dict:

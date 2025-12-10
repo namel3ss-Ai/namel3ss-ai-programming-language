@@ -90,6 +90,7 @@ class AICallDecl:
     system_prompt: Optional[str] = None
     memory_name: Optional[str] = None
     memory: Optional["AiMemoryConfig"] = None
+    memory_profiles: List[str] = field(default_factory=list)
     tools: List[AiToolBinding] = field(default_factory=list)
     span: Optional[Span] = None
 
@@ -151,22 +152,33 @@ class MemoryDecl:
 
 
 @dataclass
+class MemoryProfileDecl:
+    """memory profile is "name": reusable memory config."""
+
+    name: str
+    config: "AiMemoryConfig"
+    span: Optional[Span] = None
+
+
+@dataclass
 class AiShortTermMemoryConfig:
     window: Optional[int] = None
     store: Optional[str] = None
     retention_days: Optional[int] = None
     pii_policy: Optional[str] = None
     scope: Optional[str] = None
+    pipeline: Optional[list["AiMemoryPipelineStep"]] = None
     span: Optional[Span] = None
 
 
 @dataclass
 class AiLongTermMemoryConfig:
     store: Optional[str] = None
-    pipeline: Optional[list["AiMemoryPipelineStep"]] = None
     retention_days: Optional[int] = None
     pii_policy: Optional[str] = None
     scope: Optional[str] = None
+    pipeline: Optional[list["AiMemoryPipelineStep"]] = None
+    time_decay: Optional["AiTimeDecayConfig"] = None
     span: Optional[Span] = None
 
 
@@ -174,10 +186,38 @@ class AiLongTermMemoryConfig:
 class AiProfileMemoryConfig:
     store: Optional[str] = None
     extract_facts: Optional[bool] = None
-    pipeline: Optional[list["AiMemoryPipelineStep"]] = None
     retention_days: Optional[int] = None
     pii_policy: Optional[str] = None
     scope: Optional[str] = None
+    pipeline: Optional[list["AiMemoryPipelineStep"]] = None
+    span: Optional[Span] = None
+
+
+@dataclass
+class AiEpisodicMemoryConfig:
+    store: Optional[str] = None
+    retention_days: Optional[int] = None
+    pii_policy: Optional[str] = None
+    scope: Optional[str] = None
+    pipeline: Optional[list["AiMemoryPipelineStep"]] = None
+    time_decay: Optional["AiTimeDecayConfig"] = None
+    span: Optional[Span] = None
+
+
+@dataclass
+class AiSemanticMemoryConfig:
+    store: Optional[str] = None
+    retention_days: Optional[int] = None
+    pii_policy: Optional[str] = None
+    scope: Optional[str] = None
+    pipeline: Optional[list["AiMemoryPipelineStep"]] = None
+    time_decay: Optional["AiTimeDecayConfig"] = None
+    span: Optional[Span] = None
+
+
+@dataclass
+class AiTimeDecayConfig:
+    half_life_days: Optional[int] = None
     span: Optional[Span] = None
 
 
@@ -186,6 +226,8 @@ class AiMemoryPipelineStep:
     name: str = ""
     type: str = ""
     max_tokens: Optional[int] = None
+    target_kind: Optional[str] = None
+    embedding_model: Optional[str] = None
     span: Optional[Span] = None
 
 
@@ -206,6 +248,8 @@ class AiMemoryConfig:
     short_term: Optional[AiShortTermMemoryConfig] = None
     long_term: Optional[AiLongTermMemoryConfig] = None
     profile: Optional[AiProfileMemoryConfig] = None
+    episodic: Optional[AiEpisodicMemoryConfig] = None
+    semantic: Optional[AiSemanticMemoryConfig] = None
     recall: List[AiRecallRule] = field(default_factory=list)
     span: Optional[Span] = None
 
@@ -1106,6 +1150,7 @@ Declaration = Union[
     AICallDecl,
     AgentDecl,
     MemoryDecl,
+    MemoryProfileDecl,
     FrameDecl,
     RecordDecl,
     AuthDecl,

@@ -1,0 +1,51 @@
+memory profile is "shared_conversation":
+  kinds:
+    short_term:
+      scope is "per_session"
+      retention_days is 7
+    episodic:
+      store is "episode_store"
+      scope is "per_user"
+      retention_days is 365
+      time_decay:
+        half_life_days is 30
+    semantic:
+      store is "semantic_store"
+      scope is "shared"
+    profile:
+      store is "user_profiles"
+      scope is "per_user"
+      pii_policy is "strip-email-ip"
+      extract_facts is true
+
+model "gpt-4.1-mini":
+  provider "dummy"
+
+ai is "travel_planner":
+  model is "gpt-4.1-mini"
+  use memory profile "shared_conversation"
+  memory:
+    kinds:
+      short_term:
+        pipeline:
+          step is "summarise_short_term":
+            type is "llm_summariser"
+            target_kind is "episodic"
+      profile:
+        pipeline:
+          step is "extract_profile_facts":
+            type is "llm_fact_extractor"
+    recall:
+      - source is "short_term"
+        count is 12
+      - source is "episodic"
+        top_k is 6
+      - source is "semantic"
+        top_k is 5
+      - source is "profile"
+        include is true
+
+flow is "plan_trip":
+  description "Routes user questions through the travel planner with multi-kind memory"
+  step is "respond":
+    ai is "travel_planner"

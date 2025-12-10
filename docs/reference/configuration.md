@@ -182,7 +182,7 @@ memory:
 
 ### Memory Pipelines
 
-Long-term and profile kinds can include a `pipeline:` list describing post-processing steps:
+Any memory kind can include a `pipeline:` block describing post-processing steps:
 
 ```
 memory:
@@ -190,21 +190,29 @@ memory:
     long_term:
       store is "chat_long"
       pipeline:
-        - step is "summarize_session"
-          type is "llm_summarizer"
+        step is "summarize_session":
+          type is "llm_summariser"
           max_tokens is 512
+          target_kind is "long_term"
     profile:
       store is "user_profile"
       pipeline:
-        - step is "extract_facts"
+        step is "extract_facts":
           type is "llm_fact_extractor"
+    semantic:
+      store is "semantic_kb"
+      pipeline:
+        step is "vectorise_summary":
+          type is "vectoriser"
+          embedding_model is "default_embedding"
 ```
 
 - `step` is a friendly label for logs/diagnostics; `type` selects the built-in pipeline.
 - Supported types today:
-  - `llm_summarizer`: summarizes the recent short-term transcript + latest exchange and appends a concise note to the long-term store. `max_tokens` is optional.
+  - `llm_summariser`: summarizes the source kind (usually short-term) and writes a concise note to the `target_kind`. `max_tokens` defaults to 512.
   - `llm_fact_extractor`: extracts durable bullet-point facts about the user from the conversation and appends them to the profile store.
-- Pipelines run immediately after each AI call using the configured provider/model. Unknown `type` values raise `N3L-1203`. The stored summaries/facts are then available to the recall plan on subsequent turns.
+- `vectoriser`: prepares text for semantic/RAG storage. Provide an `embedding_model` and (optionally) a `target_kind`.
+- Pipelines run immediately after each AI call using the configured provider/model. Unknown `type` values, invalid targets, or missing embedding models raise `N3L-1203`. The stored summaries/facts/vectors are then available to the recall plan on subsequent turns.
 
 ## Troubleshooting
 

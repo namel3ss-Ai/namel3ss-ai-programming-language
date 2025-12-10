@@ -67,6 +67,7 @@ from .examples.manager import resolve_example_path, get_examples_root
 from .ui.manifest import build_ui_manifest
 from .flows.models import StreamEvent
 from .migration.naming import migrate_source_to_naming_standard
+from .memory.inspection import describe_memory_plan, describe_memory_state
 
 BASE_DIR = Path(__file__).resolve().parents[2]
 STUDIO_STATIC_DIR = BASE_DIR / "studio" / "static"
@@ -575,6 +576,36 @@ def create_app() -> FastAPI:
             policy["scope_note"] = "Using per_session fallback (no user identity)."
         return policy
 
+    def _legacy_session_payload(ai_id: str, session_id: str, state: Dict[str, Any]) -> Dict[str, Any]:
+        kinds = state.get("kinds", {})
+        short_payload = kinds.get("short_term") or {}
+        long_payload = kinds.get("long_term")
+        profile_payload = kinds.get("profile")
+        episodic_payload = kinds.get("episodic")
+        semantic_payload = kinds.get("semantic")
+        return {
+            "ai": ai_id,
+            "session": session_id,
+            "user_id": state.get("user_id"),
+            "short_term": {
+                "window": short_payload.get("window"),
+                "turns": short_payload.get("turns", []),
+            },
+            "long_term": (
+                {"store": long_payload.get("store"), "items": long_payload.get("items", [])} if long_payload else None
+            ),
+            "profile": (
+                {"store": profile_payload.get("store"), "facts": profile_payload.get("facts", [])}
+                if profile_payload
+                else None
+            ),
+            "episodic": episodic_payload,
+            "semantic": semantic_payload,
+            "policies": state.get("policies", {}),
+            "last_recall_snapshot": state.get("recall_snapshot"),
+            "kinds": kinds,
+        }
+
     @app.get("/health")
     def health() -> Dict[str, str]:
         return {"status": "ok"}
@@ -1051,6 +1082,40 @@ def create_app() -> FastAPI:
         except Exception as exc:  # pragma: no cover
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 
+    @app.get("/api/memory/ai/{ai_id}/plan")
+    def api_memory_plan(ai_id: str, principal: Principal = Depends(get_principal)) -> Dict[str, Any]:
+        if not can_view_pages(principal.role):
+            raise HTTPException(status_code=403, detail="Forbidden")
+        program = _project_program()
+        ai_calls = getattr(program, "ai_calls", {})
+        if ai_id not in ai_calls:
+            raise HTTPException(status_code=404, detail="AI not found")
+        plan = describe_memory_plan(ai_calls[ai_id])
+        return plan
+
+    @app.get("/api/memory/ai/{ai_id}/state")
+    def api_memory_state(
+        ai_id: str,
+        session_id: str | None = Query(default=None),
+        user_id: str | None = Query(default=None),
+        limit: int = Query(default=25, ge=1, le=200),
+        principal: Principal = Depends(get_principal),
+    ) -> Dict[str, Any]:
+        if not can_view_pages(principal.role):
+            raise HTTPException(status_code=403, detail="Forbidden")
+        if not session_id and not user_id:
+            raise HTTPException(status_code=400, detail="Provide session_id or user_id to inspect memory.")
+        program = _project_program()
+        ai_calls = getattr(program, "ai_calls", {})
+        if ai_id not in ai_calls:
+            raise HTTPException(status_code=404, detail="AI not found")
+        engine = _build_project_engine(program)
+        try:
+            state = describe_memory_state(engine, ai_calls[ai_id], session_id=session_id, user_id=user_id, limit=limit)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
+        return state
+
     @app.get("/api/memory/ai/{ai_id}/sessions")
     def api_memory_sessions(ai_id: str, principal: Principal = Depends(get_principal)) -> Dict[str, Any]:
         if not can_view_pages(principal.role):
@@ -1095,99 +1160,11 @@ def create_app() -> FastAPI:
         if not mem_cfg:
             return {"ai": ai_id, "session": session_id, "short_term": {"turns": []}}
         engine = _build_project_engine(program)
-        memory_stores = engine.memory_stores
-        short_cfg = getattr(mem_cfg, "short_term", None)
-        if short_cfg is None and (getattr(mem_cfg, "kind", None) or getattr(mem_cfg, "window", None) or getattr(mem_cfg, "store", None)):
-            short_cfg = ir.IRAiShortTermMemoryConfig(window=getattr(mem_cfg, "window", None), store=getattr(mem_cfg, "store", None))
-        short_store_name = _short_term_store_name(mem_cfg)
-        short_backend = memory_stores.get(short_store_name)
-        session_user_id: str | None = None
-        if short_backend and hasattr(short_backend, "get_session_user"):
-            try:
-                session_user_id = short_backend.get_session_user(ai_id, session_id)
-            except Exception:
-                session_user_id = None
-        short_scope = _compute_scope_keys(
-            "short_term",
-            getattr(short_cfg, "scope", None) if short_cfg else None,
-            ai_id,
-            session_id,
-            session_user_id,
-        )
-        short_history: List[Dict[str, Any]] = []
-        if short_backend:
-            short_history = short_backend.get_full_history(short_scope["ai_key"], short_scope["session_key"])
-            short_history = filter_turns_by_retention(
-                short_history,
-                getattr(short_cfg, "retention_days", None) if short_cfg else None,
-            )
-        short_window = (
-            getattr(short_cfg, "window", None)
-            or getattr(mem_cfg, "window", None)
-            or DEFAULT_SHORT_TERM_WINDOW
-        )
-        long_cfg = getattr(mem_cfg, "long_term", None)
-        long_scope = (
-            _compute_scope_keys("long_term", getattr(long_cfg, "scope", None), _long_term_key(ai_id), session_id, session_user_id)
-            if long_cfg
-            else None
-        )
-        long_store_name = _long_term_store_name(mem_cfg)
-        long_items: List[Dict[str, Any]] = []
-        if (
-            long_scope
-            and long_store_name
-            and long_store_name in memory_stores
-        ):
-            long_backend = memory_stores[long_store_name]
-            long_items = long_backend.list_items(long_scope["ai_key"], long_scope["session_key"])
-            long_items = filter_items_by_retention(
-                long_items,
-                getattr(long_cfg, "retention_days", None),
-            )
-        profile_cfg = getattr(mem_cfg, "profile", None)
-        profile_scope = (
-            _compute_scope_keys("profile", getattr(profile_cfg, "scope", None), _profile_key(ai_id), session_id, session_user_id)
-            if profile_cfg
-            else None
-        )
-        profile_store_name = _profile_store_name(mem_cfg)
-        profile_facts: List[str] = []
-        if (
-            profile_scope
-            and profile_store_name
-            and profile_store_name in memory_stores
-        ):
-            profile_backend = memory_stores[profile_store_name]
-            profile_history = profile_backend.get_full_history(profile_scope["ai_key"], profile_scope["session_key"])
-            profile_history = filter_turns_by_retention(
-                profile_history,
-                getattr(profile_cfg, "retention_days", None),
-            )
-            profile_facts = [
-                turn.get("content", "")
-                for turn in profile_history
-                if (turn.get("role") or "").lower() == "system"
-            ]
-        policies = {
-            "short_term": _build_policy_info("short_term", short_cfg, short_scope, session_user_id),
-            "long_term": _build_policy_info("long_term", long_cfg, long_scope, session_user_id),
-            "profile": _build_policy_info("profile", profile_cfg, profile_scope, session_user_id),
-        }
-        snapshot = get_last_recall_snapshot(ai_id, session_id)
-        return {
-            "ai": ai_id,
-            "session": session_id,
-            "user_id": session_user_id,
-            "short_term": {
-                "window": short_window,
-                "turns": short_history,
-            },
-            "long_term": {"store": long_store_name, "items": long_items} if long_store_name else None,
-            "profile": {"store": profile_store_name, "facts": profile_facts} if profile_store_name else None,
-            "policies": policies,
-            "last_recall_snapshot": snapshot,
-        }
+        try:
+            state = describe_memory_state(engine, ai_call, session_id=session_id, limit=50)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
+        return _legacy_session_payload(ai_id, session_id, state)
 
     @app.post("/api/memory/ai/{ai_id}/sessions/{session_id}/clear")
     def api_memory_session_clear(

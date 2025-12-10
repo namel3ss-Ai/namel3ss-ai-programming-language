@@ -1,4 +1,5 @@
 import json
+from types import SimpleNamespace
 
 import pytest
 
@@ -20,6 +21,37 @@ from namel3ss.secrets.manager import SecretsManager
 from namel3ss.runtime.context import ExecutionContext, execute_ai_call_with_registry
 
 
+@pytest.fixture(autouse=True)
+def _install_dummy_provider(monkeypatch):
+    monkeypatch.setenv("N3_PROVIDERS_JSON", '{"dummy":{"type":"openai","api_key":"sk-test"}}')
+
+
+def _install_stubbed_model_provider(monkeypatch):
+    class DummyInvocation:
+        def __init__(self, messages):
+            self.messages = [dict(msg) for msg in messages]
+            self.raw = {"messages": self.messages}
+            self.text = "ok"
+
+        def to_dict(self):
+            return {"raw": self.raw, "messages": self.messages}
+
+    class DummyProvider:
+        def generate(self, messages, model=None):
+            return DummyInvocation(messages)
+
+        def chat_with_tools(self, **kwargs):
+            return DummyInvocation(kwargs.get("messages", []))
+
+    monkeypatch.setattr(ModelRegistry, "_create_provider", lambda self, cfg: DummyProvider(), raising=False)
+    monkeypatch.setattr(
+        ModelRegistry,
+        "get_model_config",
+        lambda self, model_name: SimpleNamespace(model=model_name),
+        raising=False,
+    )
+
+
 def test_ai_memory_store_unknown(monkeypatch):
     source = MODEL_BLOCK + (
         'ai is "support_bot":\n'
@@ -33,6 +65,7 @@ def test_ai_memory_store_unknown(monkeypatch):
     with pytest.raises(IRError) as excinfo:
         ast_to_ir(module)
     assert "N3L-1201" in str(excinfo.value)
+    assert "refers to memory store 'tickets_memory'" in str(excinfo.value)
 
 
 def test_ai_memory_store_known(monkeypatch):
@@ -170,6 +203,7 @@ class RecordingMemoryBackend:
 def test_ai_call_uses_configured_memory_store(monkeypatch):
     monkeypatch.delenv("N3_MEMORY_STORES_JSON", raising=False)
     backend = RecordingMemoryBackend()
+    _install_stubbed_model_provider(monkeypatch)
     ctx = ExecutionContext(
         app_name="test",
         request_id="req-1",

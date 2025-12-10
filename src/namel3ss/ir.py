@@ -19,6 +19,34 @@ from .version import IR_VERSION
 
 
 DEFAULT_SHORT_TERM_WINDOW = 20
+DEFAULT_SHORT_TERM_SCOPE = "per_session"
+DEFAULT_LONG_TERM_SCOPE = "per_user"
+DEFAULT_PROFILE_SCOPE = "per_user"
+DEFAULT_EPISODIC_SCOPE = "per_user"
+DEFAULT_SEMANTIC_SCOPE = "shared"
+DEFAULT_SHORT_TERM_RETENTION_DAYS = 7
+DEFAULT_LONG_TERM_RETENTION_DAYS = 365
+DEFAULT_SEMANTIC_RETENTION_DAYS = 365
+DEFAULT_EPISODIC_RETENTION_DAYS = 365
+DEFAULT_EPISODIC_TOP_K = 5
+DEFAULT_SEMANTIC_TOP_K = 8
+DEFAULT_SUMMARISER_MAX_TOKENS = 512
+PIPELINE_TYPE_ALIASES = {
+    "llm_summarizer": "llm_summariser",
+    "llm_summariser": "llm_summariser",
+    "llm_fact_extractor": "llm_fact_extractor",
+    "vectorizer": "vectoriser",
+    "vectoriser": "vectoriser",
+}
+SUPPORTED_MEMORY_PIPELINE_TYPES = set(PIPELINE_TYPE_ALIASES.values())
+DEFAULT_LONG_TERM_TOP_K = 5
+SUPPORTED_MEMORY_KINDS = (
+    "short_term",
+    "long_term",
+    "episodic",
+    "semantic",
+    "profile",
+)
 
 
 @dataclass
@@ -86,6 +114,7 @@ class IRAiShortTermMemoryConfig:
     retention_days: int | None = None
     pii_policy: str | None = None
     scope: str | None = None
+    pipeline: list["IRMemoryPipelineStep"] | None = None
 
 
 @dataclass
@@ -95,6 +124,7 @@ class IRAiLongTermMemoryConfig:
     retention_days: int | None = None
     pii_policy: str | None = None
     scope: str | None = None
+    time_decay: IRTimeDecayConfig | None = None
 
 
 @dataclass
@@ -108,10 +138,37 @@ class IRAiProfileMemoryConfig:
 
 
 @dataclass
+class IRAiEpisodicMemoryConfig:
+    store: str | None = None
+    retention_days: int | None = None
+    pii_policy: str | None = None
+    scope: str | None = None
+    pipeline: list["IRMemoryPipelineStep"] | None = None
+    time_decay: IRTimeDecayConfig | None = None
+
+
+@dataclass
+class IRAiSemanticMemoryConfig:
+    store: str | None = None
+    retention_days: int | None = None
+    pii_policy: str | None = None
+    scope: str | None = None
+    pipeline: list["IRMemoryPipelineStep"] | None = None
+    time_decay: IRTimeDecayConfig | None = None
+
+
+@dataclass
 class IRMemoryPipelineStep:
     name: str
     type: str
     max_tokens: int | None = None
+    target_kind: str | None = None
+    embedding_model: str | None = None
+
+
+@dataclass
+class IRTimeDecayConfig:
+    half_life_days: int
 
 
 @dataclass
@@ -129,6 +186,8 @@ class IRAiMemoryConfig:
     store: str | None = None
     short_term: IRAiShortTermMemoryConfig | None = None
     long_term: IRAiLongTermMemoryConfig | None = None
+    episodic: IRAiEpisodicMemoryConfig | None = None
+    semantic: IRAiSemanticMemoryConfig | None = None
     profile: IRAiProfileMemoryConfig | None = None
     recall: list[IRAiRecallRule] = field(default_factory=list)
 
@@ -140,6 +199,10 @@ class IRAiMemoryConfig:
             stores.append(self.store)
         if self.long_term:
             stores.append(self.long_term.store)
+        if self.episodic:
+            stores.append(self.episodic.store)
+        if self.semantic:
+            stores.append(self.semantic.store)
         if self.profile:
             stores.append(self.profile.store)
         return stores
@@ -160,6 +223,12 @@ class IRMemory:
     name: str
     memory_type: str | None = None
     retention: str | None = None
+
+
+@dataclass
+class IRMemoryProfile:
+    name: str
+    config: ast_nodes.AiMemoryConfig
 
 
 @dataclass
@@ -819,6 +888,7 @@ class IRProgram:
     ai_calls: Dict[str, IRAiCall] = field(default_factory=dict)
     agents: Dict[str, IRAgent] = field(default_factory=dict)
     memories: Dict[str, IRMemory] = field(default_factory=dict)
+    memory_profiles: Dict[str, IRMemoryProfile] = field(default_factory=dict)
     frames: Dict[str, IRFrame] = field(default_factory=dict)
     records: Dict[str, IRRecord] = field(default_factory=dict)
     auth: IRAuth | None = None
@@ -853,7 +923,6 @@ class IRTool:
     input_fields: list[str] = field(default_factory=list)
 
 
-SUPPORTED_MEMORY_PIPELINE_TYPES = {"llm_summarizer", "llm_fact_extractor"}
 SUPPORTED_PII_POLICIES = {"none", "strip-email-ip"}
 SUPPORTED_MEMORY_SCOPES = {"per_session", "per_user", "shared"}
 SUPPORTED_RECORD_FIELD_TYPES = {"string", "text", "int", "float", "bool", "uuid", "datetime", "array", "json", "decimal"}
@@ -966,49 +1035,154 @@ def _collect_input_refs_from_dict(exprs: dict[str, ast_nodes.Expr] | None) -> se
 def _lower_memory_pipeline_steps(
     steps: list[ast_nodes.AiMemoryPipelineStep] | None,
     ai_name: str,
-    kind: str,
+    source_kind: str,
+    defined_kinds: dict[str, bool],
 ) -> list[IRMemoryPipelineStep] | None:
     if not steps:
         return None
     lowered: list[IRMemoryPipelineStep] = []
+    supported_list = ", ".join(sorted(SUPPORTED_MEMORY_PIPELINE_TYPES))
     for step in steps:
         step_name = (step.name or "").strip()
-        step_type = (step.type or "").strip()
         if not step_name:
             raise IRError(
-                f"N3L-1203: Memory pipeline step on '{ai_name}' ({kind}) requires a non-empty name.",
+                f"N3L-1203: Memory pipeline step on AI '{ai_name}' ({source_kind}) requires a non-empty step name.",
                 step.span.line if step.span else None,
             )
-        if step_type not in SUPPORTED_MEMORY_PIPELINE_TYPES:
+        raw_type = (step.type or "").strip().lower()
+        canonical_type = PIPELINE_TYPE_ALIASES.get(raw_type)
+        if not canonical_type:
             raise IRError(
-                f"N3L-1203: Unknown memory pipeline type '{step_type}' on AI '{ai_name}' ({kind}). Supported types: 'llm_fact_extractor', 'llm_summarizer'.",
+                f"N3L-1203: Memory pipeline step '{step_name}' uses unknown type '{raw_type}' on AI '{ai_name}'. Supported types are: {supported_list}.",
                 step.span.line if step.span else None,
             )
         max_tokens = step.max_tokens
         if max_tokens is not None and max_tokens <= 0:
             raise IRError(
-                f"N3L-1202: max_tokens must be positive on pipeline step '{step_name}' for AI '{ai_name}' ({kind}).",
+                f"N3L-1202: Memory pipeline step '{step_name}' has 'max_tokens' set to {max_tokens}. It must be a positive integer (for example, 256 or 512).",
                 step.span.line if step.span else None,
             )
+        target_kind = (step.target_kind or "").strip().lower() or None
+        embedding_model = (step.embedding_model or "").strip() or None
+        if target_kind and target_kind not in SUPPORTED_MEMORY_KINDS:
+            supported_kinds = ", ".join(SUPPORTED_MEMORY_KINDS)
+            raise IRError(
+                f"Memory pipeline step '{step_name}' targets kind '{target_kind}', but that is not a supported memory kind. Valid kinds are: {supported_kinds}.",
+                step.span.line if step.span else None,
+            )
+
+        if canonical_type == "llm_summariser":
+            target_kind = _resolve_summariser_target(
+                step_name,
+                ai_name,
+                source_kind,
+                target_kind,
+                defined_kinds,
+                step.span,
+            )
+            if max_tokens is None:
+                max_tokens = DEFAULT_SUMMARISER_MAX_TOKENS
+        elif canonical_type == "llm_fact_extractor":
+            target_kind = _resolve_fact_extractor_target(
+                step_name,
+                ai_name,
+                target_kind,
+                defined_kinds,
+                step.span,
+            )
+        elif canonical_type == "vectoriser":
+            target_kind = target_kind or source_kind
+            if target_kind not in SUPPORTED_MEMORY_KINDS:
+                supported_kinds = ", ".join(SUPPORTED_MEMORY_KINDS)
+                raise IRError(
+                    f"Memory pipeline step '{step_name}' targets kind '{target_kind}', but that is not a supported memory kind. Valid kinds are: {supported_kinds}.",
+                    step.span.line if step.span else None,
+                )
+            if not defined_kinds.get(target_kind):
+                raise IRError(
+                    f"Memory pipeline step '{step_name}' targets kind '{target_kind}', but this AI does not define '{target_kind}' under its memory kinds.",
+                    step.span.line if step.span else None,
+                )
+            if not embedding_model:
+                raise IRError(
+                    f"Memory pipeline step '{step_name}' needs an embedding model. Add 'embedding_model is \"model\"' to the step or configure a default embedding model.",
+                    step.span.line if step.span else None,
+                )
+
         lowered.append(
             IRMemoryPipelineStep(
                 name=step_name,
-                type=step_type,
+                type=canonical_type,
                 max_tokens=max_tokens,
+                target_kind=target_kind,
+                embedding_model=embedding_model,
             )
         )
     return lowered
 
 
+def _resolve_summariser_target(
+    step_name: str,
+    ai_name: str,
+    source_kind: str,
+    requested_target: str | None,
+    defined_kinds: dict[str, bool],
+    span: ast_nodes.Span | None,
+) -> str:
+    target = requested_target
+    if target:
+        if not defined_kinds.get(target):
+            raise IRError(
+                f"Memory pipeline step '{step_name}' targets kind '{target}', but this AI does not define '{target}' under its memory kinds.",
+                span.line if span else None,
+            )
+        return target
+    for candidate in ("long_term", "episodic"):
+        if candidate != source_kind and defined_kinds.get(candidate):
+            return candidate
+    if defined_kinds.get(source_kind):
+        return source_kind
+    raise IRError(
+        f"Memory pipeline step '{step_name}' on AI '{ai_name}' needs a valid target_kind. Add 'target_kind is \"episodic\"' (or another defined kind).",
+        span.line if span else None,
+    )
+
+
+def _resolve_fact_extractor_target(
+    step_name: str,
+    ai_name: str,
+    requested_target: str | None,
+    defined_kinds: dict[str, bool],
+    span: ast_nodes.Span | None,
+) -> str:
+    if requested_target and requested_target != "profile":
+        raise IRError(
+            f"Memory pipeline step '{step_name}' can only target 'profile'. Change the target_kind or move the step under the profile memory.",
+            span.line if span else None,
+        )
+    if defined_kinds.get("profile"):
+        return "profile"
+    raise IRError(
+        f"Memory pipeline step '{step_name}' needs a profile memory to store extracted facts, but AI '{ai_name}' does not define one.",
+        span.line if span else None,
+    )
+
+
 def _extract_policy_fields(
-    cfg: ast_nodes.AiShortTermMemoryConfig | ast_nodes.AiLongTermMemoryConfig | ast_nodes.AiProfileMemoryConfig,
+    cfg: (
+        ast_nodes.AiShortTermMemoryConfig
+        | ast_nodes.AiLongTermMemoryConfig
+        | ast_nodes.AiProfileMemoryConfig
+        | ast_nodes.AiEpisodicMemoryConfig
+        | ast_nodes.AiSemanticMemoryConfig
+    ),
     ai_name: str,
     kind: str,
 ) -> tuple[int | None, str | None, str | None]:
     retention = getattr(cfg, "retention_days", None)
     if retention is not None and retention <= 0:
         raise IRError(
-            f"N3L-1202: retention_days must be a positive integer on AI '{ai_name}' kind '{kind}'.",
+            f"N3L-1202: The memory 'retention_days' value on AI '{ai_name}' ({kind}) must be a positive integer (for example, 7 or 30).",
             cfg.span.line if cfg.span else None,
         )
     pii_policy = (getattr(cfg, "pii_policy", None) or "").strip() or None
@@ -1028,6 +1202,187 @@ def _extract_policy_fields(
     return retention, pii_policy, scope
 
 
+def _lower_time_decay_config(
+    cfg: ast_nodes.AiTimeDecayConfig | None,
+    ai_name: str,
+    kind: str,
+) -> IRTimeDecayConfig | None:
+    if cfg is None:
+        return None
+    half_life = cfg.half_life_days
+    if half_life is None or half_life <= 0:
+        raise IRError(
+            f"N3L-1202: time_decay half_life_days on AI '{ai_name}' kind '{kind}' must be a positive integer.",
+            cfg.span.line if cfg.span else None,
+        )
+    return IRTimeDecayConfig(half_life_days=half_life)
+
+
+def _merge_memory_configs(
+    base: ast_nodes.AiMemoryConfig | None,
+    override: ast_nodes.AiMemoryConfig | None,
+) -> ast_nodes.AiMemoryConfig | None:
+    if override is None:
+        return base
+    override_copy = copy.deepcopy(override)
+    if base is None:
+        return override_copy
+    if override_copy.kind:
+        base.kind = override_copy.kind
+    if override_copy.window is not None:
+        base.window = override_copy.window
+    if override_copy.store is not None:
+        base.store = override_copy.store
+    base.short_term = _merge_short_term_configs(base.short_term, override_copy.short_term)
+    base.long_term = _merge_long_term_configs(base.long_term, override_copy.long_term)
+    base.episodic = _merge_episodic_configs(base.episodic, override_copy.episodic)
+    base.semantic = _merge_semantic_configs(base.semantic, override_copy.semantic)
+    base.profile = _merge_profile_configs(base.profile, override_copy.profile)
+    if override_copy.recall:
+        base.recall = copy.deepcopy(override_copy.recall)
+    if override_copy.span:
+        base.span = override_copy.span
+    return base
+
+
+def _merge_short_term_configs(
+    base: ast_nodes.AiShortTermMemoryConfig | None,
+    override: ast_nodes.AiShortTermMemoryConfig | None,
+) -> ast_nodes.AiShortTermMemoryConfig | None:
+    if override is None:
+        return base
+    override_copy = copy.deepcopy(override)
+    if base is None:
+        return override_copy
+    if override_copy.window is not None:
+        base.window = override_copy.window
+    if override_copy.store is not None:
+        base.store = override_copy.store
+    if override_copy.retention_days is not None:
+        base.retention_days = override_copy.retention_days
+    if override_copy.pii_policy:
+        base.pii_policy = override_copy.pii_policy
+    if override_copy.scope:
+        base.scope = override_copy.scope
+    if hasattr(base, "time_decay") and hasattr(override_copy, "time_decay"):
+        override_decay = getattr(override_copy, "time_decay", None)
+        if override_decay is not None:
+            setattr(base, "time_decay", copy.deepcopy(override_decay))
+    if override_copy.span:
+        base.span = override_copy.span
+    return base
+
+
+def _merge_long_term_configs(
+    base: ast_nodes.AiLongTermMemoryConfig | None,
+    override: ast_nodes.AiLongTermMemoryConfig | None,
+) -> ast_nodes.AiLongTermMemoryConfig | None:
+    if override is None:
+        return base
+    override_copy = copy.deepcopy(override)
+    if base is None:
+        return override_copy
+    if override_copy.store is not None:
+        base.store = override_copy.store
+    if override_copy.pipeline is not None:
+        base.pipeline = copy.deepcopy(override_copy.pipeline)
+    if override_copy.retention_days is not None:
+        base.retention_days = override_copy.retention_days
+    if override_copy.pii_policy:
+        base.pii_policy = override_copy.pii_policy
+    if override_copy.scope:
+        base.scope = override_copy.scope
+    if override_copy.time_decay is not None:
+        base.time_decay = copy.deepcopy(override_copy.time_decay)
+    if override_copy.span:
+        base.span = override_copy.span
+    return base
+
+
+def _merge_profile_configs(
+    base: ast_nodes.AiProfileMemoryConfig | None,
+    override: ast_nodes.AiProfileMemoryConfig | None,
+) -> ast_nodes.AiProfileMemoryConfig | None:
+    if override is None:
+        return base
+    override_copy = copy.deepcopy(override)
+    if base is None:
+        return override_copy
+    if override_copy.store is not None:
+        base.store = override_copy.store
+    if override_copy.extract_facts is not None:
+        base.extract_facts = override_copy.extract_facts
+    if override_copy.pipeline is not None:
+        base.pipeline = copy.deepcopy(override_copy.pipeline)
+    if override_copy.retention_days is not None:
+        base.retention_days = override_copy.retention_days
+    if override_copy.pii_policy:
+        base.pii_policy = override_copy.pii_policy
+    if override_copy.scope:
+        base.scope = override_copy.scope
+    if override_copy.time_decay is not None:
+        base.time_decay = copy.deepcopy(override_copy.time_decay)
+    if override_copy.span:
+        base.span = override_copy.span
+    return base
+
+
+def _merge_episodic_configs(
+    base: ast_nodes.AiEpisodicMemoryConfig | None,
+    override: ast_nodes.AiEpisodicMemoryConfig | None,
+) -> ast_nodes.AiEpisodicMemoryConfig | None:
+    if override is None:
+        return base
+    override_copy = copy.deepcopy(override)
+    if base is None:
+        return override_copy
+    if override_copy.store is not None:
+        base.store = override_copy.store
+    if override_copy.retention_days is not None:
+        base.retention_days = override_copy.retention_days
+    if override_copy.pii_policy:
+        base.pii_policy = override_copy.pii_policy
+    if override_copy.scope:
+        base.scope = override_copy.scope
+    if override_copy.span:
+        base.span = override_copy.span
+    return base
+
+
+def _merge_semantic_configs(
+    base: ast_nodes.AiSemanticMemoryConfig | None,
+    override: ast_nodes.AiSemanticMemoryConfig | None,
+) -> ast_nodes.AiSemanticMemoryConfig | None:
+    if override is None:
+        return base
+    override_copy = copy.deepcopy(override)
+    if base is None:
+        return override_copy
+    if override_copy.store is not None:
+        base.store = override_copy.store
+    if override_copy.retention_days is not None:
+        base.retention_days = override_copy.retention_days
+    if override_copy.pii_policy:
+        base.pii_policy = override_copy.pii_policy
+    if override_copy.scope:
+        base.scope = override_copy.scope
+    if override_copy.span:
+        base.span = override_copy.span
+    return base
+
+
+def _memory_config_is_empty(config: ast_nodes.AiMemoryConfig | None) -> bool:
+    if config is None:
+        return True
+    if config.kind or config.window is not None or config.store:
+        return False
+    if config.short_term or config.long_term or config.episodic or config.semantic or config.profile:
+        return False
+    if config.recall:
+        return False
+    return True
+
+
 def _lower_ai_memory_config(
     mem: ast_nodes.AiMemoryConfig,
     ai_name: str,
@@ -1035,57 +1390,148 @@ def _lower_ai_memory_config(
     short_term_ast = mem.short_term
     if short_term_ast is None and (mem.kind or mem.window or mem.store):
         short_term_ast = ast_nodes.AiShortTermMemoryConfig(window=mem.window, store=mem.store)
+    defined_kinds = {
+        "short_term": bool(short_term_ast),
+        "long_term": bool(mem.long_term),
+        "episodic": bool(mem.episodic),
+        "semantic": bool(mem.semantic),
+        "profile": bool(mem.profile),
+    }
     short_term_cfg = None
     if short_term_ast:
         window = short_term_ast.window or mem.window or DEFAULT_SHORT_TERM_WINDOW
         if window is not None and window <= 0:
             raise IRError(
-                f"N3L-1202: memory window must be a positive integer on AI '{ai_name}'.",
+                f"N3L-1202: The memory 'window' value on AI '{ai_name}' must be a positive integer (for example, 10 or 20).",
                 mem.span.line if mem.span else None,
             )
         retention, pii_policy, scope = _extract_policy_fields(short_term_ast, ai_name, "short_term")
+        scope = scope or DEFAULT_SHORT_TERM_SCOPE
+        if retention is None:
+            retention = DEFAULT_SHORT_TERM_RETENTION_DAYS
         short_term_cfg = IRAiShortTermMemoryConfig(
             window=window,
             store=short_term_ast.store or mem.store,
             retention_days=retention,
             pii_policy=pii_policy,
             scope=scope,
+            pipeline=_lower_memory_pipeline_steps(
+                getattr(short_term_ast, "pipeline", None),
+                ai_name,
+                "short_term",
+                defined_kinds,
+            ),
         )
     long_term_cfg = None
     if mem.long_term:
         retention, pii_policy, scope = _extract_policy_fields(mem.long_term, ai_name, "long_term")
+        scope = scope or DEFAULT_LONG_TERM_SCOPE
+        if retention is None:
+            retention = DEFAULT_LONG_TERM_RETENTION_DAYS
         long_term_cfg = IRAiLongTermMemoryConfig(
             store=mem.long_term.store,
-            pipeline=_lower_memory_pipeline_steps(mem.long_term.pipeline, ai_name, "long_term"),
+            pipeline=_lower_memory_pipeline_steps(
+                mem.long_term.pipeline,
+                ai_name,
+                "long_term",
+                defined_kinds,
+            ),
             retention_days=retention,
             pii_policy=pii_policy,
             scope=scope,
+            time_decay=_lower_time_decay_config(getattr(mem.long_term, "time_decay", None), ai_name, "long_term"),
         )
     profile_cfg = None
     if mem.profile:
         retention, pii_policy, scope = _extract_policy_fields(mem.profile, ai_name, "profile")
+        scope = scope or DEFAULT_PROFILE_SCOPE
+        extract_facts = mem.profile.extract_facts
+        if extract_facts is None:
+            extract_facts = False
         profile_cfg = IRAiProfileMemoryConfig(
             store=mem.profile.store,
-            extract_facts=mem.profile.extract_facts,
-            pipeline=_lower_memory_pipeline_steps(mem.profile.pipeline, ai_name, "profile"),
+            extract_facts=extract_facts,
+            pipeline=_lower_memory_pipeline_steps(
+                mem.profile.pipeline,
+                ai_name,
+                "profile",
+                defined_kinds,
+            ),
             retention_days=retention,
             pii_policy=pii_policy,
             scope=scope,
         )
+    episodic_cfg = None
+    if mem.episodic:
+        retention, pii_policy, scope = _extract_policy_fields(mem.episodic, ai_name, "episodic")
+        scope = scope or DEFAULT_EPISODIC_SCOPE
+        if retention is None:
+            retention = DEFAULT_EPISODIC_RETENTION_DAYS
+        episodic_cfg = IRAiEpisodicMemoryConfig(
+            store=mem.episodic.store,
+            retention_days=retention,
+            pii_policy=pii_policy,
+            scope=scope,
+            pipeline=_lower_memory_pipeline_steps(
+                mem.episodic.pipeline,
+                ai_name,
+                "episodic",
+                defined_kinds,
+            ),
+            time_decay=_lower_time_decay_config(getattr(mem.episodic, "time_decay", None), ai_name, "episodic"),
+        )
+    semantic_cfg = None
+    if mem.semantic:
+        retention, pii_policy, scope = _extract_policy_fields(mem.semantic, ai_name, "semantic")
+        scope = scope or DEFAULT_SEMANTIC_SCOPE
+        if retention is None:
+            retention = DEFAULT_SEMANTIC_RETENTION_DAYS
+        semantic_cfg = IRAiSemanticMemoryConfig(
+            store=mem.semantic.store,
+            retention_days=retention,
+            pii_policy=pii_policy,
+            scope=scope,
+            pipeline=_lower_memory_pipeline_steps(
+                mem.semantic.pipeline,
+                ai_name,
+                "semantic",
+                defined_kinds,
+            ),
+            time_decay=_lower_time_decay_config(getattr(mem.semantic, "time_decay", None), ai_name, "semantic"),
+        )
     recall_rules: list[IRAiRecallRule] = []
     for rule in mem.recall or []:
         source = (rule.source or "").strip()
-        if source not in {"short_term", "long_term", "profile"}:
+        if source not in SUPPORTED_MEMORY_KINDS:
             raise IRError(
-                f"N3L-1202: Recall rule source '{source}' on AI '{ai_name}' is invalid.",
+                f"N3L-1202: Recall rule source '{source}' on AI '{ai_name}' is not a supported memory kind. Valid kinds are: {', '.join(SUPPORTED_MEMORY_KINDS)}.",
                 rule.span.line if rule.span else (mem.span.line if mem.span else None),
             )
+        include = rule.include
+        if include is not None and source != "profile":
+            raise IRError(
+                f"N3L-1202: The recall rule on AI '{ai_name}' can only use 'include' with profile memory. Remove 'include' or switch the source to 'profile'.",
+                rule.span.line if rule.span else (mem.span.line if mem.span else None),
+            )
+        count = rule.count
+        top_k = rule.top_k
+        if source == "short_term" and count is None:
+            if short_term_cfg:
+                count = short_term_cfg.window
+        if source == "long_term" and top_k is None:
+            top_k = DEFAULT_LONG_TERM_TOP_K
+        if source == "episodic" and top_k is None:
+            top_k = DEFAULT_EPISODIC_TOP_K
+        if source == "semantic" and top_k is None:
+            top_k = DEFAULT_SEMANTIC_TOP_K
+        if source == "profile" and include is None:
+            include = True
         recall_rules.append(
             IRAiRecallRule(
                 source=source,
-                count=rule.count,
-                top_k=rule.top_k,
-                include=rule.include,
+                count=count,
+                top_k=top_k,
+                include=include,
             )
         )
     if not recall_rules and short_term_cfg:
@@ -1093,12 +1539,14 @@ def _lower_ai_memory_config(
     defined_sources = {
         "short_term": bool(short_term_cfg),
         "long_term": bool(long_term_cfg),
+        "episodic": bool(episodic_cfg),
+        "semantic": bool(semantic_cfg),
         "profile": bool(profile_cfg),
     }
     for rule in recall_rules:
         if not defined_sources.get(rule.source):
             raise IRError(
-                f"N3L-1202: Recall rule refers to memory source '{rule.source}' but no '{rule.source}' kind is defined on AI '{ai_name}'.",
+                f"N3L-1202: Recall rule refers to memory source '{rule.source}' but no '{rule.source}' kind is defined on AI '{ai_name}'. Add '{rule.source}' under 'kinds:' or update the recall rule.",
                 mem.span.line if mem.span else None,
             )
     ir_config = IRAiMemoryConfig(
@@ -1107,6 +1555,8 @@ def _lower_ai_memory_config(
         store=mem.store,
         short_term=short_term_cfg,
         long_term=long_term_cfg,
+        episodic=episodic_cfg,
+        semantic=semantic_cfg,
         profile=profile_cfg,
         recall=recall_rules,
     )
@@ -2117,14 +2567,50 @@ def ast_to_ir(module: ast_nodes.Module) -> IRProgram:
                     f"Duplicate model '{decl.name}'", decl.span and decl.span.line
                 )
             program.models[decl.name] = IRModel(name=decl.name, provider=decl.provider)
+        elif isinstance(decl, ast_nodes.MemoryProfileDecl):
+            if decl.name in program.memory_profiles:
+                raise IRError(
+                    f"You already have a memory profile named '{decl.name}'. Memory profile names must be unique.",
+                    decl.span and decl.span.line,
+                )
+            program.memory_profiles[decl.name] = IRMemoryProfile(
+                name=decl.name,
+                config=copy.deepcopy(decl.config),
+            )
         elif isinstance(decl, ast_nodes.AICallDecl):
             if decl.name in program.ai_calls:
                 raise IRError(
                     f"Duplicate ai call '{decl.name}'", decl.span and decl.span.line
                 )
             mem_cfg = None
+            merged_memory_ast: ast_nodes.AiMemoryConfig | None = None
+            profile_names = getattr(decl, "memory_profiles", []) or []
+            if profile_names:
+                for profile_name in profile_names:
+                    profile = program.memory_profiles.get(profile_name)
+                    if not profile:
+                        raise IRError(
+                            f"AI '{decl.name}' uses memory profile '{profile_name}', but no such profile is declared.",
+                            decl.span and decl.span.line,
+                        )
+                    merged_memory_ast = _merge_memory_configs(
+                        merged_memory_ast,
+                        copy.deepcopy(profile.config),
+                    )
             if getattr(decl, "memory", None):
-                mem_cfg, store_refs = _lower_ai_memory_config(decl.memory, decl.name)
+                merged_memory_ast = _merge_memory_configs(
+                    merged_memory_ast,
+                    copy.deepcopy(decl.memory),
+                )
+            if merged_memory_ast and _memory_config_is_empty(merged_memory_ast):
+                if profile_names:
+                    raise IRError(
+                        f"AI '{decl.name}' uses memory profiles, but they do not define any memory kinds or recall rules. Add at least one kind under 'kinds:' or a 'recall:' rule.",
+                        decl.span and decl.span.line,
+                    )
+                merged_memory_ast = None
+            if merged_memory_ast:
+                mem_cfg, store_refs = _lower_ai_memory_config(merged_memory_ast, decl.name)
                 for store_name in store_refs:
                     memory_store_refs.append((decl.name, store_name))
             tool_bindings: list[IRAiToolBinding] = []
@@ -2677,7 +3163,7 @@ def ast_to_ir(module: ast_nodes.Module) -> IRProgram:
             resolved_store = store_name or "default_memory"
             if resolved_store not in configured_stores:
                 raise IRError(
-                    f"N3L-1201: Memory store '{resolved_store}' referenced on AI '{ai_name}' is not configured for this project.",
+                    f"N3L-1201: AI '{ai_name}' refers to memory store '{resolved_store}', but that store is not configured. Add it to your configuration file, or change the store name to one of the configured stores.",
                     None,
                     )
 

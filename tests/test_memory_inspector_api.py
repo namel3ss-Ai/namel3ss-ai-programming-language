@@ -35,6 +35,8 @@ def _setup_project(tmp_path: Path, monkeypatch) -> dict[str, SqliteConversationM
     project_file = tmp_path / "support.ai"
     project_file.write_text(PROGRAM, encoding="utf-8")
     monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("N3_PROJECT_FILE", str(project_file))
+    monkeypatch.setenv("N3_OPENAI_API_KEY", "test-key")
     short_db = tmp_path / "short.db"
     long_db = tmp_path / "long.db"
     profile_db = tmp_path / "profile.db"
@@ -86,6 +88,7 @@ def _populate_memory(stores: dict[str, SqliteConversationMemoryBackend]) -> None
             {"role": "system", "content": "You are a helpful assistant."},
             {"role": "user", "content": "Hello"},
         ],
+        diagnostics=[{"kind": "short_term", "selected": 2, "scope": "per_session"}],
     )
 
 
@@ -122,7 +125,8 @@ def test_memory_session_detail_returns_combined_view(tmp_path, monkeypatch):
     assert "User lives in Kampala." in body["profile"]["facts"]
     assert body["last_recall_snapshot"]["messages"][1]["content"] == "Hello"
     assert body["policies"]["long_term"]["scope"] == "per_user"
-    assert body["policies"]["profile"]["scope"] == "per_user"
+    assert "kinds" in body
+    assert "short_term" in body["kinds"]
 
 
 def test_memory_clear_endpoint_wipes_requested_kinds(tmp_path, monkeypatch):
@@ -135,3 +139,79 @@ def test_memory_clear_endpoint_wipes_requested_kinds(tmp_path, monkeypatch):
     assert response.status_code == 200
     assert stores["default_memory"].get_full_history("support_bot", "sess_a") == []
     assert stores["user_profile"].get_facts("support_bot::profile", "user:user-123") == []
+
+
+def test_memory_plan_endpoint_returns_config(tmp_path, monkeypatch):
+    client, _ = _client(tmp_path, monkeypatch)
+    response = client.get("/api/memory/ai/support_bot/plan", headers={"X-API-Key": "dev-key"})
+    assert response.status_code == 200
+    plan = response.json()
+    assert plan["ai"] == "support_bot"
+    kinds = {entry["kind"]: entry for entry in plan["kinds"]}
+    assert kinds["short_term"]["scope"] == "per_session"
+    assert kinds["long_term"]["scope"] == "per_user"
+    assert any(rule["source"] == "profile" for rule in plan["recall"])
+
+
+def test_memory_state_endpoint_returns_kinds(tmp_path, monkeypatch):
+    client, _ = _client(tmp_path, monkeypatch)
+    response = client.get(
+        "/api/memory/ai/support_bot/state",
+        params={"session_id": "sess_a"},
+        headers={"X-API-Key": "dev-key"},
+    )
+    assert response.status_code == 200
+    state = response.json()
+    assert state["session_id"] == "sess_a"
+    assert state["kinds"]["short_term"]["turns"][0]["content"] == "Hello"
+    assert state["kinds"]["long_term"]["items"][0]["summary"] == "User asked about billing yesterday."
+    assert state["policies"]["profile"]["scope"] == "per_user"
+
+
+def test_memory_state_endpoint_requires_identifier(tmp_path, monkeypatch):
+    client, _ = _client(tmp_path, monkeypatch)
+    response = client.get("/api/memory/ai/support_bot/state", headers={"X-API-Key": "dev-key"})
+    assert response.status_code == 400
+
+
+def test_memory_state_endpoint_supports_user_only(tmp_path, monkeypatch):
+    client, _ = _client(tmp_path, monkeypatch)
+    response = client.get(
+        "/api/memory/ai/support_bot/state",
+        params={"user_id": "user-123"},
+        headers={"X-API-Key": "dev-key"},
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert body["user_id"] == "user-123"
+    assert "long_term" in body["kinds"]
+    assert "short_term" not in body["kinds"]
+
+
+def test_memory_plan_endpoint_unknown_ai(tmp_path, monkeypatch):
+    client, _ = _client(tmp_path, monkeypatch)
+    response = client.get("/api/memory/ai/missing_agent/plan", headers={"X-API-Key": "dev-key"})
+    assert response.status_code == 404
+
+
+def test_memory_state_endpoint_unknown_ai(tmp_path, monkeypatch):
+    client, _ = _client(tmp_path, monkeypatch)
+    response = client.get(
+        "/api/memory/ai/missing_agent/state",
+        params={"session_id": "sess_a"},
+        headers={"X-API-Key": "dev-key"},
+    )
+    assert response.status_code == 404
+
+
+def test_memory_state_endpoint_includes_recall_diagnostics(tmp_path, monkeypatch):
+    client, _ = _client(tmp_path, monkeypatch)
+    response = client.get(
+        "/api/memory/ai/support_bot/state",
+        params={"session_id": "sess_a"},
+        headers={"X-API-Key": "dev-key"},
+    )
+    assert response.status_code == 200
+    data = response.json()
+    assert data["recall_snapshot"]["diagnostics"][0]["kind"] == "short_term"
+    assert data["recall_snapshot"]["diagnostics"][0]["selected"] == 2

@@ -386,6 +386,104 @@ export interface MemoryPolicyInfo {
   scope_note?: string | null;
   retention_days?: number | null;
   pii_policy: string;
+  time_decay?: {
+    half_life_days?: number | null;
+  } | null;
+}
+
+export interface MemoryPipelineStepInfo {
+  name: string;
+  type: string;
+  target_kind?: string | null;
+  max_tokens?: number | null;
+  embedding_model?: string | null;
+}
+
+export interface MemoryPlanKindEntry {
+  kind: string;
+  enabled: boolean;
+  scope?: string | null;
+  retention_days?: number | null;
+  pii_policy?: string | null;
+  time_decay?: {
+    half_life_days?: number | null;
+  } | null;
+  pipeline?: MemoryPipelineStepInfo[];
+  window?: number | null;
+  store?: string | null;
+}
+
+export interface MemoryRecallRule {
+  source?: string | null;
+  count?: number | null;
+  top_k?: number | null;
+  include?: boolean | null;
+}
+
+export interface MemoryPlanResponse {
+  ai: string;
+  kinds: MemoryPlanKindEntry[];
+  recall: MemoryRecallRule[];
+}
+
+export interface MemoryRecallSnapshot {
+  timestamp?: string;
+  rules: MemoryRecallRule[];
+  messages: { role: string; content: string }[];
+  diagnostics?: {
+    kind?: string;
+    selected?: number;
+    scope?: string | null;
+    rule?: MemoryRecallRule | null;
+    [key: string]: any;
+  }[];
+}
+
+export interface MemoryItemEntry {
+  id?: string | number | null;
+  summary?: string | null;
+  content?: string | null;
+  created_at?: string | null;
+  decay_score?: number | null;
+  [key: string]: any;
+}
+
+export interface MemoryStateKinds {
+  short_term?: {
+    turns: MemoryTurn[];
+    window?: number | null;
+    scope?: string | null;
+  };
+  long_term?: {
+    items: MemoryItemEntry[];
+    store?: string | null;
+    scope?: string | null;
+  };
+  episodic?: {
+    items: MemoryItemEntry[];
+    store?: string | null;
+    scope?: string | null;
+  };
+  semantic?: {
+    items: MemoryItemEntry[];
+    store?: string | null;
+    scope?: string | null;
+  };
+  profile?: {
+    facts: string[];
+    store?: string | null;
+    scope?: string | null;
+  };
+  [key: string]: any;
+}
+
+export interface MemoryStateResponse {
+  ai: string;
+  session_id?: string | null;
+  user_id?: string | null;
+  kinds: MemoryStateKinds;
+  policies: Record<string, MemoryPolicyInfo>;
+  recall_snapshot?: MemoryRecallSnapshot | null;
 }
 
 export interface MemorySessionDetail {
@@ -411,7 +509,7 @@ export interface MemorySessionDetail {
   };
   last_recall_snapshot?: {
     timestamp?: string;
-    rules: { source?: string | null; count?: number | null; top_k?: number | null; include?: boolean | null }[];
+    rules: MemoryRecallRule[];
     messages: { role: string; content: string }[];
   } | null;
 }

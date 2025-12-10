@@ -350,7 +350,7 @@ class Engine:
                     resolved = store_name or "default_memory"
                     if resolved not in available:
                         raise Namel3ssError(
-                            f"N3L-1201: Memory store '{resolved}' referenced on AI '{ai_call.name}' is not configured for this project."
+                            f"N3L-1201: AI '{ai_call.name}' refers to memory store '{resolved}', but that store is not configured. Add it to your configuration file, or change the store name to one of the configured stores."
                         )
 
     def _build_default_execution_context(self) -> ExecutionContext:

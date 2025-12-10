@@ -218,80 +218,179 @@ memory:
 
 is automatically normalized to `short_term` + a default recall rule, so existing apps keep working.
 
-### Memory Pipelines
+### Memory Profiles & Friendly Defaults
 
-Long-term and profile memories can also define post-processing pipelines that run after every AI turn:
+Reusable memory configuration now lives in top-level **memory profile** blocks:
+
+```
+memory profile is "conversational_short":
+  kinds:
+    short_term
+
+memory profile is "long_user_profile":
+  kinds:
+    profile:
+      store is "user_profiles"
+      extract_facts is true
+```
+
+- `short_term` under `kinds` can be written as a bare identifier or as `short_term:` with no nested fields; both forms enable a friendly default (window `20`, scope `per_session`, and a matching recall rule).
+- Namel3ss recognizes five canonical kinds: `short_term`, `long_term`, `episodic`, `semantic`, and `profile`. Any typo produces a suggestion (`Memory kind "shortterm" is not supported. Did you mean "short_term"-`).
+- `long_term`, `episodic`, `semantic`, and `profile` may omit `store` for local experiments; production apps usually point them at dedicated stores.
+
+AI blocks can reference any number of profiles and optionally add an inline override block. Profiles are merged in declaration order, and inline `memory:` overrides win last:
 
 ```
 ai is "support_bot":
   model is "gpt-4.1-mini"
+  use memory profile "conversational_short"
+  use memory profile "long_user_profile"
   memory:
     kinds:
-      long_term:
-        store is "chat_long"
-        pipeline:
-          - step is "summarize_session"
-            type is "llm_summarizer"
-            max_tokens is 512
+      short_term:
+        window is 32
+```
+
+- `use memory profile "name"` lines may appear anywhere inside the AI block. Referencing an unknown profile raises `I can’t save this AI because it uses memory profile "name" but no such profile is declared.` (`IRError`).
+- An ai may list many profiles but **only one** inline `memory:` block; multiple blocks trigger `N3L-802` with a friendly English hint.
+- If the merged profiles do not define any kinds or recall rules, the compiler raises an error explaining how to add `kinds:` or `recall:` entries.
+
+Diagnostics stay consistent across English and legacy forms:
+
+- `N3L-1201` now reports `AI "support_bot" refers to memory store "missing_store", but that store is not configured. Add it to your configuration file, or change the store name to one of the configured stores.`
+- `N3L-1202` messages call out the offending field (window, retention_days, pipeline `max_tokens`, etc.) and remind you that the value must be a positive integer.
+
+### Multi-kind memory and recall rules
+
+Each canonical kind carries a built-in mental model and defaults:
+
+- **short_term** - working memory for the current session. Defaults to window `20`, scope `per_session`, and auto-injects a `short_term` recall rule when none is present.
+- **long_term** - durable transcript snippets. Defaults to scope `per_user` (falling back to `per_session` when no user id is available) and applies `top_k` recall with a default of `5`.
+- **episodic** - important episodes/events. Defaults to scope `per_user`, retention `365` days, and `top_k` recall (default `5`).
+- **semantic** - knowledge and documents. Defaults to scope `shared` with `top_k` recall (default `8`).
+- **profile** - structured user facts. Defaults to scope `per_user`, `extract_facts false`, and uses an `include` flag (default `true`) instead of `count`/`top_k`.
+
+Example:
+
+```
+ai is "travel_planner":
+  model is "gpt-4.1-mini"
+  memory:
+    kinds:
+      short_term
+      episodic:
+        store is "trip_episodes"
+        retention_days is 365
+      semantic:
+        store is "travel_kb"
       profile:
-        store is "user_profile"
-        pipeline:
-          - step is "extract_facts"
-            type is "llm_fact_extractor"
+        store is "user_profiles"
+        extract_facts is true
     recall:
       - source is "short_term"
-        count is 10
-      - source is "long_term"
-        top_k is 5
+        count is 16
+      - source is "episodic"
+        top_k is 10
+      - source is "semantic"
+        top_k is 8
       - source is "profile"
         include is true
 ```
 
-- `llm_summarizer` compresses the recent conversation (short-term history plus the latest exchange) and appends summaries into the long-term store.
-- `llm_fact_extractor` pulls durable user facts from the interaction and appends them to the profile store.
-- Pipelines run in the order declared; each entry must provide `step` (a friendly name) and `type`. Unknown pipeline types raise `N3L-1203`. `max_tokens` is optional and only applies to `llm_summarizer`.
-- The resulting summaries/facts are available to recall rules (e.g., `long_term` `top_k` or `profile` `include`) on subsequent turns, completing the short/long/profile memory loop.
-- Canonical DSL: The English-style surface is the primary, modern syntax. Legacy symbolic/colon forms are no longer accepted. All examples in this spec use the modern syntax.
+- Recall `source` must be one of the canonical kinds; typos raise `N3L-1202` with a suggestion.
+- Referencing a kind that was not declared under `kinds:` raises `N3L-1202` with guidance to add the missing entry.
+- `include` is only valid with `profile`; using it elsewhere produces `N3L-1202` explaining how to fix the rule.
 
-### Memory Privacy, Retention & Scope
+### Memory Pipelines
 
-Each memory kind can now declare retention, PII policies, and scope, giving you fine-grained control over how long data lives, how it is scrubbed, and who shares it:
+Any memory kind can declare a pipeline of English-first steps that run after each AI call:
 
-`
+```
 ai is "support_bot":
   model is "gpt-4.1-mini"
   memory:
     kinds:
       short_term:
-        window is 20
-        retention_days is 7
-        scope is "per_session"
-      long_term:
-        store is "chat_long"
-        retention_days is 365
-        pii_policy is "strip-email-ip"
-        scope is "per_user"
+        pipeline:
+          step is "summarise_short_term":
+            type is "llm_summariser"
+            max_tokens is 512
+            target_kind is "episodic"
       profile:
-        store is "user_profile"
-        retention_days is 365
-        pii_policy is "strip-email-ip"
+        store is "user_profiles"
+        pipeline:
+          step is "extract_profile_facts":
+            type is "llm_fact_extractor"
+      semantic:
+        store is "semantic_kb"
+        pipeline:
+          step is "prepare_semantic_vectors":
+            type is "vectoriser"
+            embedding_model is "travel-embed"
+```
+
+- `pipeline:` introduces one or more `step is "name":` blocks. Every step must declare `type is "..."` and may include extra fields (`max_tokens`, `target_kind`, `embedding_model`) depending on the type.
+- Supported types in this phase:
+  - `llm_summariser` — summarises the source kind (usually short_term) and stores the result in another kind. `target_kind` defaults to `long_term` or `episodic` if defined, falling back to the source kind. `max_tokens` defaults to 512.
+  - `llm_fact_extractor` — extracts durable user facts and writes them to the profile store. If `target_kind` is omitted it automatically uses `profile`.
+  - `vectoriser` — prepares conversational snippets for semantic/RAG storage. Specify `target_kind` (defaults to the source kind) and `embedding_model`.
+- Pipelines run in declaration order per kind. Unknown step names, types, or invalid target kinds raise `N3L-1203` during compilation with actionable English errors.
+- Summaries, profile facts, and vectorised snippets become available to recall rules in subsequent turns, so memory stays concise without manual intervention.
+
+### Memory Policies: Scope, Retention, PII, and Decay
+
+Every memory kind can describe how entries are shared, how long they live, how sensitive data is scrubbed, and how recency influences recall:
+
+```
+ai is "support_bot":
+  model is "gpt-4.1-mini"
+  memory:
+    kinds:
+      short_term:
+        scope is "per_session"
+
+      episodic:
+        store is "chat_episodes"
         scope is "per_user"
-    recall:
-      - source is "short_term"
-        count is 12
-      - source is "long_term"
-        top_k is 5
-      - source is "profile"
-        include is true
-`
+        retention_days is 365
+        time_decay:
+          half_life_days is 30
 
-- 
-etention_days: maximum age of entries for that kind. Anything older is filtered out automatically and periodically cleaned from the backend.
-- pii_policy: "
-one" (default) or "strip-email-ip". When set, stored summaries/facts have emails/IP addresses replaced with placeholders.
-- scope: "per_session", "per_user", or "shared". Short-term defaults to per-session; long-term/profile default to per-user when a user id is present, otherwise per-session. If a per-user scope is requested but no user id is available, the runtime falls back to per-session and surfaces a diagnostic note in Studio.
+      semantic:
+        store is "support_kb"
+        scope is "shared"
 
-Studio's Memory Inspector shows these policies (scope, retention, PII handling, and any fallbacks) for each kind so you can verify how data is governed at runtime.
+      profile:
+        store is "user_profiles"
+        scope is "per_user"
+        pii_policy is "strip-email-ip"
+```
+
+- **scope** — one of `per_session`, `per_user`, or `shared`. Short-term defaults to per-session. Long-term, episodic, and profile default to per-user when a user id is available (and fall back to per-session with a diagnostic note if it is not). Semantic memory defaults to `shared`.
+- **retention_days** — positive integer; entries older than the window are filtered during recall and pruned by the runtime vacuum helper. Defaults: short_term (7), long_term (365), episodic (365), semantic (365). Profile entries do not expire unless you specify a value.
+- **pii_policy** — `none` (default) or `strip-email-ip`. When set, memory saves only scrubbed turns, summaries, and facts so emails/IP addresses never persist.
+- **time_decay** — optional block for kinds recalled via `top_k`. Declare `half_life_days` to give newer entries a higher score even if they were appended earlier than stale items.
+
+Studio's Memory Inspector surfaces each kind’s scope, retention horizon, PII policy, and decay settings (plus any per-user fallbacks) so you can verify policy behaviour at runtime.
+
+### Inspecting and Debugging Memory
+
+Namel3ss ships with first-class tooling so you can see memory plans and the actual entries that will be recalled for a given AI.
+
+- **Studio Memory Inspector** ƒ?" In the Studio sidebar, open the “Memory Inspector” tab, pick an AI, and either select a recent session or type a user id. The panel shows:
+  - Per-kind configuration (scope, retention days, PII policy, time_decay, and pipeline steps) pulled directly from the IR plan.
+  - Current stored entries for each enabled kind, already scrubbed according to the configured `pii_policy`.
+  - The effective recall plan plus the most recent recall snapshot, including per-kind diagnostics (how many items were selected, whether scopes fell back, and the decayed scores used for top_k recalls).
+  - A read-only experience—no destructive buttons—so you can safely inspect production sessions.
+- **CLI snapshot** ƒ?" Run `n3 memory-inspect --file app.ai --ai support_agent --session-id sess-123` to print a JSON document containing the plan plus the scrubbed state for that session. Use `--user-id user-123` for per-user scopes and `--plan-only` to print just the configuration.
+  - The CLI command shares the same helper as Studio, so both outputs stay consistent and respect scope/PII policies.
+
+If you want to script diagnostics, you can also hit the FastAPI endpoints exposed by `n3 serve`:
+
+- `/api/memory/ai/<ai>/plan` returns the per-kind plan and recall rules.
+- `/api/memory/ai/<ai>/state?session_id=...&user_id=...` returns the scrubbed entries plus the last recall snapshot for the requested context.
+
+All of these surfaces honour the configured scopes, retention filtering, and PII scrubbing so you can safely share snapshots when debugging with teammates.
 
 - Pattern matching:
   - `match <expr>:` with `when <pattern>:` branches and optional `otherwise:`.

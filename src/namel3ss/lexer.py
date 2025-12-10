@@ -78,6 +78,7 @@ KEYWORDS = {
     "mean",
     "round",
     "absolute",
+    "profile",
     "any",
     "current",
     "timestamp",

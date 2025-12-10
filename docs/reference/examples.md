@@ -45,6 +45,9 @@ You can also load the new flagship examples:
 - `records_validation_demo` - Field validation showcase with numeric bounds, enum membership, array limits, and transaction rollbacks.
   - CLI: `n3 example run records_validation_demo`
   - Studio source: `http://localhost:8000/studio?example=records_validation_demo`
+- `memory_profiles_demo` - Memory profiles and inline overrides for conversational assistants.
+  - CLI: `n3 example run memory_profiles_demo`
+  - Studio source: `http://localhost:8000/studio?example=memory_profiles_demo`
 
 ## Inspecting traces in Studio
 If you have a trace id (from the CLI output), open:

@@ -32,7 +32,7 @@ from .errors import ParseError
 from .templates.manager import list_templates, scaffold_project
 from .examples.manager import list_examples, resolve_example_path
 from .version import __version__
-from .memory.inspection import inspect_memory_state
+from .memory.inspection import describe_memory_plan, describe_memory_state, inspect_memory_state
 from .migration import naming as naming_migration
 from .migration import data_pipelines as data_migration
 
@@ -86,9 +86,30 @@ def build_cli_parser() -> argparse.ArgumentParser:
     run_flow_cmd.add_argument("--file", type=Path, required=True, help="Path to .ai file")
     run_flow_cmd.add_argument("--flow", required=True, help="Flow name to run")
 
-    mem_inspect_cmd = register("memory-inspect", help="Inspect memory state for a session")
-    mem_inspect_cmd.add_argument("--session-id", required=True, help="Session identifier to inspect")
-    mem_inspect_cmd.add_argument("--ai-id", help="AI call identifier (optional)")
+    mem_inspect_cmd = register("memory-inspect", help="Inspect memory plan/state for an AI call")
+    mem_inspect_cmd.add_argument("--file", type=Path, required=True, help="Path to an .ai file to load")
+    mem_inspect_cmd.add_argument(
+        "--ai",
+        "--ai-id",
+        dest="ai_id",
+        help="AI call identifier (defaults to the first AI in the file)",
+    )
+    mem_inspect_cmd.add_argument(
+        "--session-id",
+        help="Session identifier to inspect (required for per-session data)",
+    )
+    mem_inspect_cmd.add_argument("--user-id", help="User identifier for per-user memory scopes")
+    mem_inspect_cmd.add_argument(
+        "--limit",
+        type=int,
+        default=25,
+        help="Maximum entries to return per memory kind (default: 25)",
+    )
+    mem_inspect_cmd.add_argument(
+        "--plan-only",
+        action="store_true",
+        help="Only print the memory plan/configuration without reading stored entries",
+    )
 
     migrate_cmd = register("migrate", help="Migration helpers")
     migrate_sub = migrate_cmd.add_subparsers(dest="migrate_command", required=True)
@@ -547,7 +568,36 @@ def main(argv: list[str] | None = None) -> None:
         return
 
     if args.command == "memory-inspect":
-        output = inspect_memory_state(args.session_id, ai_id=getattr(args, "ai_id", None))
+        engine = _load_engine(args.file)
+        ai_calls = getattr(engine.program, "ai_calls", {})
+        ai_name = getattr(args, "ai_id", None) or next(iter(ai_calls), None)
+        if not ai_name:
+            raise SystemExit("No AI calls found in the provided file.")
+        if ai_name not in ai_calls:
+            raise SystemExit(f"AI '{ai_name}' not found in the provided file.")
+        ai_call = ai_calls[ai_name]
+        plan = describe_memory_plan(ai_call)
+        output: Dict[str, Any] = {
+            "ai": ai_name,
+            "plan": plan,
+            "state": None,
+        }
+        include_state = not getattr(args, "plan_only", False) and (getattr(args, "session_id", None) or getattr(args, "user_id", None))
+        if include_state:
+            try:
+                limit = max(1, int(getattr(args, "limit", 25)))
+            except (TypeError, ValueError):
+                raise SystemExit("--limit must be a positive integer")
+            try:
+                output["state"] = describe_memory_state(
+                    engine,
+                    ai_call,
+                    session_id=getattr(args, "session_id", None),
+                    user_id=getattr(args, "user_id", None),
+                    limit=limit,
+                )
+            except ValueError as exc:
+                raise SystemExit(str(exc)) from exc
         print(json.dumps(output, indent=2))
         return
 
