@@ -16,6 +16,7 @@ class FrameSpec:
     backend: str | None = None
     url: Any | None = None
     table: str | None = None
+    table_config: Any | None = None
     delimiter: str | None = None
     has_headers: bool = False
     select_cols: list[str] | None = None

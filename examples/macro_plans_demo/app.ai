@@ -1,0 +1,17 @@
+use macro "crud_ui" with:
+  entity is "Order"
+  fields:
+    field is "id":
+      type is "uuid"
+      required is true
+    field is "customer":
+      type is "string"
+      required is true
+    field is "total":
+      type is "number"
+      required is true
+
+use macro "auth_ui"
+
+use macro "analytics_dashboard" with:
+  record is "Order Metric"

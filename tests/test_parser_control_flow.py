@@ -63,6 +63,19 @@ def test_match_success_and_error_patterns_parse():
     assert match_stmt.branches[1].pattern.binding is None
 
 
+def test_match_success_missing_as_errors():
+    source = (
+        'flow is "router":\n'
+        '  step is "route":\n'
+        "    match result:\n"
+        "      when success value:\n"
+        '        set state.ok be value\n'
+    )
+    with pytest.raises(ParseError) as excinfo:
+        parse_source(source)
+    assert "N3CF-900" in str(excinfo.value)
+
+
 def test_standalone_when_errors():
     source = (
         'flow is "f":\n'

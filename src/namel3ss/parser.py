@@ -83,6 +83,8 @@ class Parser:
         if token.value == "ai":
             return self.parse_ai()
         if token.value == "agent":
+            if self.peek_offset(1).value == "evaluation":
+                return self.parse_agent_evaluation()
             return self.parse_agent()
         if token.value == "memory":
             if (self.peek_offset(1).value or "") == "profile":
@@ -96,7 +98,13 @@ class Parser:
             return self.parse_frame()
         if token.value == "vector_store":
             return self.parse_vector_store()
+        if token.value == "graph":
+            return self.parse_graph()
+        if token.value == "graph_summary":
+            return self.parse_graph_summary()
         if token.value == "tool":
+            if (self.peek_offset(1).value or "") == "evaluation":
+                return self.parse_tool_evaluation()
             return self.parse_tool()
         if token.value == "rag":
             next_tok = self.peek_offset(1)
@@ -128,6 +136,8 @@ class Parser:
             raise self.error("N3U-2200: button outside of a page or section", token)
         if token.value in {"when", "otherwise", "show"}:
             raise self.error("N3U-2300: conditional outside of a page or section", token)
+        if token.value == "table":
+            raise self.error('Use frame is "name": with a table: block instead of top-level table declarations.', token)
         raise self.error(f"Unexpected declaration '{token.value}'", token)
 
     def parse_use(self) -> ast_nodes.UseImport:
@@ -1451,7 +1461,9 @@ class Parser:
         system_prompt = None
         conditional_branches: list[ast_nodes.ConditionalBranch] | None = None
         memory_name = None
-        allowed_fields: Set[str] = {"goal", "personality", "system", "system_prompt", "memory"}
+        role = None
+        can_delegate_to: list[str] | None = None
+        allowed_fields: Set[str] = {"goal", "personality", "system", "system_prompt", "memory", "role", "can_delegate_to"}
         while not self.check("DEDENT"):
             if self.match("NEWLINE"):
                 continue
@@ -1511,6 +1523,24 @@ class Parser:
                         field_token, field_token.value or "agent field"
                     )
                 memory_name = value_token.value
+            elif field_token.value == "role":
+                if role is not None:
+                    raise self.error("role may only appear once inside an agent block.", field_token)
+                if self.match_value("KEYWORD", "is"):
+                    value_token = self.consume_any({"STRING", "IDENT"})
+                else:
+                    value_token = self.consume_string_value(field_token, field_token.value or "agent field")
+                role = value_token.value
+            elif field_token.value == "can_delegate_to":
+                if can_delegate_to is not None:
+                    raise self.error("can_delegate_to may only appear once inside an agent block.", field_token)
+                if self.match_value("KEYWORD", "are") or self.match_value("KEYWORD", "is"):
+                    pass
+                if self.peek().type == "LBRACKET":
+                    can_delegate_to = self._parse_string_list_literal(self.peek())
+                else:
+                    value_token = self.consume_any({"STRING", "IDENT"})
+                    can_delegate_to = [value_token.value]
             else:
                 if self.match_value("KEYWORD", "is"):
                     value_token = self.consume_any({"STRING", "IDENT"})
@@ -1533,6 +1563,8 @@ class Parser:
             system_prompt=system_prompt,
             conditional_branches=conditional_branches,
             memory_name=memory_name,
+            role=role,
+            can_delegate_to=can_delegate_to,
             span=self._span(start),
         )
 
@@ -2050,6 +2082,225 @@ class Parser:
             span=self._span(start),
         )
 
+    def parse_graph(self) -> ast_nodes.GraphDecl:
+        start = self.consume("KEYWORD", "graph")
+        if self.match_value("KEYWORD", "is"):
+            name_tok = self.consume("STRING")
+        else:
+            tok = self.peek()
+            if tok.type == "STRING":
+                raise self.error(f'graph "{tok.value}": is not supported. Use graph is "{tok.value}": instead.', tok)
+            raise self.error("Expected 'is' after 'graph'", tok)
+        name = name_tok.value or ""
+        source_frame = None
+        id_column = None
+        text_column = None
+        entities_cfg: ast_nodes.GraphEntitiesConfig | None = None
+        relations_cfg: ast_nodes.GraphRelationsConfig | None = None
+        storage_cfg: ast_nodes.GraphStorageConfig | None = None
+        self.consume("COLON")
+        self.consume("NEWLINE")
+        if self.check("INDENT"):
+            self.consume("INDENT")
+            while not self.check("DEDENT"):
+                if self.match("NEWLINE"):
+                    continue
+                field_tok = self.consume_any({"KEYWORD", "IDENT"})
+                field = field_tok.value or ""
+                if field == "from":
+                    if self.peek().value == "frame":
+                        self.consume_any({"KEYWORD", "IDENT"})
+                    if self.match_value("KEYWORD", "is"):
+                        frame_tok = self.consume_any({"STRING", "IDENT"})
+                    else:
+                        frame_tok = self.consume_any({"STRING", "IDENT"})
+                    source_frame = frame_tok.value
+                    self.optional_newline()
+                    continue
+                if field == "id_column":
+                    if self.match_value("KEYWORD", "is"):
+                        val_tok = self.consume_any({"STRING", "IDENT", "KEYWORD"})
+                    else:
+                        val_tok = self.consume_any({"STRING", "IDENT", "KEYWORD"})
+                    id_column = val_tok.value
+                    self.optional_newline()
+                    continue
+                if field == "text_column":
+                    if self.match_value("KEYWORD", "is"):
+                        val_tok = self.consume_any({"STRING", "IDENT", "KEYWORD"})
+                    else:
+                        val_tok = self.consume_any({"STRING", "IDENT", "KEYWORD"})
+                    text_column = val_tok.value
+                    self.optional_newline()
+                    continue
+                if field == "entities":
+                    self.consume("COLON")
+                    self.consume("NEWLINE")
+                    ent_model = None
+                    ent_max = None
+                    if self.check("INDENT"):
+                        self.consume("INDENT")
+                        while not self.check("DEDENT"):
+                            if self.match("NEWLINE"):
+                                continue
+                            ent_field = self.consume_any({"KEYWORD", "IDENT"})
+                            if ent_field.value == "model":
+                                if self.match_value("KEYWORD", "is"):
+                                    model_tok = self.consume_any({"STRING", "IDENT", "KEYWORD"})
+                                else:
+                                    model_tok = self.consume_any({"STRING", "IDENT", "KEYWORD"})
+                                ent_model = model_tok.value
+                                self.optional_newline()
+                                continue
+                            if ent_field.value == "max_entities_per_doc":
+                                if self.match_value("KEYWORD", "is"):
+                                    ent_max = self.parse_expression()
+                                else:
+                                    ent_max = self.parse_expression()
+                                self.optional_newline()
+                                continue
+                            raise self.error(f"Unexpected field '{ent_field.value}' in entities block", ent_field)
+                        self.consume("DEDENT")
+                    entities_cfg = ast_nodes.GraphEntitiesConfig(model=ent_model, max_entities_per_doc=ent_max, span=self._span(field_tok))
+                    self.optional_newline()
+                    continue
+                if field == "relations":
+                    self.consume("COLON")
+                    self.consume("NEWLINE")
+                    rel_model = None
+                    rel_max = None
+                    if self.check("INDENT"):
+                        self.consume("INDENT")
+                        while not self.check("DEDENT"):
+                            if self.match("NEWLINE"):
+                                continue
+                            rel_field = self.consume_any({"KEYWORD", "IDENT"})
+                            if rel_field.value == "model":
+                                if self.match_value("KEYWORD", "is"):
+                                    model_tok = self.consume_any({"STRING", "IDENT", "KEYWORD"})
+                                else:
+                                    model_tok = self.consume_any({"STRING", "IDENT", "KEYWORD"})
+                                rel_model = model_tok.value
+                                self.optional_newline()
+                                continue
+                            if rel_field.value == "max_relations_per_entity":
+                                if self.match_value("KEYWORD", "is"):
+                                    rel_max = self.parse_expression()
+                                else:
+                                    rel_max = self.parse_expression()
+                                self.optional_newline()
+                                continue
+                            raise self.error(f"Unexpected field '{rel_field.value}' in relations block", rel_field)
+                        self.consume("DEDENT")
+                    relations_cfg = ast_nodes.GraphRelationsConfig(model=rel_model, max_relations_per_entity=rel_max, span=self._span(field_tok))
+                    self.optional_newline()
+                    continue
+                if field == "storage":
+                    self.consume("COLON")
+                    self.consume("NEWLINE")
+                    nodes_frame = None
+                    edges_frame = None
+                    if self.check("INDENT"):
+                        self.consume("INDENT")
+                        while not self.check("DEDENT"):
+                            if self.match("NEWLINE"):
+                                continue
+                            stor_field = self.consume_any({"KEYWORD", "IDENT"})
+                            if stor_field.value == "nodes_frame":
+                                frame_tok = self.consume_any({"STRING", "IDENT", "KEYWORD"})
+                                nodes_frame = frame_tok.value
+                                self.optional_newline()
+                                continue
+                            if stor_field.value == "edges_frame":
+                                frame_tok = self.consume_any({"STRING", "IDENT", "KEYWORD"})
+                                edges_frame = frame_tok.value
+                                self.optional_newline()
+                                continue
+                            raise self.error(f"Unexpected field '{stor_field.value}' in storage block", stor_field)
+                        self.consume("DEDENT")
+                    storage_cfg = ast_nodes.GraphStorageConfig(nodes_frame=nodes_frame, edges_frame=edges_frame, span=self._span(field_tok))
+                    self.optional_newline()
+                    continue
+                raise self.error(f"Unexpected field '{field}' in graph block", field_tok)
+            self.consume("DEDENT")
+        self.optional_newline()
+        return ast_nodes.GraphDecl(
+            name=name,
+            source_frame=source_frame,
+            id_column=id_column,
+            text_column=text_column,
+            entities=entities_cfg,
+            relations=relations_cfg,
+            storage=storage_cfg,
+            span=self._span(start),
+        )
+
+    def parse_graph_summary(self) -> ast_nodes.GraphSummaryDecl:
+        start = self.consume("KEYWORD", "graph_summary")
+        if self.match_value("KEYWORD", "is"):
+            name_tok = self.consume("STRING")
+        else:
+            tok = self.peek()
+            if tok.type == "STRING":
+                raise self.error(f'graph_summary "{tok.value}": is not supported. Use graph_summary is "{tok.value}": instead.', tok)
+            raise self.error("Expected 'is' after 'graph_summary'", tok)
+        name = name_tok.value or ""
+        graph_name = None
+        method = None
+        max_nodes = None
+        model = None
+        self.consume("COLON")
+        self.consume("NEWLINE")
+        if self.check("INDENT"):
+            self.consume("INDENT")
+            while not self.check("DEDENT"):
+                if self.match("NEWLINE"):
+                    continue
+                field_tok = self.consume_any({"KEYWORD", "IDENT"})
+                field = field_tok.value or ""
+                if field == "graph":
+                    if self.match_value("KEYWORD", "is"):
+                        g_tok = self.consume_any({"STRING", "IDENT"})
+                    else:
+                        g_tok = self.consume_any({"STRING", "IDENT"})
+                    graph_name = g_tok.value
+                    self.optional_newline()
+                    continue
+                if field == "method":
+                    if self.match_value("KEYWORD", "is"):
+                        m_tok = self.consume_any({"STRING", "IDENT", "KEYWORD"})
+                    else:
+                        m_tok = self.consume_any({"STRING", "IDENT", "KEYWORD"})
+                    method = m_tok.value
+                    self.optional_newline()
+                    continue
+                if field == "max_nodes_per_summary":
+                    if self.match_value("KEYWORD", "is"):
+                        max_nodes = self.parse_expression()
+                    else:
+                        max_nodes = self.parse_expression()
+                    self.optional_newline()
+                    continue
+                if field == "model":
+                    if self.match_value("KEYWORD", "is"):
+                        model_tok = self.consume_any({"STRING", "IDENT", "KEYWORD"})
+                    else:
+                        model_tok = self.consume_any({"STRING", "IDENT", "KEYWORD"})
+                    model = model_tok.value
+                    self.optional_newline()
+                    continue
+                raise self.error(f"Unexpected field '{field}' in graph_summary block", field_tok)
+            self.consume("DEDENT")
+        self.optional_newline()
+        return ast_nodes.GraphSummaryDecl(
+            name=name,
+            graph=graph_name,
+            method=method,
+            max_nodes_per_summary=max_nodes,
+            model=model,
+            span=self._span(start),
+        )
+
     def parse_rag_evaluation(self) -> ast_nodes.RagEvaluationDecl:
         start = self.consume("KEYWORD", "rag")
         eval_tok = self.consume_any({"KEYWORD", "IDENT"})
@@ -2125,12 +2376,40 @@ class Parser:
                         self.consume("NEWLINE")
                         self.consume("INDENT")
                         metrics_list: list[str] = []
+
+                        def _append_metric(name: str) -> None:
+                            if name not in metrics_list:
+                                metrics_list.append(name)
                         while not self.check("DEDENT"):
                             if self.match("NEWLINE"):
                                 continue
-                            self.consume("DASH")
-                            item_tok = self.consume_any({"STRING", "IDENT", "KEYWORD"})
-                            metrics_list.append(item_tok.value or "")
+                            if self.match("DASH"):
+                                item_tok = self.consume_any({"STRING", "IDENT", "KEYWORD"})
+                                _append_metric(item_tok.value or "")
+                                self.optional_newline()
+                                continue
+                            inner_tok = self.consume_any({"KEYWORD", "IDENT"})
+                            if inner_tok.value == "measure":
+                                if self.peek().value == "is":
+                                    self.consume_any({"KEYWORD"})
+                                item_tok = self.consume_any({"STRING", "IDENT", "KEYWORD"})
+                                _append_metric(item_tok.value or "")
+                                self.optional_newline()
+                                continue
+                            if inner_tok.value == "measures":
+                                if not self.match_value("KEYWORD", "are"):
+                                    raise self.error("Use 'measures are [ ... ]' inside metrics.", inner_tok)
+                                list_tok = self.peek()
+                                if list_tok.type != "LBRACKET":
+                                    raise self.error(
+                                        'measures are expects a list of metric names like ["answer_correctness", "latency_seconds"].',
+                                        list_tok,
+                                    )
+                                for itm in self._parse_string_list_literal(list_tok):
+                                    _append_metric(itm)
+                                self.optional_newline()
+                                continue
+                            raise self.error(f"Unexpected field '{inner_tok.value}' in metrics block", inner_tok)
                             self.optional_newline()
                         self.consume("DEDENT")
                         metrics = metrics_list
@@ -2153,6 +2432,328 @@ class Parser:
             dataset_frame=dataset_frame or "",
             question_column=question_column or "",
             answer_column=answer_column,
+            metrics=metrics,
+            span=self._span(start),
+        )
+
+    def parse_tool_evaluation(self) -> ast_nodes.ToolEvaluationDecl:
+        start = self.consume("KEYWORD", "tool")
+        eval_tok = self.consume_any({"KEYWORD", "IDENT"})
+        if (eval_tok.value or "") != "evaluation":
+            raise self.error("Expected 'evaluation' after 'tool'.", eval_tok)
+        if not self.match_value("KEYWORD", "is"):
+            raise self.error('tool evaluation must use: tool evaluation is "Name":', self.peek())
+        name_tok = self.consume("STRING")
+        self.consume("COLON")
+        self.consume("NEWLINE")
+        tool_name: str | None = None
+        dataset_frame: str | None = None
+        input_mapping: dict[str, str] = {}
+        expected_cfg: ast_nodes.ToolExpectedConfig | None = None
+        metrics: list[str] | None = None
+        if self.check("INDENT"):
+            self.consume("INDENT")
+            while not self.check("DEDENT"):
+                if self.match("NEWLINE"):
+                    continue
+                tok = self.peek()
+                field = tok.value or ""
+                if field == "tool":
+                    self.consume_any({"KEYWORD", "IDENT"})
+                    if self.peek().value == "is":
+                        self.consume_any({"KEYWORD"})
+                    t_tok = self.consume_any({"STRING", "IDENT", "KEYWORD"})
+                    tool_name = t_tok.value
+                    self.optional_newline()
+                    continue
+                if field in {"dataset_frame", "dataset"}:
+                    self.consume_any({"KEYWORD", "IDENT"})
+                    if self.match_value("KEYWORD", "is"):
+                        frame_tok = self.consume_any({"STRING", "IDENT", "KEYWORD"})
+                    else:
+                        frame_tok = self.consume_any({"STRING", "IDENT", "KEYWORD"})
+                    dataset_frame = frame_tok.value
+                    self.optional_newline()
+                    continue
+                if field == "input_mapping":
+                    self.consume_any({"KEYWORD", "IDENT"})
+                    self.consume("COLON")
+                    self.consume("NEWLINE")
+                    if self.check("INDENT"):
+                        self.consume("INDENT")
+                        while not self.check("DEDENT"):
+                            if self.match("NEWLINE"):
+                                continue
+                            key_tok = self.consume_any({"IDENT", "STRING", "KEYWORD"})
+                            self.consume("KEYWORD", "is")
+                            col_tok = self.consume_any({"STRING", "IDENT", "KEYWORD"})
+                            input_mapping[key_tok.value or ""] = col_tok.value or ""
+                            self.optional_newline()
+                        self.consume("DEDENT")
+                    self.optional_newline()
+                    continue
+                if field == "expected":
+                    self.consume_any({"KEYWORD", "IDENT"})
+                    self.consume("COLON")
+                    self.consume("NEWLINE")
+                    cfg = ast_nodes.ToolExpectedConfig()
+                    if self.check("INDENT"):
+                        self.consume("INDENT")
+                        while not self.check("DEDENT"):
+                            if self.match("NEWLINE"):
+                                continue
+                            inner_tok = self.peek()
+                            inner = inner_tok.value or ""
+                            if inner == "status_column":
+                                self.consume_any({"KEYWORD", "IDENT"})
+                                if self.peek().value == "is":
+                                    self.consume_any({"KEYWORD"})
+                                s_tok = self.consume_any({"STRING", "IDENT", "KEYWORD"})
+                                cfg.status_column = s_tok.value
+                            elif inner in {"body_column", "text_column"}:
+                                self.consume_any({"KEYWORD", "IDENT"})
+                                if self.peek().value == "is":
+                                    self.consume_any({"KEYWORD"})
+                                b_tok = self.consume_any({"STRING", "IDENT", "KEYWORD"})
+                                cfg.body_column = b_tok.value
+                            else:
+                                raise self.error(f"Unexpected field '{inner}' in expected block", inner_tok)
+                            self.optional_newline()
+                        self.consume("DEDENT")
+                    expected_cfg = cfg
+                    self.optional_newline()
+                    continue
+                if field == "metrics":
+                    self.consume_any({"KEYWORD", "IDENT"})
+                    if self.match("COLON"):
+                        self.consume("NEWLINE")
+                        self.consume("INDENT")
+                        m_list: list[str] = []
+
+                        def _append_metric(name: str) -> None:
+                            if name not in m_list:
+                                m_list.append(name)
+                        while not self.check("DEDENT"):
+                            if self.match("NEWLINE"):
+                                continue
+                            if self.match("DASH"):
+                                item_tok = self.consume_any({"STRING", "IDENT", "KEYWORD"})
+                                _append_metric(item_tok.value or "")
+                                self.optional_newline()
+                                continue
+                            inner_tok = self.consume_any({"KEYWORD", "IDENT"})
+                            if inner_tok.value == "measure":
+                                if self.peek().value == "is":
+                                    self.consume_any({"KEYWORD"})
+                                item_tok = self.consume_any({"STRING", "IDENT", "KEYWORD"})
+                                _append_metric(item_tok.value or "")
+                                self.optional_newline()
+                                continue
+                            if inner_tok.value == "measures":
+                                if not self.match_value("KEYWORD", "are"):
+                                    raise self.error("Use 'measures are [ ... ]' inside metrics.", inner_tok)
+                                list_tok = self.peek()
+                                if list_tok.type != "LBRACKET":
+                                    raise self.error(
+                                        'measures are expects a list of metric names like ["answer_correctness", "latency_seconds"].',
+                                        list_tok,
+                                    )
+                                for itm in self._parse_string_list_literal(list_tok):
+                                    _append_metric(itm)
+                                self.optional_newline()
+                                continue
+                            raise self.error(f"Unexpected field '{inner_tok.value}' in metrics block", inner_tok)
+                            self.optional_newline()
+                        self.consume("DEDENT")
+                        metrics = m_list
+                        self.optional_newline()
+                        continue
+                    start_tok = self.peek()
+                    if start_tok.type == "LBRACKET":
+                        metrics = self._parse_string_list_literal(start_tok)
+                    else:
+                        val_tok = self.consume_any({"STRING", "IDENT", "KEYWORD"})
+                        metrics = [val_tok.value or ""]
+                    self.optional_newline()
+                    continue
+                raise self.error(f"Unexpected field '{field}' in tool evaluation block", tok)
+            self.consume("DEDENT")
+        self.optional_newline()
+        return ast_nodes.ToolEvaluationDecl(
+            name=name_tok.value or "",
+            tool=tool_name or "",
+            dataset_frame=dataset_frame or "",
+            input_mapping=input_mapping,
+            expected=expected_cfg,
+            metrics=metrics,
+            span=self._span(start),
+        )
+
+    def parse_agent_evaluation(self) -> ast_nodes.AgentEvaluationDecl:
+        start = self.consume("KEYWORD", "agent")
+        eval_tok = self.consume_any({"KEYWORD", "IDENT"})
+        if (eval_tok.value or "") != "evaluation":
+            raise self.error("Expected 'evaluation' after 'agent'.", eval_tok)
+        if not self.match_value("KEYWORD", "is"):
+            raise self.error('agent evaluation must use: agent evaluation is "Name":', self.peek())
+        name_tok = self.consume("STRING")
+        self.consume("COLON")
+        self.consume("NEWLINE")
+        agent_name: str | None = None
+        dataset_frame: str | None = None
+        input_mapping: dict[str, str] = {}
+        expected_cfg: ast_nodes.AgentExpectedConfig | None = None
+        metrics: list[str] | None = None
+
+        def _parse_bool(tok):
+            return (tok.value or "").lower() in {"true", "yes", "on", "1"}
+
+        if self.check("INDENT"):
+            self.consume("INDENT")
+            while not self.check("DEDENT"):
+                if self.match("NEWLINE"):
+                    continue
+                tok = self.peek()
+                field = tok.value or ""
+                if field == "agent":
+                    self.consume_any({"KEYWORD", "IDENT"})
+                    if self.peek().value == "is":
+                        self.consume_any({"KEYWORD"})
+                    a_tok = self.consume_any({"STRING", "IDENT", "KEYWORD"})
+                    agent_name = a_tok.value
+                    self.optional_newline()
+                    continue
+                if field in {"dataset_frame", "dataset"}:
+                    self.consume_any({"KEYWORD", "IDENT"})
+                    if self.match_value("KEYWORD", "is"):
+                        frame_tok = self.consume_any({"STRING", "IDENT", "KEYWORD"})
+                    else:
+                        frame_tok = self.consume_any({"STRING", "IDENT", "KEYWORD"})
+                    dataset_frame = frame_tok.value
+                    self.optional_newline()
+                    continue
+                if field == "input_mapping":
+                    self.consume_any({"KEYWORD", "IDENT"})
+                    self.consume("COLON")
+                    self.consume("NEWLINE")
+                    if self.check("INDENT"):
+                        self.consume("INDENT")
+                        while not self.check("DEDENT"):
+                            if self.match("NEWLINE"):
+                                continue
+                            key_tok = self.consume_any({"IDENT", "STRING", "KEYWORD"})
+                            self.consume("KEYWORD", "is")
+                            col_tok = self.consume_any({"STRING", "IDENT", "KEYWORD"})
+                            input_mapping[key_tok.value or ""] = col_tok.value or ""
+                            self.optional_newline()
+                        self.consume("DEDENT")
+                    self.optional_newline()
+                    continue
+                if field == "expected":
+                    self.consume_any({"KEYWORD", "IDENT"})
+                    self.consume("COLON")
+                    self.consume("NEWLINE")
+                    cfg = ast_nodes.AgentExpectedConfig()
+                    if self.check("INDENT"):
+                        self.consume("INDENT")
+                        while not self.check("DEDENT"):
+                            if self.match("NEWLINE"):
+                                continue
+                            inner_tok = self.peek()
+                            inner = inner_tok.value or ""
+                            if inner in {"answer_column", "expected_answer_column"}:
+                                self.consume_any({"KEYWORD", "IDENT"})
+                                if self.peek().value == "is":
+                                    self.consume_any({"KEYWORD"})
+                                ans_tok = self.consume_any({"STRING", "IDENT", "KEYWORD"})
+                                cfg.answer_column = ans_tok.value
+                            elif inner == "allow_llm_judge":
+                                self.consume_any({"KEYWORD", "IDENT"})
+                                if self.peek().value == "is":
+                                    self.consume_any({"KEYWORD"})
+                                bool_tok = self.consume_any({"STRING", "IDENT", "KEYWORD"})
+                                cfg.allow_llm_judge = _parse_bool(bool_tok)
+                            elif inner in {"judge_model", "judge"}:
+                                self.consume_any({"KEYWORD", "IDENT"})
+                                if self.peek().value == "is":
+                                    self.consume_any({"KEYWORD"})
+                                j_tok = self.consume_any({"STRING", "IDENT", "KEYWORD"})
+                                cfg.judge_model = j_tok.value
+                            elif inner in {"expected_tool_column", "tool_column", "expected_tools_column"}:
+                                self.consume_any({"KEYWORD", "IDENT"})
+                                if self.peek().value == "is":
+                                    self.consume_any({"KEYWORD"})
+                                t_tok = self.consume_any({"STRING", "IDENT", "KEYWORD"})
+                                cfg.expected_tool_column = t_tok.value
+                            else:
+                                raise self.error(f"Unexpected field '{inner}' in expected block", inner_tok)
+                            self.optional_newline()
+                        self.consume("DEDENT")
+                    expected_cfg = cfg
+                    self.optional_newline()
+                    continue
+                if field == "metrics":
+                    self.consume_any({"KEYWORD", "IDENT"})
+                    if self.match("COLON"):
+                        self.consume("NEWLINE")
+                        self.consume("INDENT")
+                        m_list: list[str] = []
+
+                        def _append_metric(name: str) -> None:
+                            if name not in m_list:
+                                m_list.append(name)
+                        while not self.check("DEDENT"):
+                            if self.match("NEWLINE"):
+                                continue
+                            if self.match("DASH"):
+                                item_tok = self.consume_any({"STRING", "IDENT", "KEYWORD"})
+                                _append_metric(item_tok.value or "")
+                                self.optional_newline()
+                                continue
+                            inner_tok = self.consume_any({"KEYWORD", "IDENT"})
+                            if inner_tok.value == "measure":
+                                if self.peek().value == "is":
+                                    self.consume_any({"KEYWORD"})
+                                item_tok = self.consume_any({"STRING", "IDENT", "KEYWORD"})
+                                _append_metric(item_tok.value or "")
+                                self.optional_newline()
+                                continue
+                            if inner_tok.value == "measures":
+                                if not self.match_value("KEYWORD", "are"):
+                                    raise self.error("Use 'measures are [ ... ]' inside metrics.", inner_tok)
+                                list_tok = self.peek()
+                                if list_tok.type != "LBRACKET":
+                                    raise self.error(
+                                        'measures are expects a list of metric names like ["answer_correctness", "latency_seconds"].',
+                                        list_tok,
+                                    )
+                                for itm in self._parse_string_list_literal(list_tok):
+                                    _append_metric(itm)
+                                self.optional_newline()
+                                continue
+                            raise self.error(f"Unexpected field '{inner_tok.value}' in metrics block", inner_tok)
+                            self.optional_newline()
+                        self.consume("DEDENT")
+                        metrics = m_list
+                        self.optional_newline()
+                        continue
+                    start_tok = self.peek()
+                    if start_tok.type == "LBRACKET":
+                        metrics = self._parse_string_list_literal(start_tok)
+                    else:
+                        val_tok = self.consume_any({"STRING", "IDENT", "KEYWORD"})
+                        metrics = [val_tok.value or ""]
+                    self.optional_newline()
+                    continue
+                raise self.error(f"Unexpected field '{field}' in agent evaluation block", tok)
+            self.consume("DEDENT")
+        self.optional_newline()
+        return ast_nodes.AgentEvaluationDecl(
+            name=name_tok.value or "",
+            agent=agent_name or "",
+            dataset_frame=dataset_frame or "",
+            input_mapping=input_mapping,
+            expected=expected_cfg,
             metrics=metrics,
             span=self._span(start),
         )
@@ -2205,6 +2806,19 @@ class Parser:
         stage_type: str | None = None
         ai_name: str | None = None
         vector_store: str | None = None
+        stage_frame: str | None = None
+        match_column: str | None = None
+        max_rows_expr: ast_nodes.Expr | None = None
+        group_by_col: str | None = None
+        max_groups_expr: ast_nodes.Expr | None = None
+        max_rows_per_group_expr: ast_nodes.Expr | None = None
+        image_column: str | None = None
+        text_column: str | None = None
+        embedding_model: str | None = None
+        output_vector_store: str | None = None
+        max_items_expr: ast_nodes.Expr | None = None
+        graph_name: str | None = None
+        graph_summary_name: str | None = None
         top_k: ast_nodes.Expr | None = None
         where_expr: ast_nodes.Expr | None = None
         max_tokens: ast_nodes.Expr | None = None
@@ -2213,6 +2827,9 @@ class Parser:
         max_subquestions: ast_nodes.Expr | None = None
         from_stages: list[str] | None = None
         method: str | None = None
+        max_hops: ast_nodes.Expr | None = None
+        max_nodes: ast_nodes.Expr | None = None
+        strategy: str | None = None
         if self.check("INDENT"):
             self.consume("INDENT")
             while not self.check("DEDENT"):
@@ -2241,6 +2858,106 @@ class Parser:
                     else:
                         vs_tok = self.consume_any({"STRING", "IDENT", "KEYWORD"})
                     vector_store = vs_tok.value
+                    self.optional_newline()
+                    continue
+                if field == "frame":
+                    if self.match_value("KEYWORD", "is"):
+                        f_tok = self.consume_any({"STRING", "IDENT", "KEYWORD"})
+                    else:
+                        f_tok = self.consume_any({"STRING", "IDENT", "KEYWORD"})
+                    stage_frame = f_tok.value
+                    self.optional_newline()
+                    continue
+                if field == "match_column":
+                    if self.match_value("KEYWORD", "is"):
+                        m_tok = self.consume_any({"STRING", "IDENT", "KEYWORD"})
+                    else:
+                        m_tok = self.consume_any({"STRING", "IDENT", "KEYWORD"})
+                    match_column = m_tok.value
+                    self.optional_newline()
+                    continue
+                if field == "max_rows":
+                    if self.match_value("KEYWORD", "is"):
+                        max_rows_expr = self.parse_expression()
+                    else:
+                        max_rows_expr = self.parse_expression()
+                    self.optional_newline()
+                    continue
+                if field == "group_by":
+                    if self.match_value("KEYWORD", "is"):
+                        g_tok = self.consume_any({"STRING", "IDENT", "KEYWORD"})
+                    else:
+                        g_tok = self.consume_any({"STRING", "IDENT", "KEYWORD"})
+                    group_by_col = g_tok.value
+                    self.optional_newline()
+                    continue
+                if field == "max_groups":
+                    if self.match_value("KEYWORD", "is"):
+                        max_groups_expr = self.parse_expression()
+                    else:
+                        max_groups_expr = self.parse_expression()
+                    self.optional_newline()
+                    continue
+                if field == "max_rows_per_group":
+                    if self.match_value("KEYWORD", "is"):
+                        max_rows_per_group_expr = self.parse_expression()
+                    else:
+                        max_rows_per_group_expr = self.parse_expression()
+                    self.optional_newline()
+                    continue
+                if field == "image_column":
+                    if self.match_value("KEYWORD", "is"):
+                        i_tok = self.consume_any({"STRING", "IDENT", "KEYWORD"})
+                    else:
+                        i_tok = self.consume_any({"STRING", "IDENT", "KEYWORD"})
+                    image_column = i_tok.value
+                    self.optional_newline()
+                    continue
+                if field == "text_column":
+                    if self.match_value("KEYWORD", "is"):
+                        t_tok = self.consume_any({"STRING", "IDENT", "KEYWORD"})
+                    else:
+                        t_tok = self.consume_any({"STRING", "IDENT", "KEYWORD"})
+                    text_column = t_tok.value
+                    self.optional_newline()
+                    continue
+                if field == "embedding_model":
+                    if self.match_value("KEYWORD", "is"):
+                        e_tok = self.consume_any({"STRING", "IDENT", "KEYWORD"})
+                    else:
+                        e_tok = self.consume_any({"STRING", "IDENT", "KEYWORD"})
+                    embedding_model = e_tok.value
+                    self.optional_newline()
+                    continue
+                if field == "output_vector_store":
+                    if self.match_value("KEYWORD", "is"):
+                        o_tok = self.consume_any({"STRING", "IDENT", "KEYWORD"})
+                    else:
+                        o_tok = self.consume_any({"STRING", "IDENT", "KEYWORD"})
+                    output_vector_store = o_tok.value
+                    self.optional_newline()
+                    continue
+                if field == "max_items":
+                    if self.match_value("KEYWORD", "is"):
+                        max_items_expr = self.parse_expression()
+                    else:
+                        max_items_expr = self.parse_expression()
+                    self.optional_newline()
+                    continue
+                if field == "graph":
+                    if self.match_value("KEYWORD", "is"):
+                        g_tok = self.consume_any({"STRING", "IDENT", "KEYWORD"})
+                    else:
+                        g_tok = self.consume_any({"STRING", "IDENT", "KEYWORD"})
+                    graph_name = g_tok.value
+                    self.optional_newline()
+                    continue
+                if field == "graph_summary":
+                    if self.match_value("KEYWORD", "is"):
+                        gs_tok = self.consume_any({"STRING", "IDENT", "KEYWORD"})
+                    else:
+                        gs_tok = self.consume_any({"STRING", "IDENT", "KEYWORD"})
+                    graph_summary_name = gs_tok.value
                     self.optional_newline()
                     continue
                 if field == "top_k":
@@ -2309,6 +3026,28 @@ class Parser:
                     method = method_tok.value
                     self.optional_newline()
                     continue
+                if field == "max_hops":
+                    if self.match_value("KEYWORD", "is"):
+                        max_hops = self.parse_expression()
+                    else:
+                        max_hops = self.parse_expression()
+                    self.optional_newline()
+                    continue
+                if field == "max_nodes":
+                    if self.match_value("KEYWORD", "is"):
+                        max_nodes = self.parse_expression()
+                    else:
+                        max_nodes = self.parse_expression()
+                    self.optional_newline()
+                    continue
+                if field == "strategy":
+                    if self.match_value("KEYWORD", "is"):
+                        strat_tok = self.consume_any({"STRING", "IDENT", "KEYWORD"})
+                    else:
+                        strat_tok = self.consume_any({"STRING", "IDENT", "KEYWORD"})
+                    strategy = strat_tok.value
+                    self.optional_newline()
+                    continue
                 raise self.error(f"Unexpected field '{field}' in stage block", field_tok)
             self.consume("DEDENT")
         self.optional_newline()
@@ -2317,6 +3056,19 @@ class Parser:
             type=stage_type or "",
             ai=ai_name,
             vector_store=vector_store,
+            frame=stage_frame,
+            match_column=match_column,
+            max_rows=max_rows_expr,
+            group_by=group_by_col,
+            max_groups=max_groups_expr,
+            max_rows_per_group=max_rows_per_group_expr,
+            image_column=image_column,
+            text_column=text_column,
+            embedding_model=embedding_model,
+            output_vector_store=output_vector_store,
+            max_items=max_items_expr,
+            graph=graph_name,
+            graph_summary=graph_summary_name,
             top_k=top_k,
             where=where_expr,
             max_tokens=max_tokens,
@@ -2325,6 +3077,9 @@ class Parser:
             max_subquestions=max_subquestions,
             from_stages=from_stages,
             method=method,
+            max_hops=max_hops,
+            max_nodes=max_nodes,
+            strategy=strategy,
             span=self._span(start),
         )
 
@@ -2342,10 +3097,13 @@ class Parser:
         method = None
         url_template = None
         url_expr: ast_nodes.Expr | None = None
+        query_template: ast_nodes.Expr | None = None
         headers: dict[str, ast_nodes.Expr] = {}
         query_params: dict[str, ast_nodes.Expr] = {}
         body_fields: dict[str, ast_nodes.Expr] = {}
         body_template: ast_nodes.Expr | None = None
+        variables: dict[str, ast_nodes.Expr] = {}
+        input_fields: list[str] = []
         timeout_expr: ast_nodes.Expr | None = None
         retry_cfg: ast_nodes.ToolRetryConfig | None = None
         auth_cfg: ast_nodes.ToolAuthConfig | None = None
@@ -2354,6 +3112,7 @@ class Parser:
         rate_limit_cfg: ast_nodes.ToolRateLimitConfig | None = None
         multipart_expr: ast_nodes.Expr | None = None
         query_encoding: str | None = None
+        function_path: str | None = None
         self.consume("COLON")
         self.consume("NEWLINE")
         if self.check("INDENT"):
@@ -2395,6 +3154,14 @@ class Parser:
                         url_expr = self.parse_expression()
                     self.optional_newline()
                     continue
+                if tok.value == "query_template":
+                    self.consume_any({"KEYWORD", "IDENT"})
+                    if self.match_value("KEYWORD", "is"):
+                        query_template = self.parse_expression()
+                    else:
+                        query_template = self.parse_expression()
+                    self.optional_newline()
+                    continue
                 if tok.value == "timeout":
                     self.consume("KEYWORD", "timeout")
                     if self.match_value("KEYWORD", "is"):
@@ -2418,6 +3185,15 @@ class Parser:
                     else:
                         q_tok = self.consume_any({"STRING", "IDENT", "KEYWORD"})
                     query_encoding = q_tok.value
+                    self.optional_newline()
+                    continue
+                if tok.value == "function":
+                    self.consume_any({"KEYWORD", "IDENT"})
+                    if self.match_value("KEYWORD", "is"):
+                        func_tok = self.consume_any({"STRING", "IDENT", "KEYWORD"})
+                    else:
+                        func_tok = self.consume_any({"STRING", "IDENT", "KEYWORD"})
+                    function_path = func_tok.value
                     self.optional_newline()
                     continue
                 if tok.value == "body_template":
@@ -2606,6 +3382,14 @@ class Parser:
                     response_schema = schema
                     self.optional_newline()
                     continue
+                if tok.value == "input_fields":
+                    self.consume_any({"KEYWORD", "IDENT"})
+                    if self.match_value("KEYWORD", "are") or self.match_value("KEYWORD", "is"):
+                        pass
+                    start_tok = self.peek()
+                    input_fields = self._parse_string_list_literal(start_tok)
+                    self.optional_newline()
+                    continue
                 if tok.value == "auth":
                     self.consume("KEYWORD", "auth")
                     self.consume("COLON")
@@ -2656,6 +3440,71 @@ class Parser:
                                     cfg.value = self.parse_expression()
                                 else:
                                     cfg.value = self.parse_expression()
+                            elif field_name == "token_url":
+                                if self.match_value("KEYWORD", "is"):
+                                    cfg.token_url = self.parse_expression()
+                                else:
+                                    cfg.token_url = self.parse_expression()
+                            elif field_name == "client_id":
+                                if self.match_value("KEYWORD", "is"):
+                                    cfg.client_id = self.parse_expression()
+                                else:
+                                    cfg.client_id = self.parse_expression()
+                            elif field_name == "client_secret":
+                                if self.match_value("KEYWORD", "is"):
+                                    cfg.client_secret = self.parse_expression()
+                                else:
+                                    cfg.client_secret = self.parse_expression()
+                            elif field_name == "scopes":
+                                if self.match_value("KEYWORD", "are") or self.match_value("KEYWORD", "is"):
+                                    pass
+                                start_tok = self.peek()
+                                cfg.scopes = self._parse_string_list_literal(start_tok)
+                            elif field_name == "audience":
+                                if self.match_value("KEYWORD", "is"):
+                                    cfg.audience = self.parse_expression()
+                                else:
+                                    cfg.audience = self.parse_expression()
+                            elif field_name == "cache":
+                                if self.match_value("KEYWORD", "is"):
+                                    cache_tok = self.consume_any({"STRING", "IDENT", "KEYWORD"})
+                                else:
+                                    cache_tok = self.consume_any({"STRING", "IDENT", "KEYWORD"})
+                                cfg.cache = cache_tok.value
+                            elif field_name == "issuer":
+                                if self.match_value("KEYWORD", "is"):
+                                    cfg.issuer = self.parse_expression()
+                                else:
+                                    cfg.issuer = self.parse_expression()
+                            elif field_name == "subject":
+                                if self.match_value("KEYWORD", "is"):
+                                    cfg.subject = self.parse_expression()
+                                else:
+                                    cfg.subject = self.parse_expression()
+                            elif field_name == "private_key":
+                                if self.match_value("KEYWORD", "is"):
+                                    cfg.private_key = self.parse_expression()
+                                else:
+                                    cfg.private_key = self.parse_expression()
+                            elif field_name == "algorithm":
+                                if self.match_value("KEYWORD", "is"):
+                                    alg_tok = self.consume_any({"STRING", "IDENT", "KEYWORD"})
+                                else:
+                                    alg_tok = self.consume_any({"STRING", "IDENT", "KEYWORD"})
+                                cfg.algorithm = alg_tok.value
+                            elif field_name == "claims":
+                                self.consume("COLON")
+                                self.consume("NEWLINE")
+                                if self.check("INDENT"):
+                                    self.consume("INDENT")
+                                    while not self.check("DEDENT"):
+                                        if self.match("NEWLINE"):
+                                            continue
+                                        claim_key = self.consume_any({"IDENT", "STRING", "KEYWORD"})
+                                        self.consume("COLON")
+                                        cfg.claims[claim_key.value or ""] = self.parse_expression()
+                                        self.optional_newline()
+                                    self.consume("DEDENT")
                             else:
                                 raise self.error(
                                     f"Unexpected field '{field_name}' in auth block",
@@ -2696,6 +3545,25 @@ class Parser:
                         self.consume("DEDENT")
                     self.optional_newline()
                     continue
+                if tok.value == "variables":
+                    self.consume_any({"KEYWORD", "IDENT"})
+                    self.consume("COLON")
+                    self.consume("NEWLINE")
+                    if self.check("INDENT"):
+                        self.consume("INDENT")
+                        while not self.check("DEDENT"):
+                            key_tok = self.consume_any({"IDENT", "STRING", "KEYWORD"})
+                            if self.match_value("KEYWORD", "is"):
+                                expr = self.parse_expression()
+                            else:
+                                if self.match("COLON"):
+                                    pass
+                                expr = self.parse_expression()
+                            variables[key_tok.value or ""] = expr
+                            self.optional_newline()
+                        self.consume("DEDENT")
+                    self.optional_newline()
+                    continue
                 if tok.value == "body":
                     self.consume("KEYWORD", "body")
                     self.consume("COLON")
@@ -2721,11 +3589,14 @@ class Parser:
             kind=kind,
             method=method,
             url_template=url_template,
-             url_expr=url_expr,
+            url_expr=url_expr,
+            query_template=query_template,
             headers=headers,
-             query_params=query_params,
-             body_fields=body_fields,
+            query_params=query_params,
+            body_fields=body_fields,
             body_template=body_template,
+            variables=variables,
+            input_fields=input_fields,
             timeout=timeout_expr,
             retry=retry_cfg,
             auth=auth_cfg,
@@ -2734,6 +3605,7 @@ class Parser:
             rate_limit=rate_limit_cfg,
             multipart=multipart_expr,
             query_encoding=query_encoding,
+            function=function_path,
             span=self._span(start),
         )
 
@@ -2760,6 +3632,7 @@ class Parser:
         select_cols: list[str] = []
         where_expr = None
         seen_source = False
+        table_cfg: ast_nodes.FrameTableConfig | None = None
 
         if self.check("INDENT"):
             self.consume("INDENT")
@@ -2843,6 +3716,73 @@ class Parser:
                         raise self.error("N3F-1001: invalid frame configuration", inner)
                     self.consume("DEDENT")
                     continue
+                if tok.value == "table":
+                    self.consume("KEYWORD", "table")
+                    self.consume("COLON")
+                    self.consume("NEWLINE")
+                    pk_val = None
+                    display_cols: list[str] = []
+                    time_col = None
+                    text_col = None
+                    image_col = None
+                    if self.check("INDENT"):
+                        self.consume("INDENT")
+                        while not self.check("DEDENT"):
+                            if self.match("NEWLINE"):
+                                continue
+                            t_field_tok = self.consume_any({"KEYWORD", "IDENT"})
+                            t_field = t_field_tok.value or ""
+                            if t_field == "primary_key":
+                                if self.match_value("KEYWORD", "is"):
+                                    pk_tok = self.consume_any({"STRING", "IDENT", "KEYWORD"})
+                                else:
+                                    pk_tok = self.consume_any({"STRING", "IDENT", "KEYWORD"})
+                                pk_val = pk_tok.value
+                                self.optional_newline()
+                                continue
+                            if t_field == "display_columns":
+                                if self.peek().value in {"are", "is"}:
+                                    self.consume_any({"KEYWORD", "IDENT"})
+                                start_tok = self.peek()
+                                display_cols = self._parse_string_list_literal(start_tok)
+                                self.optional_newline()
+                                continue
+                            if t_field == "time_column":
+                                if self.match_value("KEYWORD", "is"):
+                                    t_tok = self.consume_any({"STRING", "IDENT", "KEYWORD"})
+                                else:
+                                    t_tok = self.consume_any({"STRING", "IDENT", "KEYWORD"})
+                                time_col = t_tok.value
+                                self.optional_newline()
+                                continue
+                            if t_field == "text_column":
+                                if self.match_value("KEYWORD", "is"):
+                                    t_tok = self.consume_any({"STRING", "IDENT", "KEYWORD"})
+                                else:
+                                    t_tok = self.consume_any({"STRING", "IDENT", "KEYWORD"})
+                                text_col = t_tok.value
+                                self.optional_newline()
+                                continue
+                            if t_field == "image_column":
+                                if self.match_value("KEYWORD", "is"):
+                                    i_tok = self.consume_any({"STRING", "IDENT", "KEYWORD"})
+                                else:
+                                    i_tok = self.consume_any({"STRING", "IDENT", "KEYWORD"})
+                                image_col = i_tok.value
+                                self.optional_newline()
+                                continue
+                            raise self.error(f"Unexpected field '{t_field}' in table block", t_field_tok)
+                        self.consume("DEDENT")
+                    table_cfg = ast_nodes.FrameTableConfig(
+                        primary_key=pk_val,
+                        display_columns=display_cols,
+                        time_column=time_col,
+                        text_column=text_col,
+                        image_column=image_col,
+                        span=self._span(tok),
+                    )
+                    self.optional_newline()
+                    continue
                 if tok.value == "select":
                     self.consume("KEYWORD", "select")
                     self.consume("COLON")
@@ -2875,11 +3815,12 @@ class Parser:
             backend=backend,
             url=url_expr,
             table=table,
-            primary_key=primary_key,
+            primary_key=primary_key or (table_cfg.primary_key if table_cfg else None),
             delimiter=delimiter,
             has_headers=has_headers,
             select_cols=select_cols,
             where=where_expr,
+            table_config=table_cfg,
             span=self._span(start),
         )
 
@@ -2927,6 +3868,7 @@ class Parser:
         self.consume("COLON")
         self.consume("NEWLINE")
         description = None
+        version = None
         sample = None
         params: list[str] = []
         if self.check("INDENT"):
@@ -2938,6 +3880,13 @@ class Parser:
                 if tok.value == "description":
                     desc_tok = self.consume("STRING")
                     description = desc_tok.value
+                    self.optional_newline()
+                    continue
+                if tok.value == "version":
+                    if self.match_value("KEYWORD", "is"):
+                        pass
+                    ver_tok = self.consume("STRING")
+                    version = ver_tok.value
                     self.optional_newline()
                     continue
                 if tok.value == "sample":
@@ -2963,6 +3912,7 @@ class Parser:
         return ast_nodes.MacroDecl(
             name=name_tok.value or "",
             ai_model=model_tok.value or "",
+            version=version,
             description=description,
             sample=sample,
             parameters=params,
@@ -3035,6 +3985,11 @@ class Parser:
                 if key_tok.value == "fields" and self.peek().type == "COLON":
                     args[key_tok.value or "fields"] = self._parse_macro_fields_block()
                 else:
+                    if not self.match_value("KEYWORD", "is") and not self.match_value("KEYWORD", "are"):
+                        raise self.error(
+                            f"Expected 'is' after {key_tok.value} in macro arguments. Use '{key_tok.value} is \"value\"' instead.",
+                            self.peek(),
+                        )
                     value_expr = self.parse_expression()
                     args[key_tok.value or ""] = value_expr
                 self.optional_newline()
@@ -5761,10 +6716,20 @@ class Parser:
             if pat_token.value == "success":
                 self.consume("KEYWORD", "success")
                 binding = self._parse_optional_binding()
+                if not self.check("COLON"):
+                    raise self.error(
+                        "N3CF-900: I expected ':' after 'when success'. If you want to bind the value, write 'when success as value:'.",
+                        self.peek(),
+                    )
                 pattern = ast_nodes.SuccessPattern(binding=binding, span=self._span(pat_token))
             elif pat_token.value == "error":
                 self.consume("KEYWORD", "error")
                 binding = self._parse_optional_binding()
+                if not self.check("COLON"):
+                    raise self.error(
+                        "N3CF-901: I expected ':' after 'when error'. If you want to bind the error, write 'when error as err:'.",
+                        self.peek(),
+                    )
                 pattern = ast_nodes.ErrorPattern(binding=binding, span=self._span(pat_token))
             else:
                 pattern = self.parse_expression()

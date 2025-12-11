@@ -9,7 +9,7 @@ def test_app_scaffold_expands_full_stack():
     source = dedent(
         """
         use macro "app_scaffold" with:
-          entity "Product"
+          entity is "Product"
           fields:
             field is "name":
               type is "string"

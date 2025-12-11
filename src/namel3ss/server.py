@@ -37,6 +37,7 @@ from .ui.renderer import UIRenderer
 from .ui.runtime import UIEventRouter
 from .ui.components import UIEvent, UIContext
 from .obs.tracer import Tracer
+from .observability.tracing import default_tracer
 from .security import (
     API_KEY_HEADER,
     Principal,
@@ -53,6 +54,7 @@ from .distributed.scheduler import JobScheduler
 from .distributed.workers import Worker
 from .metrics.tracker import MetricsTracker
 from .studio.engine import StudioEngine
+from .macros import MacroExpander, MacroExpansionRecord, default_macro_ai_callback
 from .diagnostics.runner import collect_diagnostics, collect_lint, iter_ai_files
 from . import linting
 from .packaging.bundler import Bundler, make_server_bundle, make_worker_bundle
@@ -198,6 +200,16 @@ class RAGQueryRequest(BaseModel):
     code: str
     query: str
     indexes: Optional[list[str]] = None
+
+
+class RagStageUpdateRequest(BaseModel):
+    stage: str
+    changes: Dict[str, Any] = Field(default_factory=dict)
+
+
+class RagPreviewRequest(BaseModel):
+    query: str | None = None
+    max_debug_stages: int | None = None
 
 
 class FlowsRequest(BaseModel):
@@ -498,6 +510,28 @@ def create_app() -> FastAPI:
             trigger_manager=trigger_manager,
             plugin_registry=plugin_registry,
         )
+
+    def _macro_id(record: MacroExpansionRecord, idx: int) -> str:
+        path_label = Path(record.source_path).name if record.source_path else "unknown"
+        line = record.span.line if record.span else 0
+        col = record.span.column if record.span else 0
+        return f"{record.macro_name}:{path_label}:{line}:{col}:{idx}"
+
+    def _collect_macro_invocations() -> list[tuple[str, MacroExpansionRecord]]:
+        invocations: list[tuple[str, MacroExpansionRecord]] = []
+        base = _project_root()
+        for path in _iter_ai_files(base):
+            try:
+                source = path.read_text(encoding="utf-8")
+                tokens = lexer.Lexer(source, filename=str(path)).tokenize()
+                module = parser.Parser(tokens).parse_module()
+                expander = MacroExpander(default_macro_ai_callback, capture_expansions=True)
+                expander.expand_module(module, source_path=str(path))
+                for rec in expander.expansion_records:
+                    invocations.append((_macro_id(rec, len(invocations)), rec))
+            except Exception:
+                continue
+        return invocations
 
     def _short_term_store_name(mem_cfg: Any) -> str:
         short_cfg = getattr(mem_cfg, "short_term", None)
@@ -1887,5 +1921,268 @@ def create_app() -> FastAPI:
         )
         summary = studio.build_summary()
         return {"summary": summary.__dict__}
+
+    # ---------- Studio RAG pipeline endpoints ----------
+    def _serialize_rag_stage(stage, idx: int | None = None) -> Dict[str, Any]:
+        data = {
+            "name": getattr(stage, "name", ""),
+            "type": getattr(stage, "type", ""),
+            "ai": getattr(stage, "ai", None),
+            "vector_store": getattr(stage, "vector_store", None),
+            "graph": getattr(stage, "graph", None),
+            "graph_summary": getattr(stage, "graph_summary", None),
+            "frame": getattr(stage, "frame", None),
+            "top_k": getattr(stage, "top_k", None),
+            "max_rows": getattr(stage, "max_rows", None),
+            "group_by": getattr(stage, "group_by", None),
+            "max_rows_per_group": getattr(stage, "max_rows_per_group", None),
+            "max_items": getattr(stage, "max_items", None),
+            "strategy": getattr(stage, "strategy", None),
+            "max_hops": getattr(stage, "max_hops", None),
+            "max_nodes": getattr(stage, "max_nodes", None),
+        }
+        if idx is not None:
+            data["index"] = idx
+        return data
+
+    def _serialize_rag_pipeline(pipeline) -> Dict[str, Any]:
+        stages = [_serialize_rag_stage(st, idx) for idx, st in enumerate(getattr(pipeline, "stages", []))]
+        edges = []
+        for idx, st in enumerate(stages):
+            if idx + 1 < len(stages):
+                edges.append({"from": stages[idx]["name"], "to": stages[idx + 1]["name"]})
+        return {
+            "name": getattr(pipeline, "name", ""),
+            "default_vector_store": getattr(pipeline, "default_vector_store", None),
+            "stages": stages,
+            "edges": edges,
+        }
+
+    @app.get("/api/studio/rag/pipelines")
+    def api_studio_rag_pipelines(principal: Principal = Depends(get_principal)) -> Dict[str, Any]:
+        if principal.role not in {Role.ADMIN, Role.DEVELOPER, Role.VIEWER}:
+            raise HTTPException(status_code=403, detail="Forbidden")
+        try:
+            engine = _build_project_engine()
+        except Exception:
+            engine = Engine.from_source(
+                "", metrics_tracker=metrics_tracker, trigger_manager=trigger_manager, plugin_registry=plugin_registry
+            )
+        pipelines = [
+            {"id": name, "name": name, "description": "", "source": None}
+            for name in (getattr(engine.program, "rag_pipelines", {}) or {}).keys()
+        ]
+        return {"pipelines": pipelines}
+
+    @app.get("/api/studio/rag/pipelines/{pipeline_id}")
+    def api_studio_rag_pipeline_detail(pipeline_id: str, principal: Principal = Depends(get_principal)) -> Dict[str, Any]:
+        if principal.role not in {Role.ADMIN, Role.DEVELOPER, Role.VIEWER}:
+            raise HTTPException(status_code=403, detail="Forbidden")
+        engine = _build_project_engine()
+        pipeline = (getattr(engine.program, "rag_pipelines", {}) or {}).get(pipeline_id)
+        if not pipeline:
+            raise HTTPException(status_code=404, detail="Pipeline not found")
+        return {"pipeline": _serialize_rag_pipeline(pipeline)}
+
+    @app.post("/api/studio/rag/pipelines/{pipeline_id}/update_stage")
+    def api_studio_rag_update_stage(
+        pipeline_id: str, payload: RagStageUpdateRequest, principal: Principal = Depends(get_principal)
+    ) -> Dict[str, Any]:
+        if principal.role not in {Role.ADMIN, Role.DEVELOPER}:
+            raise HTTPException(status_code=403, detail="Forbidden")
+        engine = _build_project_engine()
+        pipeline = (getattr(engine.program, "rag_pipelines", {}) or {}).get(pipeline_id)
+        if not pipeline:
+            raise HTTPException(status_code=404, detail="Pipeline not found")
+        stage_name = payload.stage
+        changes = payload.changes or {}
+        stage = next((st for st in pipeline.stages if getattr(st, "name", None) == stage_name), None)
+        if not stage:
+            raise HTTPException(status_code=404, detail="Stage not found")
+        allowed_fields = {
+            "ai",
+            "vector_store",
+            "graph",
+            "graph_summary",
+            "frame",
+            "match_column",
+            "max_rows",
+            "group_by",
+            "max_rows_per_group",
+            "max_items",
+            "strategy",
+            "max_hops",
+            "max_nodes",
+            "top_k",
+            "method",
+            "embedding_model",
+            "output_vector_store",
+            "image_column",
+            "text_column",
+        }
+        for key, value in changes.items():
+            if key in allowed_fields:
+                setattr(stage, key, value)
+        return {"status": "updated", "stage": _serialize_rag_stage(stage), "pipeline": _serialize_rag_pipeline(pipeline)}
+
+    @app.post("/api/studio/rag/pipelines/{pipeline_id}/preview")
+    def api_studio_rag_preview(
+        pipeline_id: str, payload: RagPreviewRequest, principal: Principal = Depends(get_principal)
+    ) -> Dict[str, Any]:
+        if principal.role not in {Role.ADMIN, Role.DEVELOPER, Role.VIEWER}:
+            raise HTTPException(status_code=403, detail="Forbidden")
+        engine = _build_project_engine()
+        pipeline = (getattr(engine.program, "rag_pipelines", {}) or {}).get(pipeline_id)
+        if not pipeline:
+            raise HTTPException(status_code=404, detail="Pipeline not found")
+        query = payload.query
+        stage_previews: list[dict[str, Any]] = []
+        for st in pipeline.stages:
+            stage_previews.append(
+                {
+                    "stage": st.name,
+                    "type": st.type,
+                    "summary": f"Configured stage {st.name} ({st.type})",
+                    "params": {k: v for k, v in _serialize_rag_stage(st).items() if k not in {"name", "type"}},
+                }
+            )
+        return {"pipeline": _serialize_rag_pipeline(pipeline), "query": query, "stages": stage_previews}
+
+    # ---------- Studio macro inspector endpoints ----------
+    @app.get("/api/studio/macros")
+    def api_studio_macros(principal: Principal = Depends(get_principal)) -> Dict[str, Any]:
+        if principal.role not in {Role.ADMIN, Role.DEVELOPER, Role.VIEWER}:
+            raise HTTPException(status_code=403, detail="Forbidden")
+        invocations = _collect_macro_invocations()
+        macros = []
+        for macro_id, rec in invocations:
+            counts = {k: len(v) for k, v in rec.artifacts.items()}
+            macros.append(
+                {
+                    "id": macro_id,
+                    "name": rec.macro_name,
+                    "source": rec.source_path,
+                    "line": rec.span.line if rec.span else None,
+                    "column": rec.span.column if rec.span else None,
+                    "artifact_counts": counts,
+                }
+            )
+        return {"macros": macros}
+
+    @app.get("/api/studio/macros/{macro_id}")
+    def api_studio_macro_detail(macro_id: str, principal: Principal = Depends(get_principal)) -> Dict[str, Any]:
+        if principal.role not in {Role.ADMIN, Role.DEVELOPER, Role.VIEWER}:
+            raise HTTPException(status_code=403, detail="Forbidden")
+        invocations = _collect_macro_invocations()
+        match = next(((mid, rec) for mid, rec in invocations if mid == macro_id), None)
+        if not match:
+            raise HTTPException(status_code=404, detail="Macro not found")
+        _, rec = match
+        return {
+            "macro": {
+                "id": macro_id,
+                "name": rec.macro_name,
+                "source": rec.source_path,
+                "line": rec.span.line if rec.span else None,
+                "column": rec.span.column if rec.span else None,
+                "artifacts": rec.artifacts,
+            }
+        }
+
+    # ---------- Studio traces & errors endpoints ----------
+    def _span_kind(span) -> str:
+        name = span.name or ""
+        attrs = span.attributes or {}
+        if name.startswith("flow."):
+            return "flow"
+        if name.startswith("agent"):
+            return "agent"
+        if "tool" in name or attrs.get("tool"):
+            return "tool"
+        if "rag" in name or attrs.get("rag"):
+            return "rag"
+        return "event"
+
+    def _serialize_span(span) -> Dict[str, Any]:
+        duration = None
+        if span.end_time and span.start_time:
+            duration = span.end_time - span.start_time
+        return {
+            "trace_id": span.context.trace_id,
+            "span_id": span.context.span_id,
+            "parent_span_id": span.context.parent_span_id,
+            "name": span.name,
+            "kind": _span_kind(span),
+            "attributes": span.attributes,
+            "start_time": span.start_time,
+            "end_time": span.end_time,
+            "duration": duration,
+            "exception": span.exception,
+        }
+
+    def _find_span_by_id(span_id: str) -> Any | None:
+        for spans in default_tracer.all_traces().values():
+            for span in spans:
+                if span.context.span_id == span_id:
+                    return span
+        return None
+
+    @app.get("/api/studio/runs")
+    def api_studio_runs(principal: Principal = Depends(get_principal)) -> Dict[str, Any]:
+        if principal.role not in {Role.ADMIN, Role.DEVELOPER, Role.VIEWER}:
+            raise HTTPException(status_code=403, detail="Forbidden")
+        traces = default_tracer.all_traces()
+        runs = []
+        for trace_id, spans in traces.items():
+            if not spans:
+                continue
+            start = min(s.start_time for s in spans if s.start_time) if spans else time.time()
+            end = max((s.end_time or time.time()) for s in spans) if spans else start
+            label = None
+            for s in spans:
+                attrs = s.attributes or {}
+                if attrs.get("flow"):
+                    label = attrs.get("flow")
+                    break
+                if attrs.get("agent"):
+                    label = attrs.get("agent")
+            status = "ok"
+            if any(s.exception for s in spans):
+                status = "error"
+            runs.append(
+                {
+                    "run_id": trace_id,
+                    "label": label,
+                    "status": status,
+                    "start_time": start,
+                    "duration": (end - start),
+                }
+            )
+        return {"runs": runs}
+
+    @app.get("/api/studio/runs/{run_id}/trace")
+    def api_studio_trace(run_id: str, principal: Principal = Depends(get_principal)) -> Dict[str, Any]:
+        if principal.role not in {Role.ADMIN, Role.DEVELOPER, Role.VIEWER}:
+            raise HTTPException(status_code=403, detail="Forbidden")
+        spans = sorted(default_tracer.get_trace(run_id), key=lambda s: s.start_time or 0)
+        return {"trace": [_serialize_span(s) for s in spans]}
+
+    @app.get("/api/studio/errors/{error_id}")
+    def api_studio_error_detail(error_id: str, principal: Principal = Depends(get_principal)) -> Dict[str, Any]:
+        if principal.role not in {Role.ADMIN, Role.DEVELOPER, Role.VIEWER}:
+            raise HTTPException(status_code=403, detail="Forbidden")
+        span = _find_span_by_id(error_id)
+        if not span:
+            raise HTTPException(status_code=404, detail="Error not found")
+        attrs = span.attributes or {}
+        snippet = attrs.get("source") or attrs.get("dsl") or None
+        return {
+            "id": error_id,
+            "message": span.exception or attrs.get("error") or "Unknown error",
+            "code": attrs.get("code") or "N3-STUDIO-ERR",
+            "dsl_snippet": snippet,
+            "ir_context": attrs.get("context"),
+            "hints": attrs.get("hints") or [],
+        }
 
     return app

@@ -9,6 +9,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone, timedelta
 from typing import Any, Dict, List, Optional, TypedDict
 import base64
+import importlib
 import math
 import random
 import re
@@ -51,6 +52,8 @@ from ..tools.runtime import (
     rate_limiter,
     encode_query_items,
     build_multipart_body,
+    apply_auth_config,
+    validate_response_schema,
 )
 from ..tools.observability import before_tool_call, after_tool_call
 from .. import ast_nodes
@@ -1467,23 +1470,60 @@ def execute_ai_call_with_registry(
                 return evaluator.evaluate(expr)
             return expr
 
+        def _resolve_local_fn():
+            fn = getattr(tool_cfg, "local_function", None)
+            if fn:
+                return fn
+            func_path = getattr(tool_cfg, "function", None)
+            if not func_path or "." not in func_path:
+                raise Namel3ssError(f"Tool '{getattr(tool_cfg, 'name', 'tool')}' is missing function path.")
+            module_name, _, attr = func_path.rpartition(".")
+            try:
+                module = importlib.import_module(module_name)
+                fn_local = getattr(module, attr)
+            except Exception as exc:
+                raise Namel3ssError(f"Failed to import local_function '{func_path}': {exc}") from exc
+            setattr(tool_cfg, "local_function", fn_local)
+            return fn_local
+
         method = (getattr(tool_cfg, "method", "GET") or "GET").upper()
+        kind_lower = (getattr(tool_cfg, "kind", "") or "").lower()
+        if kind_lower == "graphql":
+            method = "POST"
         url_value: Any = None
-        if getattr(tool_cfg, "url_expr", None) is not None:
-            url_value = _eval(tool_cfg.url_expr)
+        if kind_lower != "local_function":
+            if getattr(tool_cfg, "url_expr", None) is not None:
+                url_value = _eval(tool_cfg.url_expr)
+            else:
+                url_template = getattr(tool_cfg, "url_template", None)
+                if url_template:
+                    try:
+                        url_value = url_template.format(**{k: "" if v is None else str(v) for k, v in input_values.items()})
+                    except KeyError as exc:
+                        missing = str(exc).strip("'\"")
+                        raise Namel3ssError(
+                            f"N3F-965: Missing arg '{missing}' for tool '{tool_cfg.name}' url."
+                        )
+            if not url_value:
+                raise Namel3ssError(f"N3F-965: Tool '{tool_cfg.name}' is missing a resolved URL.")
+            url_str = str(url_value)
         else:
-            url_template = getattr(tool_cfg, "url_template", None)
-            if url_template:
+            url_str = getattr(tool_cfg, "function", None) or tool_cfg.name
+            fn = _resolve_local_fn()
+            try:
                 try:
-                    url_value = url_template.format(**{k: "" if v is None else str(v) for k, v in input_values.items()})
-                except KeyError as exc:
-                    missing = str(exc).strip("'\"")
-                    raise Namel3ssError(
-                        f"N3F-965: Missing arg '{missing}' for tool '{tool_cfg.name}' url."
-                    )
-        if not url_value:
-            raise Namel3ssError(f"N3F-965: Tool '{tool_cfg.name}' is missing a resolved URL.")
-        url_str = str(url_value)
+                    result_val = fn(**arg_values)
+                except TypeError:
+                    result_val = fn(arg_values)
+            except Exception as exc:
+                return {"ok": False, "status": None, "data": None, "headers": {}, "error": f"Local function tool '{tool_cfg.name}' failed: {exc}"}
+            schema_cfg = getattr(tool_cfg, "response_schema", None)
+            if schema_cfg:
+                valid, schema_error = validate_response_schema(schema_cfg, result_val)
+                if not valid:
+                    err_msg = format_tool_error(tool_cfg.name, "LOCAL", getattr(tool_cfg, "function", tool_cfg.name), None, f"Response schema validation failed: {schema_error}")
+                    return {"ok": False, "status": None, "data": result_val, "headers": {}, "error": err_msg}
+            return {"ok": True, "status": None, "data": result_val, "headers": {}}
 
         headers = {}
         for hk, hv in (getattr(tool_cfg, "headers", {}) or {}).items():
@@ -1512,6 +1552,16 @@ def execute_ai_call_with_registry(
                 body_payload[bk] = _eval(b_expr)
         elif getattr(tool_cfg, "body_template", None) is not None:
             body_payload = _eval(tool_cfg.body_template)
+        if kind_lower == "graphql":
+            query_val = _eval(getattr(tool_cfg, "query_template", None))
+            query_str = "" if query_val is None else str(query_val)
+            var_payload: dict[str, Any] = {}
+            for vk, v_expr in (getattr(tool_cfg, "variables", {}) or {}).items():
+                var_payload[vk] = _eval(v_expr)
+            body_payload = {"query": query_str}
+            if var_payload:
+                body_payload["variables"] = var_payload
+            headers.setdefault("Content-Type", "application/json")
 
         body_bytes: bytes | None = None
         is_multipart = bool(getattr(tool_cfg, "multipart", False))
@@ -1532,39 +1582,12 @@ def execute_ai_call_with_registry(
                 body_bytes = json.dumps(body_payload).encode("utf-8")
                 headers.setdefault("Content-Type", "application/json")
         auth_cfg = getattr(tool_cfg, "auth", None)
-        if auth_cfg and getattr(auth_cfg, "kind", None):
-            auth_kind = (getattr(auth_cfg, "kind", "") or "").lower()
-            if auth_kind == "bearer":
-                token_val = _eval(getattr(auth_cfg, "token", None))
-                if token_val is None:
-                    raise Namel3ssError(f'Tool "{tool_cfg.name}" auth config is incomplete (missing token).')
-                headers["Authorization"] = f"Bearer {token_val}"
-            elif auth_kind == "basic":
-                username = _eval(getattr(auth_cfg, "username", None))
-                password = _eval(getattr(auth_cfg, "password", None))
-                if username is None or password is None:
-                    raise Namel3ssError(
-                        f'Tool "{tool_cfg.name}" auth config is incomplete (missing username/password).'
-                    )
-                raw = f"{username}:{password}".encode("utf-8")
-                headers["Authorization"] = "Basic " + base64.b64encode(raw).decode("utf-8")
-            elif auth_kind in {"api_key", "api-key", "apikey"}:
-                location = (getattr(auth_cfg, "location", "") or "").lower()
-                name = getattr(auth_cfg, "name", "") or ""
-                value = _eval(getattr(auth_cfg, "value", None))
-                if not name or value is None:
-                    raise Namel3ssError(f'Tool "{tool_cfg.name}" auth config is incomplete (missing api_key details).')
-                if location == "header":
-                    headers[name] = "" if value is None else str(value)
-                elif location == "query":
-                    parsed = urllib.parse.urlparse(url_str)
-                    query_items = urllib.parse.parse_qsl(parsed.query, keep_blank_values=True)
-                    query_items.append((name, "" if value is None else str(value)))
-                    url_str = urllib.parse.urlunparse(parsed._replace(query=urllib.parse.urlencode(query_items, doseq=True)))
-                else:
-                    raise Namel3ssError(f'Tool "{tool_cfg.name}" auth location must be "header" or "query".')
-            else:
-                raise Namel3ssError(f'Tool "{tool_cfg.name}" auth kind "{auth_kind}" is not supported.')
+        try:
+            url_str, headers = apply_auth_config(auth_cfg, url_str, headers, _eval, tool_cfg.name)
+        except Namel3ssError:
+            raise
+        except Exception as exc:
+            raise Namel3ssError(f"Failed to apply auth for tool '{tool_cfg.name}': {exc}") from exc
 
         retry_cfg = getattr(tool_cfg, "retry", None)
         max_attempts = getattr(retry_cfg, "max_attempts", 1) if retry_cfg else 1
@@ -1708,6 +1731,18 @@ def execute_ai_call_with_registry(
             except ValueError:
                 parsed_body = raw_text
         result = build_tool_result(tool_cfg, method, url_str, status, parsed_body, response_headers, raw_text)
+        if kind_lower == "graphql" and isinstance(parsed_body, dict) and parsed_body.get("errors"):
+            msg = parsed_body.get("errors")
+            snippet = None
+            if isinstance(msg, list) and msg:
+                first = msg[0]
+                if isinstance(first, dict) and first.get("message"):
+                    snippet = first.get("message")
+                else:
+                    snippet = str(first)
+            error_reason = f"GraphQL errors: {snippet or 'see response'}"
+            result["ok"] = False
+            result["error"] = format_tool_error(tool_cfg.name, method, url_str, status, error_reason, raw_text)
         ok = bool(result.get("ok"))
         try:
             after_tool_call(

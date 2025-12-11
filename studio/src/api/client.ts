@@ -25,6 +25,14 @@ import {
   MemorySessionsResponse,
   MemoryStateResponse,
   NamingMigrationResponse,
+  StudioRagPipelineListResponse,
+  StudioRagPipelineDetailResponse,
+  StudioRagPreviewResponse,
+  StudioMacroSummary,
+  StudioMacroDetail,
+  StudioRunsResponse,
+  StudioTraceResponse,
+  StudioErrorDetail,
 } from "./types";
 
 const defaultBase = import.meta.env.VITE_API_BASE_URL || "http://localhost:8000";
@@ -286,6 +294,30 @@ export const ApiClient = {
     request(`/api/optimizer/reject/${id}`, {
       method: "POST",
     }),
+  fetchStudioRagPipelines: () => request<StudioRagPipelineListResponse>("/api/studio/rag/pipelines"),
+  fetchStudioRagPipeline: (id: string) =>
+    request<StudioRagPipelineDetailResponse>(`/api/studio/rag/pipelines/${encodeURIComponent(id)}`),
+  updateStudioRagStage: (id: string, stage: string, changes: Record<string, any>) =>
+    request<{ status: string; stage: any; pipeline: StudioRagPipelineDetailResponse["pipeline"] }>(
+      `/api/studio/rag/pipelines/${encodeURIComponent(id)}/update_stage`,
+      {
+        method: "POST",
+        body: JSON.stringify({ stage, changes }),
+      },
+    ),
+  previewStudioRagPipeline: (id: string, query: string) =>
+    request<StudioRagPreviewResponse>(`/api/studio/rag/pipelines/${encodeURIComponent(id)}/preview`, {
+      method: "POST",
+      body: JSON.stringify({ query }),
+    }),
+  fetchStudioMacros: () => request<{ macros: StudioMacroSummary[] }>("/api/studio/macros"),
+  fetchStudioMacroDetail: (id: string) =>
+    request<StudioMacroDetail>(`/api/studio/macros/${encodeURIComponent(id)}`),
+  fetchStudioRuns: () => request<StudioRunsResponse>("/api/studio/runs"),
+  fetchStudioTrace: (runId: string) =>
+    request<StudioTraceResponse>(`/api/studio/runs/${encodeURIComponent(runId)}/trace`),
+  fetchStudioError: (errorId: string) =>
+    request<StudioErrorDetail>(`/api/studio/errors/${encodeURIComponent(errorId)}`),
   postFmtPreview,
   postRunApp,
   runFlowStreaming,

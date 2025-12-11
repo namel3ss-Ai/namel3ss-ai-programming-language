@@ -60,6 +60,8 @@ class AgentStepResult:
     error: Optional[str]
     evaluation: Optional[AgentStepEvaluation] = None
     retries: int = 0
+    kind: Optional[str] = None
+    target: Optional[str] = None
 
 
 @dataclass
@@ -72,3 +74,6 @@ class AgentPlanResult:
     reflection_rounds: int = 0
     critiques: list[str] = field(default_factory=list)
     improvements: list[str] = field(default_factory=list)
+    ok: bool = True
+    error: Any | None = None
+    value: Any | None = None

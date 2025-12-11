@@ -1,5 +1,5 @@
 use macro "app_scaffold" with:
-  entity "Product"
+  entity is "Product"
 
   fields:
     field is "name":

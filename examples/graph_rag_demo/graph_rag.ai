@@ -1,0 +1,67 @@
+model is "graph-llm":
+  provider is "openai_default"
+
+ai is "graph_answer":
+  model is "graph-llm"
+  system is "Answer with evidence from graph context, graph summaries, and retrieved passages."
+
+frame is "support_docs":
+  source:
+    from file "examples/graph_rag_demo/data/support_notes.csv"
+    has headers
+  select:
+    columns are ["id", "content"]
+
+graph is "support_graph":
+  from frame is "support_docs"
+  id_column is "id"
+  text_column is "content"
+  entities:
+    model is "graph-llm"
+    max_entities_per_doc is 12
+  relations:
+    model is "graph-llm"
+    max_relations_per_entity is 6
+
+graph_summary is "support_graph_summary":
+  graph is "support_graph"
+  method is "community"
+  max_nodes_per_summary is 16
+  model is "graph-llm"
+
+vector_store is "support_vectors":
+  backend is "memory"
+  frame is "support_docs"
+  text_column is "content"
+  id_column is "id"
+  embedding_model is "default_embedding"
+
+rag pipeline is "support_graph_qa":
+  use vector_store "support_vectors"
+
+  stage is "graph_retrieve":
+    type is "graph_query"
+    graph is "support_graph"
+    max_hops is 2
+    max_nodes is 25
+    strategy is "neighbourhood"
+
+  stage is "graph_summaries":
+    type is "graph_summary_lookup"
+    graph_summary is "support_graph_summary"
+    top_k is 3
+
+  stage is "vec_retrieve":
+    type is "vector_retrieve"
+    top_k is 5
+
+  stage is "answer":
+    type is "ai_answer"
+    ai is "graph_answer"
+
+flow is "graph_rag_demo":
+  description "Graph-enhanced QA that blends graph hops, graph summaries, and vector matches."
+  step is "ask":
+    kind is "rag_query"
+    pipeline is "support_graph_qa"
+    question is state.question

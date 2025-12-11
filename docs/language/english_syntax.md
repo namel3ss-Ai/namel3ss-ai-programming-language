@@ -396,6 +396,94 @@ flow is "manage_document":
 
 These steps reuse the existing frame backend, so records automatically persist wherever the frame points (memory, sqlite, postgres). Future phases will add migrations, relations, and richer querying.
 
+## RAG: vectors, graphs, and pipelines
+
+Vector stores index a frame for retrieval:
+
+```ai
+frame is "documents":
+  source:
+    backend is "memory"
+    table is "documents"
+  table:
+    primary_key is "id"
+    display_columns are ["title", "category"]
+    text_column is "content"
+    image_column is "image_url"
+
+vector_store is "kb":
+  backend is "memory"
+  frame is "documents"
+  text_column is "content"
+  id_column is "id"
+  embedding_model is "default_embedding"
+```
+
+Graphs and graph summaries sit alongside vector stores:
+
+```ai
+graph is "support_graph":
+  from frame is "documents"
+  id_column is "id"
+  text_column is "content"
+  entities:
+    model is "gpt-4o-mini"
+  relations:
+    model is "gpt-4o-mini"
+
+graph_summary is "support_graph_summary":
+  graph is "support_graph"
+  method is "community"
+  max_nodes_per_summary is 20
+```
+
+RAG pipelines combine vector and graph retrieval stages:
+
+```ai
+rag pipeline is "graph_qa":
+  use vector_store "kb"
+  stage is "table_lookup":
+    type is "table_lookup"
+    frame is "documents"
+    match_column is "title"
+  stage is "table_summary":
+    type is "table_summarise"
+    frame is "documents"
+    group_by is "category"
+  stage is "image_embed":
+    type is "multimodal_embed"
+    frame is "documents"
+    image_column is "image_url"
+    text_column is "content"
+    output_vector_store is "kb"
+  stage is "graph_retrieve":
+    type is "graph_query"
+    graph is "support_graph"
+    max_hops is 2
+  stage is "graph_summaries":
+    type is "graph_summary_lookup"
+    graph_summary is "support_graph_summary"
+    top_k is 3
+  stage is "retrieve":
+    type is "vector_retrieve"
+    top_k is 5
+  stage is "answer":
+    type is "ai_answer"
+    ai is "qa_ai"
+```
+
+Call a pipeline from a flow:
+
+```ai
+step is "answer":
+  kind is "rag_query"
+  pipeline is "graph_qa"
+  question is state.question
+```
+
+`graph_query` traverses the declared graph with optional `max_hops`/`max_nodes`/`strategy`; `graph_summary_lookup` fetches the most relevant precomputed summaries; `vector_retrieve` and `ai_answer` behave as before. Unknown graphs/graph_summaries surface validation errors.
+`table_lookup`/`table_summarise` operate on frames with optional `table:` metadata. `multimodal_embed` and `multimodal_summarise` let you fold image/document columns into embeddings or captions before answering.
+
 ## Backward Compatibility
 
 Legacy headers such as `model "m":`, `provider "p"`, `flow "x":`, or `tool "t":` are no longer supported. Use the English `is` form everywhere: `model is "m": provider is "p"`, `flow is "x":`, `tool is "t":`.
@@ -590,6 +678,8 @@ match result:
     do agent "handle_failure" with error: err
 ```
 
+`success`/`error` branches expect a result-like value (e.g., tool/agent responses with `ok`/`error`/`data`). Success binds the inner payload (`data`/`result`/`value`); error binds the `error` field. If the matched value is not result-like and there is no `otherwise`, the runtime raises a clear error so you can add a fallback.
+
 ## User Input, Logging, and Observability (Phase 5)
 
 ### Asking the user
@@ -711,7 +801,7 @@ macro "crud_for_entity" using ai is "codegen":
   parameters entity, fields
 
 use macro "crud_for_entity" with:
-  entity "Product"
+  entity is "Product"
   fields ["name", "price"]
 ```
 
@@ -723,7 +813,7 @@ Generate fullstack CRUD UI and flows in one line:
 
 ```ai
 use macro "crud_ui" with:
-  entity "Product"
+  entity is "Product"
   fields:
     field is "name":
       type is "string"

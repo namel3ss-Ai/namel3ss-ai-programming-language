@@ -23,7 +23,13 @@ from pathlib import Path
 
 from . import ir, lexer, parser
 from . import ast_nodes
-from .macros import MacroExpander, MacroExpansionError, render_module_source, run_macro_tests
+from .macros import (
+    MacroExpander,
+    MacroExpansionError,
+    render_module_source,
+    run_macro_migration,
+    run_macro_tests,
+)
 from .secrets.manager import SecretsManager, get_default_secrets_manager
 from .diagnostics import Diagnostic
 from .diagnostics.runner import apply_strict_mode, collect_diagnostics, collect_lint, iter_ai_files
@@ -37,6 +43,8 @@ from .memory.inspection import describe_memory_plan, describe_memory_state, insp
 from .migration import naming as naming_migration
 from .migration import data_pipelines as data_migration
 from .rag.eval import run_rag_evaluation_by_name
+from .tools.eval import run_tool_evaluation_by_name
+from .agent.eval import run_agent_evaluation_by_name
 
 
 def build_cli_parser() -> argparse.ArgumentParser:
@@ -148,6 +156,18 @@ def build_cli_parser() -> argparse.ArgumentParser:
     rag_eval_cmd.add_argument("--limit", type=int, help="Only evaluate the first N rows")
     rag_eval_cmd.add_argument("--output", choices=["json"], help="Use 'json' for machine-readable output")
 
+    tool_eval_cmd = register("tool-eval", help="Run a tool evaluation defined in the .ai file")
+    tool_eval_cmd.add_argument("evaluation", help="Name of the tool evaluation to run")
+    tool_eval_cmd.add_argument("--file", type=Path, required=True, help="Path to .ai file")
+    tool_eval_cmd.add_argument("--limit", type=int, help="Only evaluate the first N rows")
+    tool_eval_cmd.add_argument("--output", choices=["json"], help="Use 'json' for machine-readable output")
+
+    agent_eval_cmd = register("agent-eval", help="Run an agent evaluation defined in the .ai file")
+    agent_eval_cmd.add_argument("evaluation", help="Name of the agent evaluation to run")
+    agent_eval_cmd.add_argument("--file", type=Path, required=True, help="Path to .ai file")
+    agent_eval_cmd.add_argument("--limit", type=int, help="Only evaluate the first N rows")
+    agent_eval_cmd.add_argument("--output", choices=["json"], help="Use 'json' for machine-readable output")
+
     job_flow_cmd = register("job-flow", help="Enqueue a flow job")
     job_flow_cmd.add_argument("--file", type=Path, required=True)
     job_flow_cmd.add_argument("--flow", required=True)
@@ -180,6 +200,10 @@ def build_cli_parser() -> argparse.ArgumentParser:
     macro_expand_cmd.add_argument("--macro", dest="macro_name", help="Only expand uses of this macro name")
     macro_test_cmd = macro_sub.add_parser("test", help="Run macro tests defined in a file")
     macro_test_cmd.add_argument("file", type=Path, help="Path to .ai source containing macro tests")
+    macro_migrate_cmd = macro_sub.add_parser("migrate", help="Run macro plan migrations (no-op scaffold)")
+    macro_migrate_cmd.add_argument("--macro", dest="macro_name", help="Macro name to migrate")
+    macro_migrate_cmd.add_argument("--from", dest="from_version", help="Current version", default=None)
+    macro_migrate_cmd.add_argument("--to", dest="to_version", help="Target version", default=None)
 
     bundle_cmd = register("bundle", help="Create an app bundle")
     bundle_cmd.add_argument("path", nargs="?", type=Path, help="Path to .ai file or project")
@@ -482,6 +506,10 @@ def main(argv: list[str] | None = None) -> None:
                 raise SystemExit(1)
             print(f"Passed {len(passed)} macro test(s).")
             return
+        if args.macro_command == "migrate":
+            message = run_macro_migration(getattr(args, "macro_name", None), args.from_version, args.to_version)
+            print(message)
+            return
 
     if args.command == "export":
         if args.export_command == "ir":
@@ -649,6 +677,66 @@ def main(argv: list[str] | None = None) -> None:
                 print(f"  [{idx}] question: {row.question}")
                 if metrics:
                     print(f"      metrics: {metrics}")
+        return
+
+    if args.command == "tool-eval":
+        engine = _load_engine(args.file)
+        try:
+            result = run_tool_evaluation_by_name(
+                engine.program, engine.flow_engine, args.evaluation, limit=getattr(args, "limit", None)
+            )
+        except Exception as exc:
+            raise SystemExit(str(exc))
+        if getattr(args, "output", None) == "json":
+            print(json.dumps(asdict(result), indent=2))
+            return
+        print(f"Tool evaluation: {result.name}")
+        print(f"Tool: {result.tool}")
+        print(f"Dataset: frame \"{result.dataset_frame}\" ({result.num_rows} rows)")
+        if result.metrics:
+            print("\nMetrics:")
+            for name, value in result.metrics.items():
+                if isinstance(value, float):
+                    print(f"  - {name}: {value:.3f}")
+                else:
+                    print(f"  - {name}: {value}")
+        if result.rows:
+            print("\nSample rows:")
+            for idx, row in enumerate(result.rows[: min(3, len(result.rows))], start=1):
+                status = f"status={row.status}" if row.status is not None else "status=?"
+                print(f"  [{idx}] success={row.success} {status} latency={row.latency_ms:.1f}ms")
+                if row.error:
+                    print(f"      error: {row.error}")
+        return
+    if args.command == "agent-eval":
+        engine = _load_engine(args.file)
+        try:
+            result = run_agent_evaluation_by_name(
+                engine.program, engine.flow_engine, args.evaluation, limit=getattr(args, "limit", None)
+            )
+        except Exception as exc:
+            raise SystemExit(str(exc))
+        if getattr(args, "output", None) == "json":
+            print(json.dumps(asdict(result), indent=2))
+            return
+        print(f"Agent evaluation: {result.name}")
+        print(f"Agent: {result.agent}")
+        print(f"Dataset: frame \"{result.dataset_frame}\" ({result.num_rows} rows)")
+        if result.metrics:
+            print("\nMetrics:")
+            for name, value in result.metrics.items():
+                if isinstance(value, float):
+                    print(f"  - {name}: {value:.3f}")
+                else:
+                    print(f"  - {name}: {value}")
+        if result.rows:
+            print("\nSample rows:")
+            for idx, row in enumerate(result.rows[: min(3, len(result.rows))], start=1):
+                print(
+                    f"  [{idx}] success={row.success} latency={row.latency_seconds:.2f}s expected={row.expected_answer} answer={row.answer}"
+                )
+                if row.error:
+                    print(f"      error: {row.error}")
         return
 
     if args.command == "memory-inspect":

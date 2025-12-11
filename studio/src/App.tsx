@@ -14,6 +14,8 @@ import OptimizerPanel from "./panels/OptimizerPanel";
 import AgentsDebuggerPanel from "./panels/AgentsDebuggerPanel";
 import { IDEPanel } from "./panels/IDEPanel";
 import { ApiClient } from "./api/client";
+import RagPipelinesPanel from "./panels/RagPipelinesPanel";
+import MacroInspectorPanel from "./panels/MacroInspectorPanel";
 
 const DEFAULT_CODE = `app is "support":
   entry_page is "home"
@@ -41,6 +43,8 @@ const PANELS = [
   "Plugins",
   "Optimizer",
   "Diagnostics",
+  "RAG",
+  "Macros",
   "IDE",
 ];
 
@@ -90,6 +94,10 @@ const App: React.FC = () => {
         return <OptimizerPanel client={client} />;
       case "Diagnostics":
         return <DiagnosticsPanel code={code} client={client} />;
+      case "RAG":
+        return <RagPipelinesPanel client={client} />;
+      case "Macros":
+        return <MacroInspectorPanel client={client} />;
       case "IDE":
         return <IDEPanel initialExampleName={initialExample} initialTraceId={initialTraceId} />;
       default:

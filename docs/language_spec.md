@@ -135,10 +135,10 @@ Each block kind has required and optional fields aligned with the current IR:
 - Mutation: `set state.<name> be <expression>` updates flow/page state. Assigning to an undefined local with `set` is an error.
 - Frames: frame values behave like lists of record rows in collection pipelines (`keep/drop rows`, `group by`, `sort`, `take/skip`) and loops (`repeat for each row in sales_data`).
 - Macros: `use macro "name"` expands code at load-time. If AI is configured it generates code; otherwise the `sample` string is used as a template where `{ParamName}` placeholders are replaced with evaluated argument values. Advanced AI macros may return a structured `{"macro_plan": {...}}` JSON instead of raw DSL; the macro engine converts that plan into deterministic Namel3ss declarations (records/flows/pages) before running the usual parse/lint steps.
-- Built-in AI macro `crud_ui` generates CRUD flows, forms, and UI pages for an entity:
+  - Built-in AI macro `crud_ui` generates CRUD flows, forms, and UI pages for an entity:
   ```
   use macro "crud_ui" with:
-    entity "Product"
+    entity is "Product"
     fields:
       field is "name":
         type is "string"
@@ -465,6 +465,21 @@ All of these surfaces honour the configured scopes, retention filtering, and PII
           url is env.DATABASE_URL
           table is "orders"
       ```
+    - Optional table metadata for RAG/table retrieval:
+      ```
+      frame is "orders":
+        source:
+          backend is "postgres"
+          url is env.DATABASE_URL
+          table is "orders"
+        table:
+          primary_key is "id"
+          display_columns are ["customer_name", "total_amount", "status"]
+          time_column is "created_at"
+          text_column is "notes"
+          image_column is "receipt_image"
+      ```
+      The `table:` block is optional; when present it helps table-aware and multimodal RAG stages. `display_columns` uses the same list syntax as other column lists.
   - Optional: `select:` to project specific columns; `where:` block must be boolean. Supported backends: memory, sqlite, postgres.
 - Vector stores (RAG foundations):
   - Declare a semantic index over a frame:
@@ -495,6 +510,34 @@ All of these surfaces honour the configured scopes, retention filtering, and PII
       top_k is 5
     ```
     Returns `matches` and `context` you can pass to an AI step.
+- Graphs (knowledge graphs from frames):
+  - Build a graph directly from a frame, specifying the id/text columns used for entity extraction:
+    ```
+    graph is "support_graph":
+      from frame is "documents"
+      id_column is "doc_id"
+      text_column is "content"
+      entities:
+        model is "gpt-4o-mini"
+        max_entities_per_doc is 20
+      relations:
+        model is "gpt-4o-mini"
+        max_relations_per_entity is 10
+      storage:
+        nodes_frame is "graph_nodes"
+        edges_frame is "graph_edges"
+    ```
+  - `from frame` is required. At least one of `entities` or `relations` must be present. `id_column`/`text_column` default to `id`/`text` when omitted. `storage` frames are optional; when absent the graph stays in-memory.
+- Graph summaries (precomputed clusters/communities):
+  - Summaries point at a declared graph and capture small groupings of connected nodes:
+    ```
+    graph_summary is "support_graph_summary":
+      graph is "support_graph"
+      method is "community"
+      max_nodes_per_summary is 50
+      model is "gpt-4o-mini"
+    ```
+  - `graph is` is required. `method` is a hint for the summariser; community detection is the current default.
 - RAG pipelines (declarative retrieval flows):
   - Top-level reusable pipeline:
     ```
@@ -520,6 +563,12 @@ All of these surfaces honour the configured scopes, retention filtering, and PII
     - `fusion` (requires `from stages are ["retrieve_a", ...]`, optional `top_k`, default 5, optional `method is "rrf"`) merges matches from earlier retrieval stages.
     - `context_compress` with optional `max_tokens`.
     - `ai_answer` (requires `ai`) to produce the final answer.
+    - `graph_query` (requires `graph is "..."`) traverses a knowledge graph with optional `max_hops`, `max_nodes`, `strategy` to produce graph context.
+    - `graph_summary_lookup` (requires `graph_summary is "..."`, optional `top_k`) fetches precomputed graph summaries to include as context.
+    - `table_lookup` (requires `frame is "..."`, optional `match_column`, `max_rows`) filters rows from a table-aware frame and adds them to matches/context.
+    - `table_summarise` (requires `frame is "..."`, optional `group_by`, `max_groups`, `max_rows_per_group`) turns rows into human-readable summaries for context.
+    - `multimodal_embed` (requires `frame is "..."`, `output_vector_store is "..."`, optional `text_column`, `image_column`, `max_items`) embeds paired text/image columns into a vector store.
+    - `multimodal_summarise` (requires `frame is "..."`, optional `text_column`, `image_column`, `max_items`) emits captions/summaries from multimodal rows into context.
   - Invoke from a flow with `rag_query`:
     ```
     step is "answer":

@@ -219,6 +219,42 @@ def test_match_success_and_error_patterns_runtime():
     assert fallback_result.state.get("fallback") is True
 
 
+def test_match_result_ok_shape_binds_data_and_error():
+    flow = IRFlow(
+        name="match_ok",
+        description=None,
+        steps=[
+            _script_step(
+                "router",
+                [
+                    IRMatch(
+                        target=ast_nodes.Identifier(name="state.result"),
+                        branches=[
+                            IRMatchBranch(
+                                pattern=ast_nodes.SuccessPattern(binding="val"),
+                                actions=[IRSet(name="state.payload", expr=ast_nodes.Identifier(name="val"))],
+                            ),
+                            IRMatchBranch(
+                                pattern=ast_nodes.ErrorPattern(binding="err"),
+                                actions=[IRSet(name="state.err_payload", expr=ast_nodes.Identifier(name="err"))],
+                            ),
+                            IRMatchBranch(
+                                pattern=None,
+                                actions=[IRSet(name="state.fallback", expr=ast_nodes.Literal(value=True))],
+                                label="otherwise",
+                            ),
+                        ],
+                    )
+                ],
+            )
+        ],
+    )
+    ok_result = _run_flow(flow, initial_state={"result": {"ok": True, "data": {"id": 1}}})
+    assert ok_result.state.get("payload") == {"id": 1}
+    err_result = _run_flow(flow, initial_state={"result": {"ok": False, "error": {"code": "E"}}})
+    assert err_result.state.get("err_payload") == {"code": "E"}
+
+
 def test_match_uses_otherwise_when_nothing_matches():
     flow = IRFlow(
         name="match_fallback",
@@ -276,6 +312,36 @@ def test_match_without_otherwise_is_noop_when_no_branch_hits():
     )
     result = _run_flow(flow, initial_state={"intent": "gamma"})
     assert "route" not in result.state.data
+
+
+def test_match_result_without_otherwise_errors_on_non_result():
+    flow = IRFlow(
+        name="match_needs_result",
+        description=None,
+        steps=[
+            _script_step(
+                "router",
+                [
+                    IRMatch(
+                        target=ast_nodes.Identifier(name="state.result"),
+                        branches=[
+                            IRMatchBranch(
+                                pattern=ast_nodes.SuccessPattern(binding="val"),
+                                actions=[IRSet(name="state.output", expr=ast_nodes.Identifier(name="val"))],
+                            ),
+                            IRMatchBranch(
+                                pattern=ast_nodes.ErrorPattern(binding="err"),
+                                actions=[IRSet(name="state.error_value", expr=ast_nodes.Identifier(name="err"))],
+                            ),
+                        ],
+                    )
+                ],
+            )
+        ],
+    )
+    result = _run_flow(flow, initial_state={"result": 42})
+    assert result.errors
+    assert "result-like value" in result.errors[0].error
 
 
 def test_match_boolean_branch_only_triggers_on_true():

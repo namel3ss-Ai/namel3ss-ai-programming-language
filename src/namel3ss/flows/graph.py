@@ -96,6 +96,9 @@ class FlowRuntimeContext:
     frames: Any = None
     vectorstores: Any = None
     rag_pipelines: Any = None
+    graphs: Any = None
+    graph_summaries: Any = None
+    graph_engine: Any = None
     records: Any = None
     execution_context: Any = None
     auth_config: Any = None

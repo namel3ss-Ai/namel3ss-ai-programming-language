@@ -3,6 +3,8 @@ from __future__ import annotations
 import json
 import re
 import os
+import logging
+from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List, Optional
 
 from . import ast_nodes
@@ -18,21 +20,279 @@ class MacroExpansionError(Namel3ssError):
     pass
 
 
-MacroCallback = Callable[[ast_nodes.MacroDecl, Dict[str, Any]], str]
+MacroCallback = Callable[[ast_nodes.MacroDecl, Dict[str, Any]], Any]
+
+logger = logging.getLogger(__name__)
+
+
+@dataclass
+class RecordFieldPlan:
+    name: str
+    type: str = "string"
+    primary_key: bool = False
+    required: bool | None = None
+    default: Any = None
+    numeric_min: Any = None
+    numeric_max: Any = None
+
+
+@dataclass
+class RecordPlan:
+    name: str
+    frame: str | None = None
+    fields: list[RecordFieldPlan] = field(default_factory=list)
+    description: str | None = None
+
+
+@dataclass
+class FlowPlan:
+    name: str
+    kind: str = "custom"
+    record: str | None = None
+    steps: list[dict[str, Any]] = field(default_factory=list)
+    summary: str | None = None
+
+
+@dataclass
+class PagePlan:
+    name: str
+    route: str | None = None
+    kind: str | None = None
+    record: str | None = None
+    layout: list[dict[str, Any]] = field(default_factory=list)
+
+
+@dataclass
+class RagStagePlan:
+    name: str
+    stage_type: str
+    params: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass
+class RagPipelinePlan:
+    name: str
+    stages: list[RagStagePlan] = field(default_factory=list)
+    vector_store: str | None = None
+
+
+@dataclass
+class AgentPlan:
+    name: str
+    goal: str | None = None
+    model: str | None = None
+    tools: list[str] = field(default_factory=list)
+    rag_pipeline: str | None = None
+
+
+@dataclass
+class MacroPlan:
+    version: str | None = "1.0"
+    records: list[RecordPlan] = field(default_factory=list)
+    flows: list[FlowPlan] = field(default_factory=list)
+    pages: list[PagePlan] = field(default_factory=list)
+    rag_pipelines: list[RagPipelinePlan] = field(default_factory=list)
+    agents: list[AgentPlan] = field(default_factory=list)
+    metadata: dict[str, Any] = field(default_factory=dict)
+
+    @classmethod
+    def from_raw(cls, raw: Any) -> "MacroPlan":
+        if isinstance(raw, MacroPlan):
+            return raw
+        if not isinstance(raw, dict):
+            raise TypeError("macro_plan must be an object")
+
+        def _parse_record_field(field: dict[str, Any]) -> RecordFieldPlan:
+            return RecordFieldPlan(
+                name=str(field.get("name") or ""),
+                type=str(field.get("type") or "string"),
+                primary_key=bool(field.get("primary_key")),
+                required=field.get("required"),
+                default=field.get("default"),
+                numeric_min=field.get("min"),
+                numeric_max=field.get("max"),
+            )
+
+        def _parse_record(rec: dict[str, Any]) -> RecordPlan:
+            fields_raw = rec.get("fields") or []
+            parsed_fields = []
+            for f in fields_raw:
+                if isinstance(f, RecordFieldPlan):
+                    parsed_fields.append(f)
+                elif isinstance(f, dict):
+                    parsed_fields.append(_parse_record_field(f))
+            return RecordPlan(
+                name=str(rec.get("name") or ""),
+                frame=rec.get("frame"),
+                fields=parsed_fields,
+                description=rec.get("description"),
+            )
+
+        def _parse_flow(flow: dict[str, Any]) -> FlowPlan:
+            return FlowPlan(
+                name=str(flow.get("name") or ""),
+                kind=str(flow.get("kind") or "custom"),
+                record=flow.get("record"),
+                steps=flow.get("steps") or [],
+                summary=flow.get("summary"),
+            )
+
+        def _parse_page(page: dict[str, Any]) -> PagePlan:
+            return PagePlan(
+                name=str(page.get("name") or ""),
+                route=page.get("route"),
+                kind=page.get("kind"),
+                record=page.get("record"),
+                layout=page.get("layout") or [],
+            )
+
+        def _parse_stage(stage: dict[str, Any]) -> RagStagePlan:
+            return RagStagePlan(
+                name=str(stage.get("name") or stage.get("id") or f"stage_{len(stage)}"),
+                stage_type=str(stage.get("type") or stage.get("stage_type") or ""),
+                params=stage.get("params") or {k: v for k, v in stage.items() if k not in {"name", "id", "type", "stage_type"}},
+            )
+
+        def _parse_rag(pipe: dict[str, Any]) -> RagPipelinePlan:
+            stages_raw = pipe.get("stages") or []
+            parsed_stages = []
+            for st in stages_raw:
+                if isinstance(st, RagStagePlan):
+                    parsed_stages.append(st)
+                elif isinstance(st, dict):
+                    parsed_stages.append(_parse_stage(st))
+            return RagPipelinePlan(
+                name=str(pipe.get("name") or pipe.get("id") or ""),
+                stages=parsed_stages,
+                vector_store=pipe.get("vector_store"),
+            )
+
+        def _parse_agent(agent: dict[str, Any]) -> AgentPlan:
+            return AgentPlan(
+                name=str(agent.get("name") or ""),
+                goal=agent.get("goal"),
+                model=agent.get("model"),
+                tools=list(agent.get("tools") or []),
+                rag_pipeline=agent.get("rag_pipeline"),
+            )
+
+        return MacroPlan(
+            version=raw.get("version") or raw.get("plan_version") or "1.0",
+            records=[_parse_record(r) for r in raw.get("records") or []],
+            flows=[_parse_flow(f) for f in raw.get("flows") or []],
+            pages=[_parse_page(p) for p in raw.get("pages") or []],
+            rag_pipelines=[_parse_rag(p) for p in raw.get("rag_pipelines") or []],
+            agents=[_parse_agent(a) for a in raw.get("agents") or []],
+            metadata=raw.get("metadata") or {},
+        )
+
+
+def validate_macro_plan(plan: MacroPlan, macro_name: str | None = None) -> None:
+    errors: list[str] = []
+
+    def _err(msg: str) -> None:
+        prefix = f'Macro "{macro_name}": ' if macro_name else ""
+        errors.append(prefix + msg)
+
+    record_names = set()
+    for rec in plan.records:
+        if not rec.name:
+            _err("Record in macro_plan is missing a name.")
+        elif rec.name in record_names:
+            _err(f"Duplicate record '{rec.name}' in macro_plan.")
+        record_names.add(rec.name)
+
+    flow_names = set()
+    for flow in plan.flows:
+        if not flow.name:
+            _err("Flow in macro_plan is missing a name.")
+        elif flow.name in flow_names:
+            _err(f"Duplicate flow '{flow.name}' in macro_plan.")
+        flow_names.add(flow.name)
+        if flow.record and flow.record not in record_names:
+            _err(f"Flow '{flow.name}' references unknown record '{flow.record}'.")
+
+    page_names = set()
+    for page in plan.pages:
+        if not page.name:
+            _err("Page in macro_plan is missing a name.")
+        elif page.name in page_names:
+            _err(f"Duplicate page '{page.name}' in macro_plan.")
+        page_names.add(page.name)
+        if page.record and page.record not in record_names:
+            _err(f"Page '{page.name}' references unknown record '{page.record}'.")
+
+    rag_names = set()
+    for rp in plan.rag_pipelines:
+        if not rp.name:
+            _err("RAG pipeline in macro_plan is missing a name.")
+        elif rp.name in rag_names:
+            _err(f"Duplicate RAG pipeline '{rp.name}' in macro_plan.")
+        rag_names.add(rp.name)
+        for st in rp.stages:
+            if not st.stage_type:
+                _err(f"Stage in RAG pipeline '{rp.name}' is missing a type.")
+
+    agent_names = set()
+    for ag in plan.agents:
+        if not ag.name:
+            _err("Agent in macro_plan is missing a name.")
+        elif ag.name in agent_names:
+            _err(f"Duplicate agent '{ag.name}' in macro_plan.")
+        agent_names.add(ag.name)
+        if ag.rag_pipeline and ag.rag_pipeline not in rag_names:
+            _err(f"Agent '{ag.name}' references unknown rag_pipeline '{ag.rag_pipeline}'.")
+
+    if errors:
+        raise MacroExpansionError("; ".join(errors))
+
+def migrate_macro_plan(plan: MacroPlan, target_version: str | None = None) -> MacroPlan:
+    """
+    Placeholder migration hook for structured macro plans.
+    """
+    if not plan.version:
+        plan.version = target_version or "1.0"
+    elif target_version and plan.version != target_version:
+        logger.warning(
+            "Macro plan version %s differs from requested %s; no migration applied.",
+            plan.version,
+            target_version,
+        )
+    return plan
+
+
+def run_macro_migration(macro_name: str | None, from_version: str | None, to_version: str | None) -> str:
+    source = from_version or "unknown"
+    target = to_version or "latest"
+    macro_label = f'macro "{macro_name}"' if macro_name else "macro plan"
+    return f"{macro_label} migration from {source} to {target} is currently a no-op (versioning scaffolding is in place)."
+
 
 DEFAULT_MAX_MACRO_OUTPUT_CHARS = 15000
 MACRO_OUTPUT_LIMIT_ENV = "NAMEL3SS_MAX_MACRO_OUTPUT"
 
 
+@dataclass
+class MacroExpansionRecord:
+    macro_name: str
+    source_path: str | None
+    span: ast_nodes.Span | None
+    artifacts: dict[str, list[str]]
+
+
 class MacroExpander:
-    def __init__(self, ai_callback: Optional[MacroCallback]) -> None:
+    def __init__(self, ai_callback: Optional[MacroCallback], *, capture_expansions: bool = False) -> None:
         self.ai_callback = ai_callback
         self._stack: list[str] = []
         self._builtin_macros = _builtin_macros()
         self.max_output_chars = _get_max_macro_output_chars()
+        self.capture_expansions = capture_expansions
+        self.expansion_records: list[MacroExpansionRecord] = []
+        self.current_source_path: str | None = None
 
-    def expand_module(self, module: ast_nodes.Module) -> ast_nodes.Module:
+    def expand_module(self, module: ast_nodes.Module, source_path: str | None = None) -> ast_nodes.Module:
         macro_registry: dict[str, ast_nodes.MacroDecl] = {m.name: m for m in self._builtin_macros}
+        self.current_source_path = source_path
         for decl in module.declarations:
             if isinstance(decl, ast_nodes.MacroDecl):
                 if decl.name in macro_registry:
@@ -67,6 +327,7 @@ class MacroExpander:
                 continue
             else:
                 register_decl(decl)
+        self.current_source_path = None
         return ast_nodes.Module(declarations=new_decls)
 
     def _expand_use(self, use: ast_nodes.MacroUse, registry: Dict[str, ast_nodes.MacroDecl]) -> ast_nodes.Module:
@@ -80,12 +341,22 @@ class MacroExpander:
             self._raise_macro_error(use, detail, code=diag.code)
         macro = registry[use.macro_name]
         args = self._evaluate_args(macro, use, use.args)
-        output: str | None = None
+        output: Any = None
+        plan_result: MacroPlan | None = None
+        generated_module: ast_nodes.Module | None = None
         ai_error: Exception | None = None
         if macro.name == "crud_ui":
             output = self._generate_crud_ui(args)
         elif macro.name == "app_scaffold":
             output = self._generate_app_scaffold(args)
+        elif macro.name == "auth_ui":
+            plan_result = self._generate_auth_ui_plan(args)
+        elif macro.name == "form_ui":
+            plan_result = self._generate_form_ui_plan(args)
+        elif macro.name == "api_endpoints":
+            plan_result = self._generate_api_endpoints_plan(args)
+        elif macro.name == "analytics_dashboard":
+            plan_result = self._generate_analytics_dashboard_plan(args)
         else:
             if self.ai_callback:
                 try:
@@ -110,35 +381,52 @@ class MacroExpander:
                         use,
                         f'Macro "{macro.name}" has no AI callback and no sample template; cannot expand.',
                     )
-        if not output or not isinstance(output, str):
-            diag = create_diagnostic("N3M-1102", message_kwargs={"name": use.macro_name})
-            self._raise_macro_error(use, diag)
-        # Detect structured macro_plan JSON first; fall back to string DSL otherwise.
-        generated_module: ast_nodes.Module
-        parsed_plan = None
-        try:
-            parsed_json = json.loads(output)
-            if isinstance(parsed_json, dict) and "macro_plan" in parsed_json:
-                parsed_plan = parsed_json.get("macro_plan")
-        except Exception:
-            parsed_plan = None
-        # Size/backtick checks still apply to the original output string.
-        if len(output) > self.max_output_chars:
-            diag = create_diagnostic("N3M-1300", message_kwargs={"name": use.macro_name})
-            detail = f"{diag.message} (limit {self.max_output_chars} characters, got {len(output)})."
-            self._raise_macro_error(use, detail, code=diag.code, generated=output)
-        if "```" in output or "`" in output:
-            diag = create_diagnostic("N3M-1301", message_kwargs={"name": use.macro_name})
-            detail = f"{diag.message} Backticks are not allowed in macro output."
-            self._raise_macro_error(use, detail, code=diag.code, generated=output)
         self._stack.append(use.macro_name)
         try:
-            if parsed_plan is not None:
-                dsl = self._expand_structured_plan(use, parsed_plan)
-                generated_module = self._parse_generated(use, dsl)
+            if plan_result is not None:
+                target_version = macro.version or plan_result.version
+                plan_result = migrate_macro_plan(plan_result, target_version)
+                generated_module = self._expand_structured_plan(use, plan_result)
             else:
-                generated_module = self._parse_generated(use, output)
-            if any(isinstance(d, ast_nodes.MacroUse) and d.macro_name == use.macro_name for d in generated_module.declarations):
+                if output is None:
+                    diag = create_diagnostic("N3M-1102", message_kwargs={"name": use.macro_name})
+                    self._raise_macro_error(use, diag)
+                if isinstance(output, MacroPlan):
+                    target_version = macro.version or output.version
+                    output = migrate_macro_plan(output, target_version)
+                    generated_module = self._expand_structured_plan(use, output)
+                elif isinstance(output, str):
+                    output_str = output.strip()
+                    if len(output_str) > self.max_output_chars:
+                        diag = create_diagnostic("N3M-1300", message_kwargs={"name": use.macro_name})
+                        detail = f"{diag.message} (limit {self.max_output_chars} characters, got {len(output_str)})."
+                        self._raise_macro_error(use, detail, code=diag.code, generated=output)
+                    parsed_plan = None
+                    try:
+                        parsed_json = json.loads(output_str)
+                        if isinstance(parsed_json, dict) and "macro_plan" in parsed_json:
+                            parsed_plan = MacroPlan.from_raw(parsed_json.get("macro_plan"))
+                    except Exception:
+                        parsed_plan = None
+                    if parsed_plan is not None:
+                        parsed_plan = migrate_macro_plan(parsed_plan, macro.version or parsed_plan.version)
+                        generated_module = self._expand_structured_plan(use, parsed_plan)
+                    else:
+                        if "```" in output_str or "`" in output_str:
+                            diag = create_diagnostic("N3M-1301", message_kwargs={"name": use.macro_name})
+                            detail = f"{diag.message} Backticks are not allowed in macro output."
+                            self._raise_macro_error(use, detail, code=diag.code, generated=output)
+                        generated_module = self._parse_generated(use, output_str)
+                elif isinstance(output, ast_nodes.Module):
+                    generated_module = output
+                else:
+                    diag = create_diagnostic("N3M-1102", message_kwargs={"name": use.macro_name})
+                    self._raise_macro_error(use, diag)
+
+            if generated_module and any(
+                isinstance(d, ast_nodes.MacroUse) and d.macro_name == use.macro_name
+                for d in generated_module.declarations
+            ):
                 diag = create_diagnostic("N3M-1302", message_kwargs={"name": use.macro_name})
                 self._raise_macro_error(use, diag, generated=output)
             generated_module = self._expand_nested_module(
@@ -154,6 +442,8 @@ class MacroExpander:
             if not generated_module.declarations:
                 diag = create_diagnostic("N3M-1103", message_kwargs={"name": use.macro_name})
                 self._raise_macro_error(use, diag, generated=output)
+            if self.capture_expansions and generated_module:
+                self._record_macro_artifacts(use, generated_module)
             return generated_module
         except MacroExpansionError as exc:
             if getattr(exc, "_macro_context_applied", False):
@@ -190,6 +480,34 @@ class MacroExpander:
                 expanded_decls.append(decl)
         return ast_nodes.Module(declarations=expanded_decls)
 
+    def _record_macro_artifacts(self, use: ast_nodes.MacroUse, module: ast_nodes.Module) -> None:
+        artifacts: dict[str, list[str]] = {
+            "records": [],
+            "flows": [],
+            "pages": [],
+            "rag_pipelines": [],
+            "agents": [],
+        }
+        for decl in module.declarations:
+            if isinstance(decl, ast_nodes.RecordDecl):
+                artifacts["records"].append(decl.name)
+            elif isinstance(decl, ast_nodes.FlowDecl):
+                artifacts["flows"].append(decl.name)
+            elif isinstance(decl, ast_nodes.PageDecl):
+                artifacts["pages"].append(decl.name)
+            elif isinstance(decl, ast_nodes.RagPipelineDecl):
+                artifacts["rag_pipelines"].append(decl.name)
+            elif isinstance(decl, ast_nodes.AgentDecl):
+                artifacts["agents"].append(decl.name)
+        self.expansion_records.append(
+            MacroExpansionRecord(
+                macro_name=use.macro_name,
+                source_path=self.current_source_path,
+                span=use.span,
+                artifacts=artifacts,
+            )
+        )
+
     def _evaluate_args(self, macro: ast_nodes.MacroDecl, use: ast_nodes.MacroUse, args: Dict[str, ast_nodes.Expr | Any]) -> Dict[str, Any]:
         env = VariableEnvironment()
         evaluator = ExpressionEvaluator(env, resolver=lambda name: (False, None))
@@ -206,7 +524,10 @@ class MacroExpander:
                 if key == "fields" and isinstance(expr, list) and all(isinstance(f, ast_nodes.MacroFieldSpec) for f in expr):
                     evaluated[key] = expr
                     continue
-                evaluated[key] = evaluator.evaluate(expr)
+                if isinstance(expr, ast_nodes.Expr):
+                    evaluated[key] = evaluator.evaluate(expr)
+                else:
+                    evaluated[key] = expr
             return evaluated
         except Exception:
             friendly = (
@@ -478,34 +799,13 @@ class MacroExpander:
 
         return lines
 
-    def _expand_structured_plan(self, use: ast_nodes.MacroUse, plan: dict) -> str:
-        """
-        Convert a macro_plan JSON object into deterministic Namel3ss DSL.
+    def _expand_structured_plan(self, use: ast_nodes.MacroUse, plan_raw: Any) -> ast_nodes.Module:
+        try:
+            plan = MacroPlan.from_raw(plan_raw)
+        except Exception as exc:
+            self._raise_macro_error(use, f"Structured macro_plan must be an object. {exc}", code="N3M-1400")
 
-        Supported shape (minimal v1):
-        {
-          "records": [
-            {
-              "name": "Product",
-              "frame": "products",
-              "fields": [
-                {"name": "id", "type": "uuid", "primary_key": true, "required": true},
-                {"name": "name", "type": "string", "required": true, "default": "N/A"},
-                {"name": "price", "type": "float", "required": true, "min": 0}
-              ]
-            }
-          ],
-          "flows": [
-            {"name": "list_products", "kind": "list_crud", "record": "Product"},
-            {"name": "create_product", "kind": "create_crud", "record": "Product"}
-          ],
-          "pages": [
-            {"name": "products_list", "route": "/products", "kind": "crud_list", "record": "Product"}
-          ]
-        }
-        """
-        if not isinstance(plan, dict):
-            self._raise_macro_error(use, "Structured macro_plan must be an object.", code="N3M-1400")
+        validate_macro_plan(plan, use.macro_name)
 
         lines: list[str] = []
 
@@ -528,73 +828,58 @@ class MacroExpander:
         record_fields: dict[str, dict[str, Any]] = {}
 
         # Records
-        for rec in plan.get("records") or []:
-            if not isinstance(rec, dict):
-                self._raise_macro_error(use, "Record spec must be an object.", code="N3M-1401")
-            name = rec.get("name")
-            if not name or not isinstance(name, str):
-                self._raise_macro_error(use, "Record spec requires a name.", code="N3M-1401")
-            frame = rec.get("frame") or f"{name.lower()}s"
-            fields = rec.get("fields") or []
-            record_fields[name] = {"fields": [], "primary_key": None}
+        for rec in plan.records:
+            frame = rec.frame or f"{rec.name.lower()}s"
+            record_fields[rec.name] = {"fields": [], "primary_key": None}
             record_lines: list[str] = []
-            record_lines.append(f'record is "{name}":')
+            record_lines.append(f'record is "{rec.name}":')
             record_lines.append(f'  frame is "{frame}"')
             record_lines.append("  fields:")
-            for field in fields:
-                if not isinstance(field, dict):
-                    self._raise_macro_error(use, f"Field spec in record '{name}' must be an object.", code="N3M-1401")
-                fname = field.get("name")
-                ftype = field.get("type") or "string"
-                if not fname or not isinstance(fname, str):
-                    self._raise_macro_error(use, f"Field in record '{name}' is missing a name.", code="N3M-1401")
-                fid = _sanitize_identifier(fname)
-                is_pk = bool(field.get("primary_key"))
+            for field in rec.fields:
+                fid = _sanitize_identifier(field.name)
+                is_pk = bool(field.primary_key)
                 record_lines.append(f"    {fid}:")
+                ftype = field.type or "string"
                 record_lines.append(f'      type is "{ftype}"')
                 if is_pk:
                     record_lines.append("      primary_key is true")
-                if field.get("required") is not None:
-                    record_lines.append(f'      required is {"true" if field.get("required") else "false"}')
-                if "default" in field:
-                    _field_line("default", field.get("default"), indent=3, dest=record_lines)
-                if "min" in field:
-                    _field_line("must be at least", field.get("min"), indent=3, dest=record_lines)
-                if "max" in field:
-                    _field_line("must be at most", field.get("max"), indent=3, dest=record_lines)
-                record_fields[name]["fields"].append({"id": fid, "is_pk": is_pk})
+                if field.required is not None:
+                    record_lines.append(f'      required is {"true" if field.required else "false"}')
+                if field.default is not None:
+                    _field_line("default", field.default, indent=3, dest=record_lines)
+                if field.numeric_min is not None:
+                    _field_line("must be at least", field.numeric_min, indent=3, dest=record_lines)
+                if field.numeric_max is not None:
+                    _field_line("must be at most", field.numeric_max, indent=3, dest=record_lines)
+                record_fields[rec.name]["fields"].append({"id": fid, "is_pk": is_pk})
                 if is_pk:
-                    record_fields[name]["primary_key"] = fid
+                    record_fields[rec.name]["primary_key"] = fid
             # If no primary key provided, add a default id
-            if record_fields[name]["primary_key"] is None:
-                default_pk = f"{_sanitize_identifier(name)}_id"
+            if record_fields[rec.name]["primary_key"] is None:
+                default_pk = f"{_sanitize_identifier(rec.name)}_id"
                 record_lines.append(f"    {default_pk}:")
                 record_lines.append('      type is "uuid"')
                 record_lines.append("      primary_key is true")
                 record_lines.append("      required is true")
-                record_fields[name]["fields"].insert(0, {"id": default_pk, "is_pk": True})
-                record_fields[name]["primary_key"] = default_pk
+                record_fields[rec.name]["fields"].insert(0, {"id": default_pk, "is_pk": True})
+                record_fields[rec.name]["primary_key"] = default_pk
             lines.extend(record_lines)
             lines.append("")
 
         # Flows (CRUD-kind-aware)
-        for flow in plan.get("flows") or []:
-            if not isinstance(flow, dict):
-                self._raise_macro_error(use, "Flow spec must be an object.", code="N3M-1402")
-            fname = flow.get("name")
-            if not fname or not isinstance(fname, str):
-                self._raise_macro_error(use, "Flow spec requires a name.", code="N3M-1402")
-            kind = (flow.get("kind") or "").strip().lower()
-            record = flow.get("record")
-            if kind in {"list_crud", "create_crud", "edit_crud", "delete_crud"}:
-                if not record or not isinstance(record, str):
+        for flow in plan.flows:
+            fname = flow.name
+            kind = (flow.kind or "").strip().lower()
+            record = flow.record
+            if kind in {"list_crud", "create_crud", "edit_crud", "delete_crud", "api_list", "api_get", "api_create", "api_update", "api_delete"}:
+                if not record:
                     self._raise_macro_error(use, f"Flow '{fname}' requires a record name.", code="N3M-1402")
                 rec_spec = record_fields.get(record, {"fields": [], "primary_key": None})
                 pk_field = rec_spec.get("primary_key") or "id"
                 non_pk_fields = [f["id"] for f in rec_spec.get("fields", []) if not f.get("is_pk")]
                 plural = record.lower() if record.lower().endswith("s") else f"{record.lower()}s"
                 # Leverage existing CRUD patterns via DSL snippets.
-                if kind == "list_crud":
+                if kind in {"list_crud", "api_list"}:
                     lines.append(f'flow is "{fname}":')
                     lines.append('  step is "load":')
                     lines.append(f"    find {plural} where:")
@@ -602,7 +887,7 @@ class MacroExpander:
                     order_field = non_pk_fields[0] if non_pk_fields else pk_field
                     lines.append(f"    order {plural} by {order_field} ascending")
                     lines.append("")
-                elif kind == "create_crud":
+                elif kind in {"create_crud", "api_create"}:
                     lines.append(f'flow is "{fname}":')
                     lines.append('  step is "create":')
                     lines.append('    kind is "db_create"')
@@ -612,7 +897,7 @@ class MacroExpander:
                     for field_id in non_pk_fields:
                         lines.append(f"      {field_id}: state.{field_id}")
                     lines.append("")
-                elif kind == "edit_crud":
+                elif kind in {"edit_crud", "api_update"}:
                     lines.append(f'flow is "{fname}":')
                     lines.append('  step is "update":')
                     lines.append('    kind is "db_update"')
@@ -626,7 +911,7 @@ class MacroExpander:
                     else:
                         lines.append(f"      {pk_field}: state.{pk_field}")
                     lines.append("")
-                elif kind == "delete_crud":
+                elif kind in {"delete_crud", "api_delete"}:
                     lines.append(f'flow is "{fname}":')
                     lines.append('  step is "delete":')
                     lines.append('    kind is "db_delete"')
@@ -634,41 +919,102 @@ class MacroExpander:
                     lines.append("    by id:")
                     lines.append(f"      {pk_field}: state.{pk_field}")
                     lines.append("")
+                elif kind == "api_get":
+                    lines.append(f'flow is "{fname}":')
+                    lines.append('  step is "load":')
+                    lines.append(f"    find {plural} where:")
+                    lines.append(f"      {pk_field} is state.{pk_field}")
+                    lines.append(f"    limit {plural} to 1")
+                    lines.append("")
             else:
-                self._raise_macro_error(use, f"Unsupported flow kind '{kind or '<blank>'}' in macro_plan.", code="N3M-1402")
+                lines.append(f'flow is "{fname}":')
+                if flow.summary:
+                    lines.append(f'  description is "{flow.summary}"')
+                if flow.steps:
+                    for idx, step in enumerate(flow.steps):
+                        sname = step.get("name") if isinstance(step, dict) else f"step_{idx}"
+                        skind = step.get("kind") if isinstance(step, dict) else "log"
+                        starget = step.get("target") if isinstance(step, dict) else None
+                        message = step.get("message") if isinstance(step, dict) else None
+                        lines.append(f'  step is "{sname or f"step_{idx}"}":')
+                        lines.append(f'    kind is "{skind or "log"}"')
+                        if starget is None and (skind or "").lower() == "log":
+                            starget = "info"
+                        if starget:
+                            lines.append(f'    target is "{starget}"')
+                        if message:
+                            lines.append(f'    message is "{message}"')
+                else:
+                    lines.append('  step is "log":')
+                    lines.append('    kind is "log"')
+                    lines.append('    target is "info"')
+                    lines.append(f'    message is "Flow {fname} ran."')
+                lines.append("")
 
         # Pages (very lightweight scaffolding)
-        for page in plan.get("pages") or []:
-            if not isinstance(page, dict):
-                self._raise_macro_error(use, "Page spec must be an object.", code="N3M-1403")
-            pname = page.get("name")
-            route = page.get("route") or "/"
-            pkind = (page.get("kind") or "").strip().lower()
-            record = page.get("record")
-            if not pname or not isinstance(pname, str):
-                self._raise_macro_error(use, "Page spec requires a name.", code="N3M-1403")
+        for page in plan.pages:
+            route = page.route or "/"
+            pkind = (page.kind or "").strip().lower()
+            record = page.record
             record_slug = _sanitize_identifier(record) if record else None
             plural = record_slug if record_slug and record_slug.endswith("s") else f"{record_slug}s" if record_slug else None
-            lines.append(f'page is "{pname}" at "{route}":')
+            lines.append(f'page is "{page.name}" at "{route}":')
             lines.append('  section is "content":')
             if pkind == "crud_list" and record:
                 lines.append(f'    heading "{record} List"')
                 lines.append(f'    button "Refresh {record}s":')
                 lines.append("      on click:")
                 lines.append(f'        do flow "list_{plural}"')
-            elif pkind == "crud_form" and record:
+            elif pkind in {"crud_form", "form"} and record:
                 lines.append(f'    heading "{record} Form"')
                 lines.append(f'    button "Save {record}":')
                 lines.append("      on click:")
                 lines.append(f'        do flow "create_{record_slug}"')
+            elif pkind == "dashboard":
+                lines.append(f'    heading "{page.name} Dashboard"')
             else:
-                lines.append(f'    heading "{pname}"')
+                lines.append(f'    heading "{page.name}"')
+            lines.append("")
+
+        # RAG pipelines
+        for pipeline in plan.rag_pipelines:
+            lines.append(f'rag pipeline is "{pipeline.name}":')
+            if pipeline.vector_store:
+                lines.append(f'  using vector_store is "{pipeline.vector_store}"')
+            for stage in pipeline.stages:
+                lines.append(f'  stage is "{stage.name}":')
+                lines.append(f'    type is "{stage.stage_type}"')
+                for pk, pv in (stage.params or {}).items():
+                    if isinstance(pv, (dict, list)):
+                        rendered = json.dumps(pv)
+                        lines.append(f'    {pk} is "{rendered}"')
+                    elif isinstance(pv, str):
+                        lines.append(f'    {pk} is "{pv}"')
+                    else:
+                        lines.append(f"    {pk} is {pv}")
+            lines.append("")
+
+        # Agents
+        for agent in plan.agents:
+            model_name = agent.model or "gpt-4.1-mini"
+            lines.append(f'ai is "{agent.name}":')
+            lines.append(f'  model is "{model_name}"')
+            if agent.tools:
+                lines.append("  tools:")
+                for tool in agent.tools:
+                    lines.append(f'    - "{tool}"')
+            lines.append("")
+            lines.append(f'agent is "{agent.name}":')
+            if agent.goal:
+                lines.append(f'  goal is "{agent.goal}"')
+            else:
+                lines.append('  goal is "Handle tasks generated from macro plan."')
             lines.append("")
 
         rendered = "\n".join(lines).strip() + ("\n" if lines else "")
         if not rendered.strip():
             self._raise_macro_error(use, "Structured macro_plan produced no declarations.", code="N3M-1103")
-        return rendered
+        return self._parse_generated(use, rendered)
 
     def _expand_from_sample(self, macro: ast_nodes.MacroDecl, args: Dict[str, Any]) -> str | None:
         template = macro.sample
@@ -694,6 +1040,51 @@ class MacroExpander:
         substituted = substituted.replace("\\n", "\n").replace("\\\\", "\\")
         return substituted
 
+
+    def _convert_macro_fields(self, fields: list[Any]) -> list[RecordFieldPlan]:
+        record_fields: list[RecordFieldPlan] = []
+        for spec in fields or []:
+            if isinstance(spec, RecordFieldPlan):
+                record_fields.append(spec)
+            elif isinstance(spec, ast_nodes.MacroFieldSpec):
+                default_val = None
+                if isinstance(spec.default_expr, ast_nodes.Literal):
+                    default_val = spec.default_expr.value
+                elif spec.default_expr is not None:
+                    default_val = _render_expr(spec.default_expr)
+                min_val = None
+                if isinstance(spec.min_expr, ast_nodes.Literal):
+                    min_val = spec.min_expr.value
+                elif spec.min_expr is not None:
+                    min_val = _render_expr(spec.min_expr)
+                max_val = None
+                if isinstance(spec.max_expr, ast_nodes.Literal):
+                    max_val = spec.max_expr.value
+                elif spec.max_expr is not None:
+                    max_val = _render_expr(spec.max_expr)
+                record_fields.append(
+                    RecordFieldPlan(
+                        name=spec.name,
+                        type=spec.field_type or "string",
+                        required=spec.required,
+                        numeric_min=min_val,
+                        numeric_max=max_val,
+                        default=default_val,
+                    )
+                )
+            elif isinstance(spec, dict):
+                record_fields.append(
+                    RecordFieldPlan(
+                        name=str(spec.get("name") or ""),
+                        type=str(spec.get("type") or spec.get("field_type") or "string"),
+                        required=spec.get("required"),
+                        numeric_min=spec.get("min"),
+                        numeric_max=spec.get("max"),
+                        default=spec.get("default"),
+                        primary_key=bool(spec.get("primary_key")),
+                    )
+                )
+        return record_fields
 
     def _generate_crud_ui(self, args: Dict[str, Any]) -> str:
         entity, slug, plural, frame_name, id_field, field_specs = self._normalize_entity_fields(args)
@@ -772,6 +1163,97 @@ class MacroExpander:
         combined = "\n".join(crud_lines + rag_lines).strip() + "\n"
         return combined
 
+    def _generate_auth_ui_plan(self, args: Dict[str, Any]) -> MacroPlan:
+        record_name = args.get("record") or args.get("entity") or "User"
+        slug = _sanitize_identifier(record_name)
+        plural = slug if slug.endswith("s") else f"{slug}s"
+        fields = self._convert_macro_fields(
+            args.get("fields")
+            or [
+                ast_nodes.MacroFieldSpec(name="email", field_type="string", required=True),
+                ast_nodes.MacroFieldSpec(name="password", field_type="string", required=True),
+            ]
+        )
+        record = RecordPlan(name=record_name, frame=f"{plural}_auth", fields=fields)
+        flows = [
+            FlowPlan(name=f"create_{slug}", kind="create_crud", record=record_name),
+            FlowPlan(name=f"list_{plural}", kind="list_crud", record=record_name),
+            FlowPlan(
+                name=f"authenticate_{slug}",
+                kind="custom",
+                record=record_name,
+                steps=[{"name": "verify_credentials", "kind": "log", "message": "Authenticate user credentials."}],
+            ),
+        ]
+        pages = [
+            PagePlan(name=f"{slug}_login", route="/login", kind="crud_form", record=record_name),
+            PagePlan(name=f"{slug}_home", route="/home", kind="dashboard", record=record_name),
+        ]
+        return MacroPlan(records=[record], flows=flows, pages=pages)
+
+    def _generate_form_ui_plan(self, args: Dict[str, Any]) -> MacroPlan:
+        record_name = args.get("record") or args.get("entity") or "FormData"
+        slug = _sanitize_identifier(record_name)
+        plural = slug if slug.endswith("s") else f"{slug}s"
+        fields = self._convert_macro_fields(args.get("fields") or [])
+        record = RecordPlan(name=record_name, frame=f"{plural}_data", fields=fields)
+        flows = [FlowPlan(name=f"create_{slug}", kind="create_crud", record=record_name)]
+        pages = [PagePlan(name=f"{slug}_form", route=f"/{slug}/form", kind="form", record=record_name)]
+        return MacroPlan(records=[record], flows=flows, pages=pages)
+
+    def _generate_api_endpoints_plan(self, args: Dict[str, Any]) -> MacroPlan:
+        record_name = args.get("record") or args.get("entity") or "Resource"
+        slug = _sanitize_identifier(record_name)
+        plural = slug if slug.endswith("s") else f"{slug}s"
+        fields = self._convert_macro_fields(args.get("fields") or [])
+        record = RecordPlan(name=record_name, frame=f"{plural}_api", fields=fields)
+        flows = [
+            FlowPlan(name=f"list_{plural}", kind="api_list", record=record_name),
+            FlowPlan(name=f"get_{slug}", kind="api_get", record=record_name),
+            FlowPlan(name=f"create_{slug}", kind="api_create", record=record_name),
+            FlowPlan(name=f"update_{slug}", kind="api_update", record=record_name),
+            FlowPlan(name=f"delete_{slug}", kind="api_delete", record=record_name),
+        ]
+        return MacroPlan(records=[record], flows=flows)
+
+    def _generate_analytics_dashboard_plan(self, args: Dict[str, Any]) -> MacroPlan:
+        record_name = args.get("record") or args.get("entity") or "Metric"
+        slug = _sanitize_identifier(record_name)
+        plural = slug if slug.endswith("s") else f"{slug}s"
+        fields = self._convert_macro_fields(
+            args.get("fields")
+            or [
+                RecordFieldPlan(name="metric_name", type="string", required=True),
+                RecordFieldPlan(name="metric_value", type="number", required=True),
+            ]
+        )
+        record = RecordPlan(name=record_name, frame=f"{plural}_analytics", fields=fields)
+        flows = [
+            FlowPlan(name=f"list_{plural}", kind="list_crud", record=record_name),
+            FlowPlan(
+                name=f"summarise_{plural}",
+                kind="custom",
+                record=record_name,
+                steps=[{"name": "summarise", "kind": "log", "message": "Summarise recent metrics."}],
+            ),
+        ]
+        rag_pipeline = RagPipelinePlan(
+            name=f"{slug}_insights",
+            stages=[
+                RagStagePlan(name="vector", stage_type="vector_retrieve", params={"top_k": 3}),
+                RagStagePlan(name="answer", stage_type="ai_answer", params={"ai": f"{slug}_analyst"}),
+            ],
+        )
+        agent = AgentPlan(
+            name=f"{slug}_analyst",
+            goal="Summarise analytics and answer questions.",
+            model=args.get("model") or "gpt-4.1-mini",
+            tools=list(args.get("tools") or []),
+            rag_pipeline=rag_pipeline.name,
+        )
+        pages = [PagePlan(name=f"{slug}_dashboard", route="/dashboard", kind="dashboard", record=record_name)]
+        return MacroPlan(records=[record], flows=flows, pages=pages, rag_pipelines=[rag_pipeline], agents=[agent])
+
 
 def expand_macros(module: ast_nodes.Module, ai_callback: MacroCallback) -> ast_nodes.Module:
     return MacroExpander(ai_callback).expand_module(module)
@@ -828,6 +1310,7 @@ def _builtin_macros() -> List[ast_nodes.MacroDecl]:
             description="Generate full CRUD UI and flows for an entity.",
             sample=None,
             parameters=["entity", "fields"],
+            version="1.0",
             span=None,
         ),
         ast_nodes.MacroDecl(
@@ -836,6 +1319,43 @@ def _builtin_macros() -> List[ast_nodes.MacroDecl]:
             description="Generate a full app scaffold (CRUD + RAG + agent) for an entity.",
             sample=None,
             parameters=["entity", "fields"],
+            version="1.0",
+            span=None,
+        ),
+        ast_nodes.MacroDecl(
+            name="auth_ui",
+            ai_model="codegen",
+            description="Generate login/logout flows and pages for a user record.",
+            sample=None,
+            parameters=[],
+            version="1.0",
+            span=None,
+        ),
+        ast_nodes.MacroDecl(
+            name="form_ui",
+            ai_model="codegen",
+            description="Generate a simple form page and supporting flow for a record.",
+            sample=None,
+            parameters=[],
+            version="1.0",
+            span=None,
+        ),
+        ast_nodes.MacroDecl(
+            name="api_endpoints",
+            ai_model="codegen",
+            description="Generate list/get/create/update/delete flows as API endpoints.",
+            sample=None,
+            parameters=[],
+            version="1.0",
+            span=None,
+        ),
+        ast_nodes.MacroDecl(
+            name="analytics_dashboard",
+            ai_model="codegen",
+            description="Generate a simple analytics dashboard page plus supporting flows.",
+            sample=None,
+            parameters=[],
+            version="1.0",
             span=None,
         ),
     ]

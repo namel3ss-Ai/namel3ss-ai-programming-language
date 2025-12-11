@@ -36,6 +36,17 @@ class ToolAuthConfig:
     location: str | None = None
     name: str | None = None
     value: Any | None = None
+    token_url: Any | None = None
+    client_id: Any | None = None
+    client_secret: Any | None = None
+    scopes: list[str] | None = None
+    audience: Any | None = None
+    cache: str | None = None
+    issuer: Any | None = None
+    subject: Any | None = None
+    private_key: Any | None = None
+    algorithm: str | None = None
+    claims: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass
@@ -72,6 +83,10 @@ class ToolConfig:
     rate_limit: ToolRateLimitConfig | None = None
     multipart: bool = False
     query_encoding: str | None = None
+    query_template: str | None = None
+    variables: dict[str, Any] = field(default_factory=dict)
+    function: str | None = None
+    local_function: Any | None = None
 
 
 @dataclass
@@ -125,6 +140,8 @@ def build_ai_tool_specs(tool_refs: Sequence[Any], tool_registry: ToolRegistry) -
 
         for name in getattr(tool, "input_fields", []) or []:
             _add(name)
+        for var_name in getattr(tool, "variables", {}) or {}:
+            _add(str(var_name))
         for placeholder in _PLACEHOLDER_RE.findall(getattr(tool, "url_template", "") or ""):
             _add(placeholder)
         for mapping in (getattr(tool, "query_params", {}) or {}, getattr(tool, "body_fields", {}) or {}, getattr(tool, "headers", {}) or {}):
@@ -133,6 +150,10 @@ def build_ai_tool_specs(tool_refs: Sequence[Any], tool_registry: ToolRegistry) -
         body_template = getattr(tool, "body_template", None)
         if isinstance(body_template, str):
             for placeholder in _PLACEHOLDER_RE.findall(body_template):
+                _add(placeholder)
+        query_template = getattr(tool, "query_template", None)
+        if isinstance(query_template, str):
+            for placeholder in _PLACEHOLDER_RE.findall(query_template):
                 _add(placeholder)
         return names
 

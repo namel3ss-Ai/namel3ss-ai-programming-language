@@ -8,6 +8,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import inspect
+import importlib
 import json
 import random
 import re
@@ -98,8 +99,9 @@ from ..runtime.frames import FrameRegistry
 from ..runtime.vectorstores import VectorStoreRegistry
 from ..secrets.manager import SecretsManager
 from ..tools.registry import DEFAULT_TOOL_TIMEOUT_SECONDS, ToolRegistry, ToolConfig
-from ..tools.runtime import build_tool_result, format_tool_error, rate_limiter, encode_query_items, build_multipart_body
+from ..tools.runtime import build_tool_result, format_tool_error, rate_limiter, encode_query_items, build_multipart_body, apply_auth_config, validate_response_schema
 from ..tools.observability import before_tool_call, after_tool_call
+from ..rag.graph import GraphEngine
 from ..memory.engine import MemoryEngine
 from ..memory.models import MemorySpaceConfig, MemoryType
 from .graph import (
@@ -147,6 +149,7 @@ class FlowEngine:
         self.global_stream_callback = global_stream_callback
         self.frame_registry = FrameRegistry(program.frames if program else {})
         self.vector_registry = VectorStoreRegistry(program, secrets=secrets) if program else None
+        self.graph_engine = GraphEngine(program.graphs if program else {}, program.graph_summaries if program else {})
         self.retry_config = get_default_retry_config()
         self.retry_error_types = (
             ProviderTimeoutError,
@@ -179,6 +182,9 @@ class FlowEngine:
                             rate_limit=getattr(tool, "rate_limit", None),
                             multipart=getattr(tool, "multipart", False),
                             query_encoding=getattr(tool, "query_encoding", None),
+                            query_template=getattr(tool, "query_template", None),
+                            variables=getattr(tool, "variables", {}) or {},
+                            function=getattr(tool, "function", None),
                         )
                     )
 
@@ -295,6 +301,9 @@ class FlowEngine:
             frames=self.frame_registry,
             vectorstores=self.vector_registry,
             rag_pipelines=getattr(self.program, "rag_pipelines", {}),
+            graphs=getattr(self.program, "graphs", {}),
+            graph_summaries=getattr(self.program, "graph_summaries", {}),
+            graph_engine=self.graph_engine,
             records=getattr(self.program, "records", {}) if self.program else {},
             auth_config=getattr(self.program, "auth", None) if self.program else None,
             user_context=user_context,
@@ -1843,15 +1852,30 @@ class FlowEngine:
             if detail:
                 message = f"{message} {detail}"
             raise Namel3ssError(message) from exc
+        has_result_pattern = any(isinstance(br.pattern, (ast_nodes.SuccessPattern, ast_nodes.ErrorPattern)) for br in stmt.branches)
+        has_otherwise = any(br.pattern is None for br in stmt.branches)
+        normalized_result = self._normalize_result(target_val) if has_result_pattern else None
+        if has_result_pattern and normalized_result is None and not has_otherwise:
+            flow_label = state.context.get("flow_name") or "flow"
+            value_snippet = self._format_condition_value(target_val)
+            raise Namel3ssError(
+                f"match with 'when success' or 'when error' expects a result-like value (e.g. a tool or agent result) in {flow_label} at {prefix}. I got {value_snippet}. Add an 'otherwise' branch or provide a result."
+            )
         matched = False
         for idx, br in enumerate(stmt.branches):
             if matched:
                 break
-            if self._match_branch(br, target_val, evaluator, state):
+            if self._match_branch(br, target_val, evaluator, state, normalized_result=normalized_result):
                 matched = True
                 for action_idx, action in enumerate(br.actions):
                     label = br.label or f"branch-{idx}"
                     await self._execute_statement(action, state, runtime_ctx, f"{prefix}.{label}.{action_idx}")
+        if has_result_pattern and not matched and not has_otherwise:
+            flow_label = state.context.get("flow_name") or "flow"
+            value_snippet = self._format_condition_value(target_val)
+            raise Namel3ssError(
+                f"No matching success/error branch in match at {flow_label}:{prefix} for value {value_snippet}. Add an 'otherwise' branch or ensure the result sets ok/ error fields."
+            )
         return state.get("last_output")
 
     async def _emit_state_change(
@@ -2085,15 +2109,7 @@ class FlowEngine:
             state.set("last_output", last_output)
             return last_output
         if isinstance(stmt, IRMatch):
-            target_val = evaluator.evaluate(stmt.target) if stmt.target is not None else None
-            for br in stmt.branches:
-                if self._match_branch(br, target_val, evaluator, state):
-                    for act in br.actions:
-                        await self._execute_statement(act, state, runtime_ctx, f"{prefix}.match", allow_return=allow_return)
-                        if state.context.get("__awaiting_input__"):
-                            break
-                    break
-            return state.get("last_output")
+            return await self._execute_ir_match(stmt, state, runtime_ctx, prefix)
         if isinstance(stmt, IRReturn):
             if not allow_return:
                 raise Namel3ssError("N3-6002: return used outside helper")
@@ -2468,6 +2484,202 @@ class FlowEngine:
                     if text_val:
                         texts.append(str(text_val))
                 ctx["context"] = "\n\n".join(texts).strip()
+            elif st_type == "table_lookup":
+                frame_name = stage.frame or ""
+                if not frame_name:
+                    raise Namel3ssError(f"Stage '{stage.name}' in pipeline '{pipeline.name}' must specify a frame.")
+                rows = runtime_ctx.frames.query(frame_name, None)
+                match_column = stage.match_column
+                query_text = (ctx.get("current_query") or question or "") or ""
+                filtered: list[dict] = []
+                for row in rows:
+                    if not isinstance(row, dict):
+                        continue
+                    if match_column and match_column in row:
+                        try:
+                            if query_text and str(row.get(match_column, "")).lower().find(str(query_text).lower()) != -1:
+                                filtered.append(row)
+                        except Exception:
+                            if str(query_text) in str(row.get(match_column, "")):
+                                filtered.append(row)
+                    else:
+                        filtered.append(row)
+                max_rows_val = self._evaluate_stage_number(stage.max_rows, evaluator, default=20)
+                filtered = filtered[: max_rows_val or len(filtered)]
+                ctx_rows_per_stage = ctx.get("table_rows_per_stage") or {}
+                ctx_rows_per_stage[stage.name] = filtered
+                ctx["table_rows_per_stage"] = ctx_rows_per_stage
+                ctx["table_rows"] = filtered
+                ctx_matches_per_stage = ctx.get("matches_per_stage") or {}
+                ctx_matches_per_stage[stage.name] = filtered
+                ctx["matches_per_stage"] = ctx_matches_per_stage
+                existing_matches = ctx.get("matches") or []
+                display_cols: list[str] = []
+                frame_def = getattr(runtime_ctx.frames, "frames", {}).get(frame_name)
+                if frame_def and getattr(frame_def, "table_config", None):
+                    display_cols = getattr(frame_def.table_config, "display_columns", []) or []
+                lines: list[str] = []
+                for row in filtered:
+                    entry = dict(row)
+                    entry.setdefault("frame", frame_name)
+                    existing_matches.append(entry)
+                    if not isinstance(row, dict):
+                        continue
+                    cols = display_cols or list(row.keys())
+                    preview = ", ".join(f"{c}={row.get(c)}" for c in cols if c in row)
+                    lines.append(preview)
+                ctx["matches"] = existing_matches
+                combined = "\n\n".join([t for t in [ctx.get("context", ""), "\n".join(lines)] if t]).strip()
+                ctx["context"] = combined
+            elif st_type == "table_summarise":
+                frame_name = stage.frame or ""
+                rows = ctx.get("table_rows") or runtime_ctx.frames.query(frame_name, None)
+                if not isinstance(rows, list):
+                    rows = []
+                group_by = stage.group_by
+                grouped: dict[str, list[dict]] = {}
+                for row in rows:
+                    if not isinstance(row, dict):
+                        continue
+                    key = str(row.get(group_by)) if group_by else "all"
+                    grouped.setdefault(key, []).append(row)
+                max_groups_val = self._evaluate_stage_number(stage.max_groups, evaluator, default=5)
+                max_rows_per_group_val = self._evaluate_stage_number(stage.max_rows_per_group, evaluator, default=20)
+                display_cols: list[str] = []
+                frame_def = getattr(runtime_ctx.frames, "frames", {}).get(frame_name)
+                if frame_def and getattr(frame_def, "table_config", None):
+                    display_cols = getattr(frame_def.table_config, "display_columns", []) or []
+                summaries: list[dict] = []
+                for idx, (group_key, group_rows) in enumerate(grouped.items()):
+                    if max_groups_val and idx >= max_groups_val:
+                        break
+                    sample_rows = group_rows[: max_rows_per_group_val or len(group_rows)]
+                    preview_parts: list[str] = []
+                    for row in sample_rows:
+                        cols = display_cols or list(row.keys())
+                        preview_parts.append(", ".join(f"{c}={row.get(c)}" for c in cols if c in row))
+                    summary_text = f"{len(group_rows)} rows"
+                    if group_by:
+                        summary_text += f" for {group_by}={group_key}"
+                    if preview_parts:
+                        summary_text += f": {' | '.join(preview_parts)}"
+                    summaries.append({"text": summary_text, "group": group_key, "frame": frame_name})
+                ctx_matches_per_stage = ctx.get("matches_per_stage") or {}
+                ctx_matches_per_stage[stage.name] = summaries
+                ctx["matches_per_stage"] = ctx_matches_per_stage
+                existing_matches = ctx.get("matches") or []
+                existing_matches.extend(summaries)
+                ctx["matches"] = existing_matches
+                texts = [s.get("text") for s in summaries if isinstance(s, dict) and s.get("text")]
+                combined = "\n\n".join([t for t in [ctx.get("context", ""), "\n".join(texts)] if t]).strip()
+                ctx["context"] = combined
+            elif st_type == "multimodal_embed":
+                frame_name = stage.frame or ""
+                if not frame_name:
+                    raise Namel3ssError(f"Stage '{stage.name}' in pipeline '{pipeline.name}' must specify a frame.")
+                rows = runtime_ctx.frames.query(frame_name, None)
+                max_items_val = self._evaluate_stage_number(stage.max_items, evaluator, default=20)
+                rows = rows[: max_items_val or len(rows)]
+                text_col = stage.text_column
+                image_col = stage.image_column
+                frame_def = getattr(runtime_ctx.frames, "frames", {}).get(frame_name)
+                if frame_def and getattr(frame_def, "table_config", None):
+                    text_col = text_col or getattr(frame_def.table_config, "text_column", None)
+                    image_col = image_col or getattr(frame_def.table_config, "image_column", None)
+                vector_store_name = stage.output_vector_store or stage.vector_store
+                metadata: list[dict] = []
+                texts: list[str] = []
+                ids: list[str] = []
+                for idx, row in enumerate(rows):
+                    if not isinstance(row, dict):
+                        continue
+                    base_text = row.get(text_col) if text_col else None
+                    img_val = row.get(image_col) if image_col else None
+                    combined_text = str(base_text if base_text is not None else row)
+                    if img_val is not None:
+                        combined_text = f"{combined_text} | image: {img_val}"
+                    texts.append(combined_text)
+                    metadata.append({"text": base_text, "image": img_val})
+                    row_id = row.get(getattr(frame_def, "primary_key", None)) if frame_def else None
+                    ids.append(str(row_id or idx))
+                if vector_store_name and texts:
+                    runtime_ctx.vectorstores.index_texts(vector_store_name, ids, texts, metadata)
+            elif st_type == "multimodal_summarise":
+                frame_name = stage.frame or ""
+                rows = runtime_ctx.frames.query(frame_name, None)
+                max_items_val = self._evaluate_stage_number(stage.max_items, evaluator, default=20)
+                rows = rows[: max_items_val or len(rows)]
+                text_col = stage.text_column
+                image_col = stage.image_column
+                frame_def = getattr(runtime_ctx.frames, "frames", {}).get(frame_name)
+                if frame_def and getattr(frame_def, "table_config", None):
+                    text_col = text_col or getattr(frame_def.table_config, "text_column", None)
+                    image_col = image_col or getattr(frame_def.table_config, "image_column", None)
+                captions: list[dict] = []
+                for row in rows:
+                    if not isinstance(row, dict):
+                        continue
+                    base_text = row.get(text_col) if text_col else None
+                    img_val = row.get(image_col) if image_col else None
+                    caption = f"Item: {base_text or row}"
+                    if img_val is not None:
+                        caption = f"{caption} | image: {img_val}"
+                    captions.append({"text": caption, "frame": frame_name, "image": img_val})
+                ctx_matches_per_stage = ctx.get("matches_per_stage") or {}
+                ctx_matches_per_stage[stage.name] = captions
+                ctx["matches_per_stage"] = ctx_matches_per_stage
+                existing_matches = ctx.get("matches") or []
+                existing_matches.extend(captions)
+                ctx["matches"] = existing_matches
+                combined = "\n\n".join([t for t in [ctx.get("context", ""), "\n".join([c.get("text", "") for c in captions])] if t]).strip()
+                ctx["context"] = combined
+            elif st_type == "graph_query":
+                graph_engine = getattr(runtime_ctx, "graph_engine", None)
+                if graph_engine is None:
+                    raise Namel3ssError(f"Stage '{stage.name}' in pipeline '{pipeline.name}' requires graph support, but no graph engine is available.")
+                graph_name = stage.graph or ""
+                max_hops_val = self._evaluate_stage_number(stage.max_hops, evaluator, default=2)
+                max_nodes_val = self._evaluate_stage_number(stage.max_nodes, evaluator, default=25)
+                query_text = ctx.get("current_query") or question
+                results = graph_engine.query(
+                    graph_name,
+                    query_text,
+                    max_hops=max_hops_val,
+                    max_nodes=max_nodes_val,
+                    strategy=stage.strategy,
+                    frames=runtime_ctx.frames,
+                )
+                ctx_matches_per_stage = ctx.get("matches_per_stage") or {}
+                ctx_matches_per_stage[stage.name] = results
+                ctx["matches_per_stage"] = ctx_matches_per_stage
+                existing_matches = ctx.get("matches") or []
+                for r in results:
+                    entry = dict(r)
+                    entry.setdefault("graph", graph_name)
+                    existing_matches.append(entry)
+                ctx["matches"] = existing_matches
+                texts = [r.get("text") for r in results if isinstance(r, dict) and r.get("text")]
+                combined = "\n\n".join([t for t in [ctx.get("context", ""), "\n".join(texts)] if t]).strip()
+                ctx["context"] = combined
+            elif st_type == "graph_summary_lookup":
+                graph_engine = getattr(runtime_ctx, "graph_engine", None)
+                if graph_engine is None:
+                    raise Namel3ssError(f"Stage '{stage.name}' in pipeline '{pipeline.name}' requires graph support, but no graph engine is available.")
+                top_k_val = self._evaluate_stage_number(stage.top_k, evaluator, default=5)
+                query_text = ctx.get("current_query") or question
+                results = graph_engine.lookup_summary(stage.graph_summary or "", query_text, top_k=top_k_val, frames=runtime_ctx.frames)
+                ctx_matches_per_stage = ctx.get("matches_per_stage") or {}
+                ctx_matches_per_stage[stage.name] = results
+                ctx["matches_per_stage"] = ctx_matches_per_stage
+                existing_matches = ctx.get("matches") or []
+                for r in results:
+                    entry = dict(r)
+                    entry.setdefault("graph_summary", stage.graph_summary)
+                    existing_matches.append(entry)
+                ctx["matches"] = existing_matches
+                texts = [r.get("text") for r in results if isinstance(r, dict) and r.get("text")]
+                combined = "\n\n".join([t for t in [ctx.get("context", ""), "\n".join(texts)] if t]).strip()
+                ctx["context"] = combined
             elif st_type == "ai_rerank":
                 matches = ctx.get("matches") or []
                 top_k_val = self._evaluate_stage_number(stage.top_k, evaluator, default=len(matches) or 0)
@@ -2799,84 +3011,95 @@ class FlowEngine:
         return None
 
     def _is_error_result(self, value: Any) -> bool:
-        if isinstance(value, Exception):
-            return True
-        if isinstance(value, dict):
-            if value.get("error") is not None:
-                return True
-            if "success" in value and value.get("success") is False:
-                return True
-        return False
+        res = self._normalize_result(value)
+        return bool(res) and res.get("ok") is False
 
     def _is_success_result(self, value: Any) -> bool:
-        if self._is_error_result(value):
-            return False
-        if hasattr(value, "is_success"):
-            try:
-                return bool(getattr(value, "is_success"))
-            except Exception:
-                return False
+        res = self._normalize_result(value)
+        return bool(res) and res.get("ok") is True
+
+    def _normalize_result(self, value: Any) -> dict[str, Any] | None:
+        if isinstance(value, Exception):
+            return {"ok": False, "value": None, "error": value, "raw": value}
+        mapping: dict[str, Any] | None = None
         if isinstance(value, dict):
-            if "success" in value:
-                return bool(value.get("success"))
-            if "result" in value or "value" in value:
-                return True
-        if hasattr(value, "result"):
-            return True
-        if hasattr(value, "value"):
-            return True
-        return False
+            mapping = value
+        else:
+            attrs: dict[str, Any] = {}
+            for key in ("ok", "success", "error", "data", "result", "value", "final_output", "final_answer"):
+                if hasattr(value, key):
+                    try:
+                        attrs[key] = getattr(value, key)
+                    except Exception:
+                        continue
+            mapping = attrs or None
+        if mapping is None:
+            return None
+        has_signal = any(k in mapping for k in ("ok", "success", "error", "data", "result", "value"))
+        if not has_signal:
+            return None
+        ok_val = mapping.get("ok", None)
+        if ok_val is None and "success" in mapping:
+            ok_val = mapping.get("success")
+        error_val = mapping.get("error", None)
+        payload = None
+        for key in ("data", "result", "value", "final_output", "final_answer"):
+            if key in mapping:
+                payload = mapping.get(key)
+                break
+        if ok_val is None and error_val is not None:
+            ok_val = False
+        if ok_val is None and payload is not None:
+            ok_val = True
+        if ok_val is None:
+            return None
+        return {"ok": bool(ok_val), "value": payload, "error": error_val, "raw": value}
 
     def _extract_success_payload(self, value: Any) -> Any:
-        if isinstance(value, dict):
-            if "result" in value:
-                return value.get("result")
-            if "value" in value:
-                return value.get("value")
-        if hasattr(value, "result"):
-            try:
-                return getattr(value, "result")
-            except Exception:
-                pass
-        if hasattr(value, "value"):
-            try:
-                return getattr(value, "value")
-            except Exception:
-                pass
-        return value
+        res = self._normalize_result(value)
+        if res is None:
+            return value
+        if res.get("value") is not None:
+            return res.get("value")
+        return res.get("raw")
 
     def _extract_error_payload(self, value: Any) -> Any:
-        if isinstance(value, dict) and "error" in value:
-            return value.get("error")
-        if hasattr(value, "error"):
-            try:
-                return getattr(value, "error")
-            except Exception:
-                pass
-        return value
+        res = self._normalize_result(value)
+        if res is None:
+            return value
+        if res.get("error") is not None:
+            return res.get("error")
+        return res.get("raw")
 
-    def _match_branch(self, br: IRMatchBranch, target_val: Any, evaluator: ExpressionEvaluator, state: FlowState) -> bool:
+    def _match_branch(self, br: IRMatchBranch, target_val: Any, evaluator: ExpressionEvaluator, state: FlowState, normalized_result: dict[str, Any] | None = None) -> bool:
         pattern = br.pattern
         env = state.variables or VariableEnvironment()
+        result_info = normalized_result if normalized_result is not None else self._normalize_result(target_val)
         if isinstance(pattern, ast_nodes.SuccessPattern):
-            if not self._is_success_result(target_val):
+            if not result_info or result_info.get("ok") is not True:
                 return False
+            payload = result_info.get("value") if result_info is not None else None
+            if payload is None and result_info is not None:
+                payload = result_info.get("raw")
             if pattern.binding:
                 if env.has(pattern.binding):
-                    env.assign(pattern.binding, self._extract_success_payload(target_val))
+                    env.assign(pattern.binding, payload)
                 else:
-                    env.declare(pattern.binding, self._extract_success_payload(target_val))
-                state.set(pattern.binding, self._extract_success_payload(target_val))
+                    env.declare(pattern.binding, payload)
+                state.set(pattern.binding, payload)
             return True
         if isinstance(pattern, ast_nodes.ErrorPattern):
-            if not self._is_error_result(target_val):
+            if not result_info or result_info.get("ok") is True:
                 return False
+            payload = result_info.get("error") if result_info is not None else None
+            if payload is None and result_info is not None:
+                payload = result_info.get("raw")
             if pattern.binding:
                 if env.has(pattern.binding):
-                    env.assign(pattern.binding, self._extract_error_payload(target_val))
+                    env.assign(pattern.binding, payload)
                 else:
-                    env.declare(pattern.binding, self._extract_error_payload(target_val))
-                state.set(pattern.binding, self._extract_error_payload(target_val))
+                    env.declare(pattern.binding, payload)
+                state.set(pattern.binding, payload)
             return True
         if pattern is None:
             return True
@@ -3044,40 +3267,50 @@ class FlowEngine:
         eval_value: Callable[[Any], Any],
         tool_name: str,
     ) -> tuple[str, dict[str, str]]:
-        if not auth_cfg or not getattr(auth_cfg, "kind", None):
-            return url, headers
-        auth_kind = (getattr(auth_cfg, "kind", "") or "").lower()
-        if auth_kind == "bearer":
-            token_val = eval_value(getattr(auth_cfg, "token", None))
-            if token_val is None:
-                raise Namel3ssError(f'Tool "{tool_name}" auth config is incomplete (missing token).')
-            headers["Authorization"] = f"Bearer {token_val}"
-            return url, headers
-        if auth_kind == "basic":
-            username = eval_value(getattr(auth_cfg, "username", None))
-            password = eval_value(getattr(auth_cfg, "password", None))
-            if username is None or password is None:
-                raise Namel3ssError(f'Tool "{tool_name}" auth config is incomplete (missing username/password).')
-            raw = f"{username}:{password}".encode("utf-8")
-            headers["Authorization"] = "Basic " + base64.b64encode(raw).decode("utf-8")
-            return url, headers
-        if auth_kind in {"api_key", "api-key", "apikey"}:
-            location = (getattr(auth_cfg, "location", "") or "").lower()
-            name = getattr(auth_cfg, "name", "") or ""
-            value = eval_value(getattr(auth_cfg, "value", None))
-            if not name or value is None:
-                raise Namel3ssError(f'Tool "{tool_name}" auth config is incomplete (missing api_key details).')
-            if location == "header":
-                headers[name] = "" if value is None else str(value)
-                return url, headers
-            if location == "query":
-                parsed = urllib.parse.urlparse(url)
-                query_items = urllib.parse.parse_qsl(parsed.query, keep_blank_values=True)
-                query_items.append((name, "" if value is None else str(value)))
-                updated = urllib.parse.urlunparse(parsed._replace(query=urllib.parse.urlencode(query_items, doseq=True)))
-                return updated, headers
-            raise Namel3ssError(f'Tool "{tool_name}" auth location must be "header" or "query".')
-        raise Namel3ssError(f'Tool "{tool_name}" auth kind "{auth_kind}" is not supported.')
+        return apply_auth_config(auth_cfg, url, headers, eval_value, tool_name)
+
+    def _resolve_local_function(self, tool_cfg: Any):
+        fn = getattr(tool_cfg, "local_function", None)
+        if fn:
+            return fn
+        func_path = getattr(tool_cfg, "function", None)
+        if not func_path:
+            raise Namel3ssError(f"Tool '{getattr(tool_cfg, 'name', 'tool')}' is missing function path.")
+        if "." not in func_path:
+            raise Namel3ssError(f"Tool '{getattr(tool_cfg, 'name', 'tool')}' function path must include module and attribute.")
+        module_name, _, attr = func_path.rpartition(".")
+        try:
+            module = importlib.import_module(module_name)
+            fn = getattr(module, attr)
+        except Exception as exc:
+            raise Namel3ssError(f"Failed to import local_function '{func_path}': {exc}") from exc
+        setattr(tool_cfg, "local_function", fn)
+        return fn
+
+    def _execute_local_function(self, tool_cfg: Any, arg_values: dict[str, Any]) -> dict[str, Any]:
+        fn = self._resolve_local_function(tool_cfg)
+        try:
+            try:
+                result_val = fn(**arg_values)
+            except TypeError:
+                result_val = fn(arg_values)
+            ok = True
+        except Exception as exc:
+            error_msg = f"Local function tool '{getattr(tool_cfg, 'name', 'tool')}' failed: {exc}"
+            return {"ok": False, "status": None, "data": None, "headers": {}, "error": error_msg}
+        schema = getattr(tool_cfg, "response_schema", None)
+        if schema:
+            valid, schema_error = validate_response_schema(schema, result_val)
+            if not valid:
+                err = format_tool_error(
+                    getattr(tool_cfg, "name", "tool"),
+                    "LOCAL",
+                    getattr(tool_cfg, "function", "") or getattr(tool_cfg, "name", "tool"),
+                    None,
+                    f"Response schema validation failed: {schema_error}",
+                )
+                return {"ok": False, "status": None, "data": result_val, "headers": {}, "error": err}
+        return {"ok": ok, "status": None, "data": result_val, "headers": {}}
 
     async def _execute_tool_call(self, node, state: FlowState, runtime_ctx: FlowRuntimeContext, tool_override=None):
         target = node.config.get("target") if isinstance(node.config, dict) else None
@@ -3092,7 +3325,10 @@ class FlowEngine:
         if isinstance(args_exprs, dict):
             for k, expr in args_exprs.items():
                 try:
-                    arg_values[k] = evaluator.evaluate(expr)
+                    if isinstance(expr, ast_nodes.Expr):
+                        arg_values[k] = evaluator.evaluate(expr)
+                    else:
+                        arg_values[k] = expr
                 except Exception as exc:
                     raise Namel3ssError(f"Failed to evaluate input '{k}' for tool '{tool_cfg.name}': {exc}") from exc
         if not arg_values:
@@ -3107,6 +3343,9 @@ class FlowEngine:
             raise Namel3ssError(
                 f"N3F-965: Missing arg '{missing_inputs[0]}' for tool '{tool_cfg.name}'."
             )
+
+        if (getattr(tool_cfg, "kind", "") or "").lower() == "local_function":
+            return self._execute_local_function(tool_cfg, arg_values)
 
         if hasattr(tool_cfg, "calls"):
             payload = arg_values if arg_values else {"message": state.get("slug")}
@@ -3135,6 +3374,9 @@ class FlowEngine:
             return expr
 
         method = (getattr(tool_cfg, "method", "GET") or "GET").upper()
+        kind_lower = (getattr(tool_cfg, "kind", "") or "").lower()
+        if kind_lower == "graphql":
+            method = "POST"
 
         url_value: Any = None
         if getattr(tool_cfg, "url_expr", None) is not None:
@@ -3180,6 +3422,16 @@ class FlowEngine:
                 body_payload[bk] = _eval_value(b_expr)
         elif getattr(tool_cfg, "body_template", None) is not None:
             body_payload = tool_evaluator.evaluate(tool_cfg.body_template)
+        if kind_lower == "graphql":
+            query_val = _eval_value(getattr(tool_cfg, "query_template", None))
+            query_str = "" if query_val is None else str(query_val)
+            var_payload: dict[str, Any] = {}
+            for vk, v_expr in (getattr(tool_cfg, "variables", {}) or {}).items():
+                var_payload[vk] = _eval_value(v_expr)
+            body_payload = {"query": query_str}
+            if var_payload:
+                body_payload["variables"] = var_payload
+            headers.setdefault("Content-Type", "application/json")
 
         body_bytes: bytes | None = None
         is_multipart = bool(getattr(tool_cfg, "multipart", False))
@@ -3286,6 +3538,9 @@ class FlowEngine:
                 pass
 
         async def _do_request() -> tuple[int, dict[str, str], str]:
+            # Support both sync and async transports; offload sync calls to a thread.
+            if inspect.iscoroutinefunction(self._http_json_request):
+                return await self._http_json_request(method, url_str, headers, body_bytes, timeout_seconds)
             return await asyncio.to_thread(
                 self._http_json_request, method, url_str, headers, body_bytes, timeout_seconds
             )
@@ -3370,6 +3625,18 @@ class FlowEngine:
                 parsed_body = raw_text
 
         result = build_tool_result(tool_cfg, method, url_str, status, parsed_body, response_headers, raw_text)
+        if kind_lower == "graphql" and isinstance(parsed_body, dict) and parsed_body.get("errors"):
+            msg = parsed_body.get("errors")
+            snippet = None
+            if isinstance(msg, list) and msg:
+                first = msg[0]
+                if isinstance(first, dict) and first.get("message"):
+                    snippet = first.get("message")
+                else:
+                    snippet = str(first)
+            error_reason = f"GraphQL errors: {snippet or 'see response'}"
+            result["ok"] = False
+            result["error"] = format_tool_error(tool_cfg.name, method, url_str, status, error_reason, raw_text)
         ok = bool(result.get("ok"))
 
         try:

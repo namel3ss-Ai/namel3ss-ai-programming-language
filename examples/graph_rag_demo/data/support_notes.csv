@@ -1,0 +1,4 @@
+id,content
+1,ComponentA depends on ComponentB for messaging between services.
+2,ComponentB is maintained by the platform team and integrates with ServiceC.
+3,ServiceC owns authentication and audits requests for compliance.

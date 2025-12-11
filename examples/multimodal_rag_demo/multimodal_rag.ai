@@ -1,0 +1,53 @@
+model is "demo-llm":
+  provider is "openai_default"
+
+ai is "product_answer":
+  model is "demo-llm"
+
+frame is "product_table":
+  source:
+    from file "examples/multimodal_rag_demo/data/products.csv"
+    has headers
+  table:
+    primary_key is "product_id"
+    display_columns are ["name", "category"]
+    text_column is "description"
+    image_column is "image_url"
+
+vector_store is "product_vectors":
+  backend is "memory"
+  frame is "product_table"
+  text_column is "description"
+  id_column is "product_id"
+  embedding_model is "default_embedding"
+
+rag pipeline is "product_rag":
+  use vector_store "product_vectors"
+  stage is "table_lookup":
+    type is "table_lookup"
+    frame is "product_table"
+    match_column is "name"
+    max_rows is 10
+  stage is "table_summary":
+    type is "table_summarise"
+    frame is "product_table"
+    group_by is "category"
+  stage is "image_embed":
+    type is "multimodal_embed"
+    frame is "product_table"
+    image_column is "image_url"
+    text_column is "description"
+    output_vector_store is "product_vectors"
+  stage is "retrieve":
+    type is "vector_retrieve"
+    top_k is 4
+  stage is "answer":
+    type is "ai_answer"
+    ai is "product_answer"
+
+flow is "product_query":
+  description "Blend table lookup, summaries, and multimodal embeds for product questions."
+  step is "answer":
+    kind is "rag_query"
+    pipeline is "product_rag"
+    question is state.question

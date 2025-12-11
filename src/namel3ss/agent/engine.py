@@ -158,6 +158,10 @@ class AgentRunner:
             prompt_parts.append(f"Goal: {agent.goal}")
         if agent.personality:
             prompt_parts.append(f"Personality: {agent.personality}")
+        if getattr(agent, "can_delegate_to", None):
+            prompt_parts.append(f"Available delegates: {', '.join(agent.can_delegate_to)}")
+        if getattr(agent, "role", None):
+            prompt_parts.append(f"Role: {agent.role}")
         if ai_call.system_prompt:
             prompt_parts.append(ai_call.system_prompt)
         combined_prompt = "\n".join([p for p in prompt_parts if p])
@@ -203,6 +207,8 @@ class AgentRunner:
 
         last_output: Optional[dict] = None
         stopped = False
+        had_failure = False
+        last_error: Optional[str] = None
         while True:
             if getattr(agent, "conditional_branches", None):
                 cond_result = self._run_agent_conditions(agent, context)
@@ -217,6 +223,8 @@ class AgentRunner:
                     summary=summary,
                     final_output=cond_result.get("last_output"),
                     final_answer=self._stringify_answer(cond_result.get("last_output")),
+                    ok=True,
+                    value=cond_result.get("last_output") if cond_result.get("last_output") is not None else self._stringify_answer(cond_result.get("last_output")),
                 )
                 if context.tracer:
                     context.tracer.end_agent(summary=summary)
@@ -245,10 +253,15 @@ class AgentRunner:
                     success=success,
                     error=error,
                     retries=attempt,
+                    kind=step.kind,
+                    target=step.target,
                 )
                 evaluation = self.evaluator.evaluate(result, context)
                 result.evaluation = evaluation
                 last_result = result
+                if not success:
+                    had_failure = True
+                    last_error = error
                 if context.metrics:
                     context.metrics.record_evaluation()
                 if context.tracer:
@@ -289,12 +302,17 @@ class AgentRunner:
             context.metrics.record_agent_run()
         if getattr(context, "trigger_manager", None):
             context.trigger_manager.notify_agent_signal(agent.name, {"summary": summary})
+        final_answer = self._stringify_answer(last_output)
+        value_payload = final_answer if final_answer is not None else last_output
         result = AgentPlanResult(
             agent_name=agent.name,
             steps=results,
             summary=summary,
             final_output=last_output,
-            final_answer=self._stringify_answer(last_output),
+            final_answer=final_answer,
+            ok=not had_failure,
+            error=last_error,
+            value=value_payload,
         )
         result = self._apply_reflection(agent, context, result, reflection_cfg)
         default_metrics.record_flow(f"agent:{agent_name}", duration_seconds=len(results), cost=0.0)
@@ -440,6 +458,10 @@ class AgentRunner:
             if not tool:
                 raise Namel3ssError(f"Tool '{step.target}' not found")
             result = tool.run(message=str(last_output) if last_output else "", **step.config)
+            try:
+                context.metadata.setdefault("tools_used", []).append(step.target)
+            except Exception:
+                pass
             if context.metrics:
                 context.metrics.record_tool_call(provider=step.target, cost=0.0005)
             return result
@@ -493,6 +515,10 @@ class AgentRunner:
         if step.kind == "subagent":
             if step.target not in self.program.agents:
                 raise Namel3ssError(f"Sub-agent '{step.target}' not found")
+            try:
+                context.metadata.setdefault("agents_called", []).append(step.target)
+            except Exception:
+                pass
             return self.run(step.target, context)
         raise Namel3ssError(f"Unsupported step kind '{step.kind}'")
 
@@ -599,59 +625,65 @@ class AgentRunner:
         return None
 
     def _is_error_result(self, value: Any) -> bool:
-        if isinstance(value, Exception):
-            return True
-        if isinstance(value, dict):
-            if value.get("error") is not None:
-                return True
-            if "success" in value and value.get("success") is False:
-                return True
-        return False
+        res = self._normalize_result(value)
+        return bool(res) and res.get("ok") is False
 
     def _is_success_result(self, value: Any) -> bool:
-        if self._is_error_result(value):
-            return False
-        if hasattr(value, "is_success"):
-            try:
-                return bool(getattr(value, "is_success"))
-            except Exception:
-                return False
+        res = self._normalize_result(value)
+        return bool(res) and res.get("ok") is True
+
+    def _normalize_result(self, value: Any) -> dict[str, Any] | None:
+        if isinstance(value, Exception):
+            return {"ok": False, "value": None, "error": value, "raw": value}
+        mapping: dict[str, Any] | None = None
         if isinstance(value, dict):
-            if "success" in value:
-                return bool(value.get("success"))
-            if "result" in value or "value" in value:
-                return True
-        if hasattr(value, "result") or hasattr(value, "value"):
-            return True
-        return False
+            mapping = value
+        else:
+            attrs: dict[str, Any] = {}
+            for key in ("ok", "success", "error", "data", "result", "value", "final_output", "final_answer"):
+                if hasattr(value, key):
+                    try:
+                        attrs[key] = getattr(value, key)
+                    except Exception:
+                        continue
+            mapping = attrs or None
+        if mapping is None:
+            return None
+        has_signal = any(k in mapping for k in ("ok", "success", "error", "data", "result", "value"))
+        if not has_signal:
+            return None
+        ok_val = mapping.get("ok", None)
+        if ok_val is None and "success" in mapping:
+            ok_val = mapping.get("success")
+        error_val = mapping.get("error", None)
+        payload = None
+        for key in ("data", "result", "value", "final_output", "final_answer"):
+            if key in mapping:
+                payload = mapping.get(key)
+                break
+        if ok_val is None and error_val is not None:
+            ok_val = False
+        if ok_val is None and payload is not None:
+            ok_val = True
+        if ok_val is None:
+            return None
+        return {"ok": bool(ok_val), "value": payload, "error": error_val, "raw": value}
 
     def _extract_success_payload(self, value: Any) -> Any:
-        if isinstance(value, dict):
-            if "result" in value:
-                return value.get("result")
-            if "value" in value:
-                return value.get("value")
-        if hasattr(value, "result"):
-            try:
-                return getattr(value, "result")
-            except Exception:
-                pass
-        if hasattr(value, "value"):
-            try:
-                return getattr(value, "value")
-            except Exception:
-                pass
-        return value
+        res = self._normalize_result(value)
+        if res is None:
+            return value
+        if res.get("value") is not None:
+            return res.get("value")
+        return res.get("raw")
 
     def _extract_error_payload(self, value: Any) -> Any:
-        if isinstance(value, dict) and "error" in value:
-            return value.get("error")
-        if hasattr(value, "error"):
-            try:
-                return getattr(value, "error")
-            except Exception:
-                pass
-        return value
+        res = self._normalize_result(value)
+        if res is None:
+            return value
+        if res.get("error") is not None:
+            return res.get("error")
+        return res.get("raw")
 
     def _require_list_iterable(self, value: Any, *, context: str, detail: str | None = None) -> list[Any]:
         if value is None:
@@ -679,28 +711,35 @@ class AgentRunner:
         if delay > 0:
             time.sleep(delay)
 
-    def _match_branch(self, br: IRMatchBranch, target_val: Any, evaluator: ExpressionEvaluator, context: ExecutionContext) -> bool:
+    def _match_branch(self, br: IRMatchBranch, target_val: Any, evaluator: ExpressionEvaluator, context: ExecutionContext, normalized_result: dict[str, Any] | None = None) -> bool:
         pattern = br.pattern
         env = getattr(context, "_env", None) or VariableEnvironment(context.variables)
+        result_info = normalized_result if normalized_result is not None else self._normalize_result(target_val)
         if isinstance(pattern, ast_nodes.SuccessPattern):
-            if not self._is_success_result(target_val):
+            if not result_info or result_info.get("ok") is not True:
                 return False
+            payload = result_info.get("value") if result_info is not None else None
+            if payload is None and result_info is not None:
+                payload = result_info.get("raw")
             if pattern.binding:
                 if env.has(pattern.binding):
-                    env.assign(pattern.binding, self._extract_success_payload(target_val))
+                    env.assign(pattern.binding, payload)
                 else:
-                    env.declare(pattern.binding, self._extract_success_payload(target_val))
-                context.metadata[pattern.binding] = self._extract_success_payload(target_val)
+                    env.declare(pattern.binding, payload)
+                context.metadata[pattern.binding] = payload
             return True
         if isinstance(pattern, ast_nodes.ErrorPattern):
-            if not self._is_error_result(target_val):
+            if not result_info or result_info.get("ok") is True:
                 return False
+            payload = result_info.get("error") if result_info is not None else None
+            if payload is None and result_info is not None:
+                payload = result_info.get("raw")
             if pattern.binding:
                 if env.has(pattern.binding):
-                    env.assign(pattern.binding, self._extract_error_payload(target_val))
+                    env.assign(pattern.binding, payload)
                 else:
-                    env.declare(pattern.binding, self._extract_error_payload(target_val))
-                context.metadata[pattern.binding] = self._extract_error_payload(target_val)
+                    env.declare(pattern.binding, payload)
+                context.metadata[pattern.binding] = payload
             return True
         if pattern is None:
             return True
@@ -1104,11 +1143,26 @@ class AgentRunner:
             return last_output
         if isinstance(stmt, IRMatch):
             target_val = evaluator.evaluate(stmt.target) if stmt.target is not None else None
+            has_result_pattern = any(isinstance(br.pattern, (ast_nodes.SuccessPattern, ast_nodes.ErrorPattern)) for br in stmt.branches)
+            has_otherwise = any(br.pattern is None for br in stmt.branches)
+            normalized_result = self._normalize_result(target_val) if has_result_pattern else None
+            if has_result_pattern and normalized_result is None and not has_otherwise:
+                value_snippet = self._format_condition_value(target_val)
+                raise Namel3ssError(
+                    f"match with 'when success' or 'when error' expects a result-like value from a tool or agent, but I got {value_snippet}. Add an 'otherwise' branch or pass a result value."
+                )
+            matched = False
             for br in stmt.branches:
-                if self._match_branch(br, target_val, evaluator, context):
+                if self._match_branch(br, target_val, evaluator, context, normalized_result=normalized_result):
+                    matched = True
                     for action in br.actions:
                         self._execute_statement(action, context, allow_return=allow_return)
                     break
+            if has_result_pattern and not matched and not has_otherwise:
+                value_snippet = self._format_condition_value(target_val)
+                raise Namel3ssError(
+                    f"No matching success/error branch in match for value {value_snippet}. Add an 'otherwise' branch or ensure the result sets ok/ error fields."
+                )
             return context.metadata.get("last_output")
         if isinstance(stmt, IRReturn):
             if not allow_return:
@@ -1227,6 +1281,8 @@ class AgentRunner:
                         output=output if isinstance(output, dict) else {"value": output},
                         success=True,
                         error=None,
+                        kind=step.kind,
+                        target=step.target,
                     )
                 )
                 last_output = output

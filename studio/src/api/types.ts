@@ -513,3 +513,102 @@ export interface MemorySessionDetail {
     messages: { role: string; content: string }[];
   } | null;
 }
+
+export interface StudioRagStage {
+  name: string;
+  type: string;
+  ai?: string | null;
+  vector_store?: string | null;
+  graph?: string | null;
+  graph_summary?: string | null;
+  frame?: string | null;
+  match_column?: string | null;
+  max_rows?: number | null;
+  group_by?: string | null;
+  max_rows_per_group?: number | null;
+  max_items?: number | null;
+  strategy?: string | null;
+  max_hops?: number | null;
+  max_nodes?: number | null;
+  top_k?: number | null;
+  index?: number;
+  [key: string]: any;
+}
+
+export interface StudioRagPipeline {
+  name: string;
+  default_vector_store?: string | null;
+  stages: StudioRagStage[];
+  edges: { from: string; to: string }[];
+}
+
+export interface StudioRagPipelineSummary {
+  id: string;
+  name: string;
+  description?: string | null;
+  source?: string | null;
+}
+
+export interface StudioRagPipelineListResponse {
+  pipelines: StudioRagPipelineSummary[];
+}
+
+export interface StudioRagPipelineDetailResponse {
+  pipeline: StudioRagPipeline;
+}
+
+export interface StudioRagPreviewStage {
+  stage: string;
+  type: string;
+  summary?: string;
+  params?: Record<string, any>;
+}
+
+export interface StudioRagPreviewResponse {
+  pipeline: StudioRagPipeline;
+  query?: string | null;
+  stages: StudioRagPreviewStage[];
+}
+
+export interface StudioMacroSummary {
+  id: string;
+  name: string;
+  source?: string | null;
+  line?: number | null;
+  column?: number | null;
+  artifact_counts?: Record<string, number>;
+}
+
+export interface StudioMacroDetail {
+  macro: {
+    id: string;
+    name: string;
+    source?: string | null;
+    line?: number | null;
+    column?: number | null;
+    artifacts: Record<string, string[]>;
+  };
+}
+
+export interface StudioRunsResponse {
+  runs: {
+    run_id: string;
+    label?: string | null;
+    status?: string | null;
+    start_time: number;
+    duration: number;
+  }[];
+}
+
+export interface StudioTraceResponse {
+  trace: any[];
+}
+
+export interface StudioErrorDetail {
+  id: string;
+  message: string;
+  code?: string;
+  dsl_snippet?: string | null;
+  ir_context?: any;
+  hints?: any[];
+}

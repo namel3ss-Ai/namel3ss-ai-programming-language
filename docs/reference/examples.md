@@ -48,6 +48,19 @@ You can also load the new flagship examples:
 - `memory_profiles_demo` - Memory profiles and inline overrides for conversational assistants.
   - CLI: `n3 example run memory_profiles_demo`
   - Studio source: `http://localhost:8000/studio?example=memory_profiles_demo`
+- `graph_rag_demo` ƒ?" Graph-aware RAG that combines `graph_query`, `graph_summary_lookup`, and vector retrieval over a tiny support graph.
+  - CLI: `n3 example run graph_rag_demo`
+  - Studio source: `http://localhost:8000/studio?example=graph_rag_demo`
+- `multimodal_rag_demo` ƒ?" Table-aware and multimodal RAG using `table_lookup`, `table_summarise`, and `multimodal_embed`.
+  - CLI: `n3 example run multimodal_rag_demo`
+  - Studio source: `http://localhost:8000/studio?example=multimodal_rag_demo`
+- `macro_plans_demo` — Structured macro plan demo combining CRUD, auth, and analytics dashboard macros.
+  - CLI: `n3 example run macro_plans_demo`
+  - Studio source: `http://localhost:8000/studio?example=macro_plans_demo`
+
+ - `multi_agent_demo` ƒ?" Router + specialist agents showing multi-agent orchestration.
+   - CLI: `n3 example run multi_agent_demo`
+   - Studio source: `http://localhost:8000/studio?example=multi_agent_demo`
 
 ## Inspecting traces in Studio
 If you have a trace id (from the CLI output), open:

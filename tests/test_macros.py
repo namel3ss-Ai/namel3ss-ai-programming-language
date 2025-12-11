@@ -25,8 +25,8 @@ def test_macro_decl_parsing():
 def test_macro_use_parsing_with_args():
   src = (
       'use macro "crud" with:\n'
-      '  entity "Product"\n'
-      "  fields [\"name\", \"price\"]\n"
+      '  entity is "Product"\n'
+      "  fields are [\"name\", \"price\"]\n"
   )
   module = parse_source(src)
   use = next(d for d in module.declarations if isinstance(d, ast_nodes.MacroUse))
@@ -68,8 +68,8 @@ def test_macro_expansion_with_parameters():
       "  parameters entity, fields\n"
       '\n'
       'use macro "crud" with:\n'
-      '  entity "Product"\n'
-      "  fields [\"name\", \"price\"]\n"
+      '  entity is "Product"\n'
+      "  fields are [\"name\", \"price\"]\n"
   )
 
   def ai_cb(macro, args):
@@ -90,6 +90,16 @@ def test_macro_missing_macro_raises():
   module = parse_source(src)
   with pytest.raises(Namel3ssError):
       expand_macros(module, lambda m, a: "")
+
+
+def test_macro_use_requires_is_in_args():
+  src = (
+      'use macro "crud" with:\n'
+      '  entity "Product"\n'
+  )
+  with pytest.raises(Exception) as excinfo:
+      parse_source(src)
+  assert "Expected 'is' after entity" in str(excinfo.value)
 
 
 def test_macro_output_parse_error():
@@ -266,8 +276,8 @@ def test_template_macro_expands_without_ai():
       '  sample "flow is \\"{FlowName}\\":\\n  step is \\"start\\":\\n    log info \\"Hello, {name}\\""\n'
       '\n'
       'use macro "tmpl" with:\n'
-      '  FlowName "welcome"\n'
-      '  name "Disan"\n'
+      '  FlowName is "welcome"\n'
+      '  name is "Disan"\n'
   )
   module = parse_source(src)
   expander = MacroExpander(None)
@@ -300,7 +310,7 @@ def test_macro_arg_expression_errors():
       '  sample "flow is \\"f\\":\\n  step is \\"s\\":\\n    log info \\"ok\\""\n'
       '\n'
       'use macro "tmpl" with:\n'
-      '  name other_var\n'
+      '  name is other_var\n'
   )
   module = parse_source(src)
   expander = MacroExpander(None)
@@ -314,7 +324,7 @@ def test_macro_arg_expression_errors():
 def test_crud_ui_accepts_field_blocks():
   src = (
       'use macro "crud_ui" with:\n'
-      '  entity "Product"\n'
+      '  entity is "Product"\n'
       "  fields:\n"
       '    field is "name":\n'
       '      type is "string"\n'
@@ -340,7 +350,7 @@ def test_crud_ui_accepts_field_blocks():
 def test_crud_ui_generates_records_and_db_steps():
   src = (
       'use macro "crud_ui" with:\n'
-      '  entity "Product"\n'
+      '  entity is "Product"\n'
       "  fields:\n"
       '    field is "name":\n'
       '      type is "string"\n'

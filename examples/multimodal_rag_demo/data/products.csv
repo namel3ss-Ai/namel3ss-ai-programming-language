@@ -1,0 +1,4 @@
+product_id,name,category,description,image_url
+p1,CameraX,camera,"High-res travel camera with fast lens","img://camera"
+p2,SpeakerY,audio,"Portable speaker with deep bass","img://speaker"
+p3,LaptopZ,computer,"Lightweight laptop with long battery","img://laptop"

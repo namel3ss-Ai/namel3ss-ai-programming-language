@@ -224,6 +224,8 @@ class IRAgent:
     system_prompt: str | None = None
     memory_name: str | None = None
     conditional_branches: list["IRConditionalBranch"] | None = None
+    role: str | None = None
+    can_delegate_to: list[str] | None = None
 
 
 @dataclass
@@ -731,6 +733,16 @@ class IRFrame:
     has_headers: bool = False
     select_cols: list[str] = field(default_factory=list)
     where: ast_nodes.Expr | None = None
+    table_config: "IRTableConfig | None" = None
+
+
+@dataclass
+class IRTableConfig:
+    primary_key: str | None = None
+    display_columns: list[str] = field(default_factory=list)
+    time_column: str | None = None
+    text_column: str | None = None
+    image_column: str | None = None
 
 
 @dataclass
@@ -746,11 +758,47 @@ class IRVectorStore:
 
 
 @dataclass
+class IRGraph:
+    name: str
+    source_frame: str
+    id_column: str
+    text_column: str
+    entity_model: str | None = None
+    max_entities_per_doc: ast_nodes.Expr | None = None
+    relation_model: str | None = None
+    max_relations_per_entity: ast_nodes.Expr | None = None
+    nodes_frame: str | None = None
+    edges_frame: str | None = None
+
+
+@dataclass
+class IRGraphSummary:
+    name: str
+    graph: str
+    method: str | None = None
+    max_nodes_per_summary: ast_nodes.Expr | None = None
+    model: str | None = None
+
+
+@dataclass
 class IRRagPipelineStage:
     name: str
     type: str
     ai: str | None = None
     vector_store: str | None = None
+    frame: str | None = None
+    match_column: str | None = None
+    max_rows: ast_nodes.Expr | None = None
+    group_by: str | None = None
+    max_groups: ast_nodes.Expr | None = None
+    max_rows_per_group: ast_nodes.Expr | None = None
+    image_column: str | None = None
+    text_column: str | None = None
+    embedding_model: str | None = None
+    output_vector_store: str | None = None
+    max_items: ast_nodes.Expr | None = None
+    graph: str | None = None
+    graph_summary: str | None = None
     top_k: ast_nodes.Expr | None = None
     where: ast_nodes.Expr | None = None
     max_tokens: ast_nodes.Expr | None = None
@@ -759,6 +807,9 @@ class IRRagPipelineStage:
     max_subquestions: ast_nodes.Expr | None = None
     from_stages: list[str] | None = None
     method: str | None = None
+    max_hops: ast_nodes.Expr | None = None
+    max_nodes: ast_nodes.Expr | None = None
+    strategy: str | None = None
 
 
 @dataclass
@@ -775,6 +826,32 @@ class IRRagEvaluation:
     dataset_frame: str
     question_column: str
     answer_column: str | None = None
+    metrics: list[str] = field(default_factory=list)
+    span: ast_nodes.Span | None = None
+
+
+@dataclass
+class IRToolEvaluation:
+    name: str
+    tool: str
+    dataset_frame: str
+    input_mapping: dict[str, str] = field(default_factory=dict)
+    expected_status_column: str | None = None
+    expected_body_column: str | None = None
+    metrics: list[str] = field(default_factory=list)
+    span: ast_nodes.Span | None = None
+
+
+@dataclass
+class IRAgentEvaluation:
+    name: str
+    agent: str
+    dataset_frame: str
+    input_mapping: dict[str, str] = field(default_factory=dict)
+    expected_answer_column: str | None = None
+    allow_llm_judge: bool = False
+    judge_model: str | None = None
+    expected_tool_column: str | None = None
     metrics: list[str] = field(default_factory=list)
     span: ast_nodes.Span | None = None
 
@@ -938,8 +1015,12 @@ class IRProgram:
     records: Dict[str, IRRecord] = field(default_factory=dict)
     auth: IRAuth | None = None
     vector_stores: Dict[str, IRVectorStore] = field(default_factory=dict)
+    graphs: Dict[str, IRGraph] = field(default_factory=dict)
+    graph_summaries: Dict[str, IRGraphSummary] = field(default_factory=dict)
     rag_pipelines: Dict[str, "IRRagPipeline"] = field(default_factory=dict)
     rag_evaluations: Dict[str, "IRRagEvaluation"] = field(default_factory=dict)
+    tool_evaluations: Dict[str, "IRToolEvaluation"] = field(default_factory=dict)
+    agent_evaluations: Dict[str, "IRAgentEvaluation"] = field(default_factory=dict)
     flows: Dict[str, IRFlow] = field(default_factory=dict)
     plugins: Dict[str, "IRPlugin"] = field(default_factory=dict)
     rulegroups: Dict[str, Dict[str, ast_nodes.Expr]] = field(default_factory=dict)
@@ -963,10 +1044,12 @@ class IRTool:
     method: str | None = None
     url_template: str | None = None
     url_expr: ast_nodes.Expr | None = None
+    query_template: ast_nodes.Expr | None = None
     headers: Dict[str, Expr] = field(default_factory=dict)
     query_params: Dict[str, Expr] = field(default_factory=dict)
     body_fields: Dict[str, Expr] = field(default_factory=dict)
     body_template: Expr | None = None
+    variables: Dict[str, Expr] = field(default_factory=dict)
     input_fields: list[str] = field(default_factory=list)
     timeout_seconds: float | None = None
     retry: ToolRetryConfig | None = None
@@ -976,6 +1059,7 @@ class IRTool:
     rate_limit: ToolRateLimitConfig | None = None
     multipart: bool = False
     query_encoding: str | None = None
+    function: str | None = None
 
 
 SUPPORTED_PII_POLICIES = {"none", "strip-email-ip"}
@@ -2024,6 +2108,136 @@ def ast_to_ir(module: ast_nodes.Module) -> IRProgram:
     memory_store_refs: list[tuple[str, str | None]] = []
     ai_tool_refs: list[tuple[str, str, int | None]] = []
 
+    def _process_vector_store_decl(decl: ast_nodes.VectorStoreDecl) -> None:
+        if decl.name in program.vector_stores:
+            raise IRError(f"There is already a vector_store named '{decl.name}'. Vector store names must be unique.", decl.span and decl.span.line)
+        missing_fields: list[str] = []
+        for key, value in {
+            "backend": decl.backend,
+            "frame": decl.frame,
+            "text_column": decl.text_column,
+            "id_column": decl.id_column,
+            "embedding_model": decl.embedding_model,
+        }.items():
+            if value in {None, ""}:
+                missing_fields.append(key)
+        if missing_fields:
+            raise IRError(
+                f"Vector store '{decl.name}' is missing required fields. It needs: backend, frame, text_column, id_column, and embedding_model.",
+                decl.span and decl.span.line,
+            )
+        backend = (decl.backend or "").lower()
+        if backend == "postgresql":
+            backend = "pgvector"
+        supported_backends = {"memory", "pgvector", "faiss", "default_vector"}
+        if backend not in supported_backends:
+            raise IRError(
+                f"Vector store '{decl.name}' uses backend '{backend}', which is not supported. Supported backends are: memory, pgvector, faiss.",
+                decl.span and decl.span.line,
+            )
+        frame_name = decl.frame or ""
+        if frame_name not in program.frames:
+            raise IRError(
+                f"Vector store '{decl.name}' refers to frame '{frame_name}', but that frame is not declared.",
+                decl.span and decl.span.line,
+            )
+        if decl.embedding_model in program.models:
+            raise IRError(
+                f"Vector store '{decl.name}' uses embedding_model '{decl.embedding_model}', which is not an embedding model. Use an embedding model such as 'text-embedding-ada-002' or 'default_embedding'.",
+                decl.span and decl.span.line,
+            )
+        program.vector_stores[decl.name] = IRVectorStore(
+            name=decl.name,
+            backend=backend,
+            frame=frame_name,
+            text_column=decl.text_column or "",
+            id_column=decl.id_column or "",
+            embedding_model=decl.embedding_model or "",
+            metadata_columns=decl.metadata_columns or [],
+            options=decl.options or {},
+        )
+
+    def _process_frame_decl(decl: ast_nodes.FrameDecl) -> None:
+        if decl.name in program.frames:
+            raise IRError(
+                f"Duplicate frame '{decl.name}'", decl.span and decl.span.line
+            )
+        source_kind = decl.source_kind or ("file" if decl.source_path else None)
+        backend = decl.backend
+        if not (decl.source_path or (backend and decl.table)):
+            raise IRError(
+                f"Frame '{decl.name}' needs a data source. Add a 'source:' block with either 'from file \"...\"' or 'backend is \"...\"' and 'table is \"...\"'.",
+                decl.span and decl.span.line,
+            )
+        if source_kind == "file" and not decl.source_path:
+            raise IRError(
+                f"Frame '{decl.name}' needs a file path. Add 'from file \"...\"' inside the source block.",
+                decl.span and decl.span.line,
+            )
+        if backend:
+            if backend.lower() == "postgresql":
+                backend = "postgres"
+            if backend not in {"memory", "sqlite", "postgres"}:
+                raise IRError(
+                    f"Frame '{decl.name}' uses backend '{backend}', which is not supported. Supported backends are: memory, sqlite, postgres.",
+                    decl.span and decl.span.line,
+                )
+            if backend in {"sqlite", "postgres"} and not decl.url:
+                raise IRError(
+                    f"Frame '{decl.name}' needs a connection url for backend '{backend}'. Add 'url is ...' inside the source block.",
+                    decl.span and decl.span.line,
+                )
+            if backend and not decl.table:
+                raise IRError(
+                    f"Frame '{decl.name}' must set 'table is \"...\"' when using backend '{backend}'.",
+                    decl.span and decl.span.line,
+                )
+        if decl.select_cols and decl.source_path and not decl.has_headers:
+            raise IRError(
+                f"Frame '{decl.name}' selects columns, but no headers are available. Add 'has headers' in the source block.",
+                decl.span and decl.span.line,
+            )
+        where_expr, _ = transform_expr(decl.where)
+        url_expr, _ = transform_expr(decl.url) if getattr(decl, "url", None) else (None, None)
+        table_cfg_ir: IRTableConfig | None = None
+        if getattr(decl, "table_config", None):
+            cfg = decl.table_config
+            display_cols = list(cfg.display_columns or [])
+            available_cols = decl.select_cols or []
+            if display_cols and available_cols:
+                for col in display_cols:
+                    if col not in available_cols:
+                        raise IRError(
+                            f"Frame '{decl.name}' table.display_columns references '{col}', which is not in the selected columns. Available columns: {', '.join(available_cols)}.",
+                            cfg.span and cfg.span.line if cfg else decl.span and decl.span.line,
+                        )
+            if cfg.time_column and available_cols and cfg.time_column not in available_cols:
+                raise IRError(
+                    f"Frame '{decl.name}' table.time_column references '{cfg.time_column}', but that column is not selected. Available columns: {', '.join(available_cols)}.",
+                    cfg.span and cfg.span.line if cfg else decl.span and decl.span.line,
+                )
+            table_cfg_ir = IRTableConfig(
+                primary_key=cfg.primary_key,
+                display_columns=display_cols,
+                time_column=cfg.time_column,
+                text_column=cfg.text_column,
+                image_column=cfg.image_column,
+            )
+        program.frames[decl.name] = IRFrame(
+            name=decl.name,
+            source_kind=source_kind or backend or ("file" if decl.source_path else "memory"),
+            path=decl.source_path,
+            backend=backend,
+            url=url_expr,
+            table=decl.table,
+            primary_key=decl.primary_key,
+            delimiter=decl.delimiter,
+            has_headers=decl.has_headers,
+            select_cols=decl.select_cols or [],
+            where=where_expr,
+            table_config=table_cfg_ir,
+        )
+
     def lower_flow_item(
         step: ast_nodes.FlowStepDecl | ast_nodes.FlowLoopDecl | ast_nodes.FlowTransactionBlock,
         flow_name: str | None = None,
@@ -2524,9 +2738,20 @@ def ast_to_ir(module: ast_nodes.Module) -> IRProgram:
             return IRRepeatUpTo(count=stmt.count, body=body)
         if isinstance(stmt, ast_nodes.MatchStatement):
             ir_branches: list[IRMatchBranch] = []
+            has_result_pattern = False
+            has_otherwise = False
             for br in stmt.branches:
                 actions = [lower_statement(a) for a in br.actions]
+                if isinstance(br.pattern, (ast_nodes.SuccessPattern, ast_nodes.ErrorPattern)):
+                    has_result_pattern = True
+                if br.pattern is None:
+                    has_otherwise = True
                 ir_branches.append(IRMatchBranch(pattern=br.pattern, binding=br.binding, actions=actions, label=br.label))
+            if has_result_pattern and isinstance(stmt.target, ast_nodes.Literal) and not has_otherwise:
+                raise IRError(
+                    "N3CF-910: match with 'when success' or 'when error' expects a result-like value (e.g. from a tool or agent). Add an 'otherwise' branch or match a result object.",
+                    getattr(stmt.target, "span", None) and getattr(stmt.target.span, "line", None),
+                )
             return IRMatch(target=stmt.target, branches=ir_branches)
         if isinstance(stmt, ast_nodes.RetryStatement):
             body = [lower_statement(s) for s in stmt.body]
@@ -2781,6 +3006,16 @@ def ast_to_ir(module: ast_nodes.Module) -> IRProgram:
             )
         raise IRError("Unsupported layout element", getattr(el, "span", None) and getattr(el.span, "line", None))
 
+    # Pre-process frames so later declarations can reference them regardless of order.
+    for decl in module.declarations:
+        if isinstance(decl, ast_nodes.FrameDecl):
+            _process_frame_decl(decl)
+
+    # Pre-process vector stores now that frames are available, so RAG pipelines can reference them out of order.
+    for decl in module.declarations:
+        if isinstance(decl, ast_nodes.VectorStoreDecl):
+            _process_vector_store_decl(decl)
+
     for decl in module.declarations:
         if isinstance(decl, ast_nodes.ConditionMacroDecl):
             continue
@@ -2974,7 +3209,14 @@ def ast_to_ir(module: ast_nodes.Module) -> IRProgram:
             if getattr(decl, "conditional_branches", None):
                 agent_branches = [lower_branch(br) for br in decl.conditional_branches or []]
             program.agents[decl.name] = IRAgent(
-                name=decl.name, goal=decl.goal, personality=decl.personality, conditional_branches=agent_branches, system_prompt=getattr(decl, "system_prompt", None), memory_name=getattr(decl, "memory_name", None)
+                name=decl.name,
+                goal=decl.goal,
+                personality=decl.personality,
+                conditional_branches=agent_branches,
+                system_prompt=getattr(decl, "system_prompt", None),
+                memory_name=getattr(decl, "memory_name", None),
+                role=getattr(decl, "role", None),
+                can_delegate_to=list(getattr(decl, "can_delegate_to", []) or []),
             )
             if getattr(decl, "memory_name", None):
                 agent_memory_refs.append((decl.name, decl.memory_name or "", decl.span and decl.span.line))
@@ -2998,59 +3240,8 @@ def ast_to_ir(module: ast_nodes.Module) -> IRProgram:
             )
         elif isinstance(decl, ast_nodes.FrameDecl):
             if decl.name in program.frames:
-                raise IRError(
-                    f"Duplicate frame '{decl.name}'", decl.span and decl.span.line
-                )
-            source_kind = decl.source_kind or ("file" if decl.source_path else None)
-            backend = decl.backend
-            if not (decl.source_path or (backend and decl.table)):
-                raise IRError(
-                    f"Frame '{decl.name}' needs a data source. Add a 'source:' block with either 'from file \"...\"' or 'backend is \"...\"' and 'table is \"...\"'.",
-                    decl.span and decl.span.line,
-                )
-            if source_kind == "file" and not decl.source_path:
-                raise IRError(
-                    f"Frame '{decl.name}' needs a file path. Add 'from file \"...\"' inside the source block.",
-                    decl.span and decl.span.line,
-                )
-            if backend:
-                if backend.lower() == "postgresql":
-                    backend = "postgres"
-                if backend not in {"memory", "sqlite", "postgres"}:
-                    raise IRError(
-                        f"Frame '{decl.name}' uses backend '{backend}', which is not supported. Supported backends are: memory, sqlite, postgres.",
-                        decl.span and decl.span.line,
-                    )
-                if backend in {"sqlite", "postgres"} and not decl.url:
-                    raise IRError(
-                        f"Frame '{decl.name}' needs a connection url for backend '{backend}'. Add 'url is ...' inside the source block.",
-                        decl.span and decl.span.line,
-                    )
-                if backend and not decl.table:
-                    raise IRError(
-                        f"Frame '{decl.name}' must set 'table is \"...\"' when using backend '{backend}'.",
-                        decl.span and decl.span.line,
-                    )
-            if decl.select_cols and decl.source_path and not decl.has_headers:
-                raise IRError(
-                    f"Frame '{decl.name}' selects columns, but no headers are available. Add 'has headers' in the source block.",
-                    decl.span and decl.span.line,
-                )
-            where_expr, _ = transform_expr(decl.where)
-            url_expr, _ = transform_expr(decl.url) if getattr(decl, "url", None) else (None, None)
-            program.frames[decl.name] = IRFrame(
-                name=decl.name,
-                source_kind=source_kind or backend or ("file" if decl.source_path else "memory"),
-                path=decl.source_path,
-                backend=backend,
-                url=url_expr,
-                table=decl.table,
-                primary_key=decl.primary_key,
-                delimiter=decl.delimiter,
-                has_headers=decl.has_headers,
-                select_cols=decl.select_cols or [],
-                where=where_expr,
-            )
+                continue
+            _process_frame_decl(decl)
         elif isinstance(decl, ast_nodes.RecordDecl):
             if decl.name in program.records:
                 raise IRError(
@@ -3289,51 +3480,46 @@ def ast_to_ir(module: ast_nodes.Module) -> IRProgram:
             )
         elif isinstance(decl, ast_nodes.VectorStoreDecl):
             if decl.name in program.vector_stores:
-                raise IRError(f"There is already a vector_store named '{decl.name}'. Vector store names must be unique.", decl.span and decl.span.line)
-            missing_fields: list[str] = []
-            for key, value in {
-                "backend": decl.backend,
-                "frame": decl.frame,
-                "text_column": decl.text_column,
-                "id_column": decl.id_column,
-                "embedding_model": decl.embedding_model,
-            }.items():
-                if value in {None, ""}:
-                    missing_fields.append(key)
-            if missing_fields:
+                continue
+            _process_vector_store_decl(decl)
+        elif isinstance(decl, ast_nodes.GraphDecl):
+            if decl.name in program.graphs:
+                raise IRError(f"There is already a graph named '{decl.name}'. Graph names must be unique.", decl.span and decl.span.line)
+            if not decl.source_frame:
+                raise IRError(f"Graph '{decl.name}' must specify from frame is \"...\".", decl.span and decl.span.line)
+            if decl.source_frame not in program.frames:
                 raise IRError(
-                    f"Vector store '{decl.name}' is missing required fields. It needs: backend, frame, text_column, id_column, and embedding_model.",
+                    f"Graph '{decl.name}' references frame '{decl.source_frame}', but that frame is not declared.",
                     decl.span and decl.span.line,
                 )
-            backend = (decl.backend or "").lower()
-            if backend == "postgresql":
-                backend = "pgvector"
-            supported_backends = {"memory", "pgvector", "faiss", "default_vector"}
-            if backend not in supported_backends:
+            if decl.entities is None and decl.relations is None:
                 raise IRError(
-                    f"Vector store '{decl.name}' uses backend '{backend}', which is not supported. Supported backends are: memory, pgvector, faiss.",
+                    f"Graph '{decl.name}' must include an 'entities' or 'relations' block.",
                     decl.span and decl.span.line,
                 )
-            frame_name = decl.frame or ""
-            if frame_name not in program.frames:
-                raise IRError(
-                    f"Vector store '{decl.name}' refers to frame '{frame_name}', but that frame is not declared.",
-                    decl.span and decl.span.line,
-                )
-            if decl.embedding_model in program.models:
-                raise IRError(
-                    f"Vector store '{decl.name}' uses embedding_model '{decl.embedding_model}', which is not an embedding model. Use an embedding model such as 'text-embedding-ada-002' or 'default_embedding'.",
-                    decl.span and decl.span.line,
-                )
-            program.vector_stores[decl.name] = IRVectorStore(
+            program.graphs[decl.name] = IRGraph(
                 name=decl.name,
-                backend=backend,
-                frame=frame_name,
-                text_column=decl.text_column or "",
-                id_column=decl.id_column or "",
-                embedding_model=decl.embedding_model or "",
-                metadata_columns=decl.metadata_columns or [],
-                options=decl.options or {},
+                source_frame=decl.source_frame,
+                id_column=decl.id_column or "id",
+                text_column=decl.text_column or "text",
+                entity_model=decl.entities.model if decl.entities else None,
+                max_entities_per_doc=decl.entities.max_entities_per_doc if decl.entities else None,
+                relation_model=decl.relations.model if decl.relations else None,
+                max_relations_per_entity=decl.relations.max_relations_per_entity if decl.relations else None,
+                nodes_frame=decl.storage.nodes_frame if decl.storage else None,
+                edges_frame=decl.storage.edges_frame if decl.storage else None,
+            )
+        elif isinstance(decl, ast_nodes.GraphSummaryDecl):
+            if decl.name in program.graph_summaries:
+                raise IRError(f"There is already a graph_summary named '{decl.name}'. Graph summary names must be unique.", decl.span and decl.span.line)
+            if not decl.graph:
+                raise IRError(f"Graph summary '{decl.name}' must reference a graph with 'graph is \"...\"'.", decl.span and decl.span.line)
+            program.graph_summaries[decl.name] = IRGraphSummary(
+                name=decl.name,
+                graph=decl.graph,
+                method=decl.method,
+                max_nodes_per_summary=decl.max_nodes_per_summary,
+                model=decl.model,
             )
         elif isinstance(decl, ast_nodes.RagPipelineDecl):
             if decl.name in program.rag_pipelines:
@@ -3359,6 +3545,12 @@ def ast_to_ir(module: ast_nodes.Module) -> IRProgram:
                 "multi_query",
                 "query_decompose",
                 "fusion",
+                "graph_query",
+                "graph_summary_lookup",
+                "table_lookup",
+                "table_summarise",
+                "multimodal_embed",
+                "multimodal_summarise",
             }
             for stage in decl.stages:
                 if stage.name in seen_stage_names:
@@ -3387,6 +3579,21 @@ def ast_to_ir(module: ast_nodes.Module) -> IRProgram:
                 from_stages = list(stage.from_stages) if stage.from_stages else None
                 max_queries_expr, _ = transform_expr(stage.max_queries) if stage.max_queries else (None, None)
                 max_sub_expr, _ = transform_expr(stage.max_subquestions) if stage.max_subquestions else (None, None)
+                max_hops_expr, _ = transform_expr(stage.max_hops) if stage.max_hops else (None, None)
+                max_nodes_expr, _ = transform_expr(stage.max_nodes) if stage.max_nodes else (None, None)
+                max_rows_expr, _ = transform_expr(stage.max_rows) if getattr(stage, "max_rows", None) else (None, None)
+                max_groups_expr, _ = transform_expr(stage.max_groups) if getattr(stage, "max_groups", None) else (None, None)
+                max_rows_per_group_expr, _ = (
+                    transform_expr(stage.max_rows_per_group) if getattr(stage, "max_rows_per_group", None) else (None, None)
+                )
+                max_items_expr, _ = transform_expr(stage.max_items) if getattr(stage, "max_items", None) else (None, None)
+                stage_frame = getattr(stage, "frame", None)
+                match_column = getattr(stage, "match_column", None)
+                group_by = getattr(stage, "group_by", None)
+                image_column = getattr(stage, "image_column", None)
+                text_column = getattr(stage, "text_column", None)
+                embedding_model = getattr(stage, "embedding_model", None)
+                output_vector_store = getattr(stage, "output_vector_store", None)
                 if st_type == "vector_retrieve" and top_k_expr is None:
                     top_k_expr = ast_nodes.Literal(value=5)
                 if st_type == "fusion" and top_k_expr is None:
@@ -3395,12 +3602,78 @@ def ast_to_ir(module: ast_nodes.Module) -> IRProgram:
                     max_queries_expr = ast_nodes.Literal(value=4)
                 if st_type == "query_decompose" and max_sub_expr is None:
                     max_sub_expr = ast_nodes.Literal(value=3)
+                if st_type == "graph_query" and max_hops_expr is None:
+                    max_hops_expr = ast_nodes.Literal(value=2)
+                if st_type == "graph_query" and max_nodes_expr is None:
+                    max_nodes_expr = ast_nodes.Literal(value=25)
+                if st_type == "table_lookup" and max_rows_expr is None:
+                    max_rows_expr = ast_nodes.Literal(value=20)
+                if st_type == "table_summarise":
+                    if max_groups_expr is None:
+                        max_groups_expr = ast_nodes.Literal(value=5)
+                    if max_rows_per_group_expr is None:
+                        max_rows_per_group_expr = ast_nodes.Literal(value=20)
+                if st_type == "multimodal_embed" and max_items_expr is None:
+                    max_items_expr = ast_nodes.Literal(value=20)
+                if st_type in {"table_lookup", "table_summarise", "multimodal_embed", "multimodal_summarise"}:
+                    if not stage_frame:
+                        raise IRError(
+                            f"Stage '{stage.name}' in pipeline '{decl.name}' must specify a frame is \"...\".",
+                            stage.span and stage.span.line,
+                        )
+                    if stage_frame not in program.frames:
+                        raise IRError(
+                            f"Stage '{stage.name}' in pipeline '{decl.name}' references frame '{stage_frame}', but that frame is not declared.",
+                            stage.span and stage.span.line,
+                        )
+                    frame_spec = program.frames[stage_frame]
+                    available_cols = getattr(frame_spec, "select_cols", None) or []
+                    if match_column and available_cols and match_column not in available_cols:
+                        raise IRError(
+                            f"Stage '{stage.name}' match_column '{match_column}' is not present in frame '{stage_frame}'. Available columns: {', '.join(available_cols)}.",
+                            stage.span and stage.span.line,
+                        )
+                    if group_by and available_cols and group_by not in available_cols:
+                        raise IRError(
+                            f"Stage '{stage.name}' group_by '{group_by}' is not present in frame '{stage_frame}'. Available columns: {', '.join(available_cols)}.",
+                            stage.span and stage.span.line,
+                        )
+                    if not text_column and getattr(frame_spec, "table_config", None):
+                        text_column = frame_spec.table_config.text_column or text_column
+                    if not image_column and getattr(frame_spec, "table_config", None):
+                        image_column = frame_spec.table_config.image_column or image_column
+                if st_type == "multimodal_embed":
+                    target_vs = output_vector_store or stage.vector_store
+                    if not target_vs:
+                        raise IRError(
+                            f"Stage '{stage.name}' must specify output_vector_store is \"...\" to store embeddings.",
+                            stage.span and stage.span.line,
+                        )
+                    if target_vs not in program.vector_stores:
+                        raise IRError(
+                            f"Stage '{stage.name}' references vector store '{target_vs}', but that store is not declared.",
+                            stage.span and stage.span.line,
+                        )
+                    output_vector_store = target_vs
                 stages.append(
                     IRRagPipelineStage(
                         name=stage.name,
                         type=st_type,
                         ai=stage.ai,
                         vector_store=stage.vector_store,
+                        frame=stage_frame,
+                        match_column=match_column,
+                        max_rows=max_rows_expr,
+                        group_by=group_by,
+                        max_groups=max_groups_expr,
+                        max_rows_per_group=max_rows_per_group_expr,
+                        image_column=image_column,
+                        text_column=text_column,
+                        embedding_model=embedding_model,
+                        output_vector_store=output_vector_store,
+                        max_items=max_items_expr,
+                        graph=stage.graph,
+                        graph_summary=stage.graph_summary,
                         top_k=top_k_expr,
                         where=where_expr,
                         max_tokens=max_tokens_expr,
@@ -3409,6 +3682,9 @@ def ast_to_ir(module: ast_nodes.Module) -> IRProgram:
                         max_subquestions=max_sub_expr,
                         from_stages=from_stages,
                         method=stage.method,
+                        max_hops=max_hops_expr,
+                        max_nodes=max_nodes_expr,
+                        strategy=stage.strategy,
                     )
                 )
             program.rag_pipelines[decl.name] = IRRagPipeline(
@@ -3470,6 +3746,40 @@ def ast_to_ir(module: ast_nodes.Module) -> IRProgram:
                 metrics=metrics,
                 span=decl.span,
             )
+        elif isinstance(decl, ast_nodes.ToolEvaluationDecl):
+            if decl.name in program.tool_evaluations:
+                raise IRError(f"Duplicate tool evaluation '{decl.name}'", decl.span and decl.span.line)
+            metric_list = list(decl.metrics or ["success_rate", "latency_ms", "error_rate"])
+            program.tool_evaluations[decl.name] = IRToolEvaluation(
+                name=decl.name,
+                tool=decl.tool,
+                dataset_frame=decl.dataset_frame,
+                input_mapping=decl.input_mapping or {},
+                expected_status_column=getattr(decl.expected, "status_column", None) if decl.expected else None,
+                expected_body_column=getattr(decl.expected, "body_column", None) if decl.expected else None,
+                metrics=metric_list,
+                span=decl.span,
+            )
+        elif isinstance(decl, ast_nodes.AgentEvaluationDecl):
+            if decl.name in program.agent_evaluations:
+                raise IRError(f"Duplicate agent evaluation '{decl.name}'", decl.span and decl.span.line)
+            metric_list = list(decl.metrics or ["answer_correctness", "latency_seconds", "error_rate"])
+            if decl.dataset_frame and decl.dataset_frame not in program.frames:
+                raise IRError(f"Agent evaluation '{decl.name}' references unknown frame '{decl.dataset_frame}'.", decl.span and decl.span.line)
+            if decl.agent and decl.agent not in program.agents:
+                raise IRError(f"Agent evaluation '{decl.name}' references unknown agent '{decl.agent}'.", decl.span and decl.span.line)
+            program.agent_evaluations[decl.name] = IRAgentEvaluation(
+                name=decl.name,
+                agent=decl.agent,
+                dataset_frame=decl.dataset_frame,
+                input_mapping=decl.input_mapping or {},
+                expected_answer_column=getattr(decl.expected, "answer_column", None) if decl.expected else None,
+                allow_llm_judge=bool(getattr(decl.expected, "allow_llm_judge", False)) if decl.expected else False,
+                judge_model=getattr(decl.expected, "judge_model", None) if decl.expected else None,
+                expected_tool_column=getattr(decl.expected, "expected_tool_column", None) if decl.expected else None,
+                metrics=metric_list,
+                span=decl.span,
+            )
         elif isinstance(decl, ast_nodes.ToolDeclaration):
             if decl.name in program.tools:
                 raise IRError(f"Duplicate tool '{decl.name}'", decl.span and decl.span.line)
@@ -3479,15 +3789,17 @@ def ast_to_ir(module: ast_nodes.Module) -> IRProgram:
                     f"N3L-960: Tool '{decl.name}' must specify a kind (for example, http).",
                     decl.span and decl.span.line,
                 )
-            allowed_kinds = {"http", "http_json", "http_request", "function", "local"}
+            allowed_kinds = {"http", "http_json", "http_request", "function", "local", "graphql", "local_function"}
             if normalized_kind not in allowed_kinds:
                 raise IRError(
-                    f"N3L-960: Tool '{decl.name}' uses unsupported kind '{decl.kind}'. Supported kinds are: http, function, or local.",
+                    f"N3L-960: Tool '{decl.name}' uses unsupported kind '{decl.kind}'. Supported kinds are: http, function, local, graphql, local_function.",
                     decl.span and decl.span.line,
                 )
-            is_http_tool = normalized_kind in {"http_json", "http", "http_request"}
+            is_http_tool = normalized_kind in {"http_json", "http", "http_request", "graphql"}
             allowed_methods = {"GET", "POST", "PUT", "PATCH", "DELETE"}
             if is_http_tool:
+                if normalized_kind == "graphql" and not decl.method:
+                    decl.method = "POST"
                 if not decl.method or decl.method.upper() not in allowed_methods:
                     raise IRError(
                         f"N3L-961: Tool '{decl.name}' must specify method among {sorted(allowed_methods)}.",
@@ -3522,6 +3834,14 @@ def ast_to_ir(module: ast_nodes.Module) -> IRProgram:
             input_refs.update(_collect_input_refs_from_dict(decl.query_params))
             input_refs.update(_collect_input_refs_from_dict(decl.body_fields))
             input_refs.update(_collect_input_refs(decl.body_template))
+            input_refs.update(_collect_input_refs(decl.query_template))
+            input_refs.update(_collect_input_refs_from_dict(getattr(decl, "variables", {}) or {}))
+            for var_name in (getattr(decl, "variables", {}) or {}).keys():
+                if var_name:
+                    input_refs.add(var_name)
+            for explicit in getattr(decl, "input_fields", []) or []:
+                if explicit:
+                    input_refs.add(explicit)
             kind_value = decl.kind
             if is_http_tool and decl.kind and decl.kind.lower() == "http_json":
                 kind_value = "http"
@@ -3653,6 +3973,43 @@ def ast_to_ir(module: ast_nodes.Module) -> IRProgram:
                         name=auth_decl.name,
                         value=auth_decl.value,
                     )
+                elif auth_kind == "oauth2_client_credentials":
+                    missing_fields: list[str] = []
+                    if getattr(auth_decl, "token_url", None) is None:
+                        missing_fields.append("token_url")
+                    if getattr(auth_decl, "client_id", None) is None:
+                        missing_fields.append("client_id")
+                    if getattr(auth_decl, "client_secret", None) is None:
+                        missing_fields.append("client_secret")
+                    if missing_fields:
+                        raise IRError(
+                            f"Tool '{decl.name}' auth config for oauth2_client_credentials is missing {', '.join(missing_fields)}.",
+                            decl.span and decl.span.line,
+                        )
+                    auth_cfg_ir = ToolAuthConfig(
+                        kind="oauth2_client_credentials",
+                        token_url=auth_decl.token_url,
+                        client_id=auth_decl.client_id,
+                        client_secret=auth_decl.client_secret,
+                        scopes=list(getattr(auth_decl, "scopes", []) or []),
+                        audience=getattr(auth_decl, "audience", None),
+                        cache=(auth_decl.cache or "shared") if getattr(auth_decl, "cache", None) else None,
+                    )
+                elif auth_kind == "jwt":
+                    if getattr(auth_decl, "private_key", None) is None:
+                        raise IRError(
+                            f"Tool '{decl.name}' auth config for jwt is missing private_key.",
+                            decl.span and decl.span.line,
+                        )
+                    auth_cfg_ir = ToolAuthConfig(
+                        kind="jwt",
+                        issuer=getattr(auth_decl, "issuer", None),
+                        subject=getattr(auth_decl, "subject", None),
+                        audience=getattr(auth_decl, "audience", None),
+                        private_key=getattr(auth_decl, "private_key", None),
+                        algorithm=(auth_decl.algorithm or "RS256") if getattr(auth_decl, "algorithm", None) else "RS256",
+                        claims=getattr(auth_decl, "claims", {}) or {},
+                    )
                 else:
                     raise IRError(
                         f"Tool '{decl.name}' auth kind '{auth_kind}' is not supported.",
@@ -3707,6 +4064,9 @@ def ast_to_ir(module: ast_nodes.Module) -> IRProgram:
                 rate_limit=rate_limit_ir,
                 multipart=multipart_flag,
                 query_encoding=query_encoding_mode,
+                query_template=decl.query_template,
+                variables=getattr(decl, "variables", {}) or {},
+                function=getattr(decl, "function", None),
             )
         elif isinstance(decl, ast_nodes.FlowDecl):
             if decl.name in program.flows:
@@ -3990,6 +4350,7 @@ def ast_to_ir(module: ast_nodes.Module) -> IRProgram:
 
     _validate_rag_pipelines(program)
     _validate_rag_evaluations(program)
+    _validate_tool_evaluations(program)
     _validate_flow_scopes(program)
     _resolve_record_constraints(program)
     _resolve_relationship_joins(program)
@@ -4269,6 +4630,12 @@ def _validate_flow_scopes(program: IRProgram) -> None:
 
 
 def _validate_rag_pipelines(program: IRProgram) -> None:
+    for summary in program.graph_summaries.values():
+        if summary.graph not in program.graphs:
+            raise IRError(
+                f"Graph summary '{summary.name}' refers to graph '{summary.graph}', but no such graph is declared.",
+                None,
+            )
     for pipeline in program.rag_pipelines.values():
         if pipeline.default_vector_store and pipeline.default_vector_store not in program.vector_stores:
             raise IRError(
@@ -4379,6 +4746,28 @@ def _validate_rag_pipelines(program: IRProgram) -> None:
                         f"Max_queries for stage '{stage.name}' in pipeline '{pipeline.name}' must be a positive integer.",
                         None,
                     )
+            if st_type == "graph_query":
+                if not stage.graph:
+                    raise IRError(
+                        f"Stage '{stage.name}' in pipeline '{pipeline.name}' must reference a graph. Add 'graph is \"...\"' to the stage.",
+                        None,
+                    )
+                if stage.graph not in program.graphs:
+                    raise IRError(
+                        f"Stage '{stage.name}' in pipeline '{pipeline.name}' refers to graph '{stage.graph}', but no such graph is declared.",
+                        None,
+                    )
+            if st_type == "graph_summary_lookup":
+                if not stage.graph_summary:
+                    raise IRError(
+                        f"Stage '{stage.name}' in pipeline '{pipeline.name}' must reference a graph_summary. Add 'graph_summary is \"...\"' to the stage.",
+                        None,
+                    )
+                if stage.graph_summary not in program.graph_summaries:
+                    raise IRError(
+                        f"Stage '{stage.name}' in pipeline '{pipeline.name}' refers to graph_summary '{stage.graph_summary}', but no such graph summary is declared.",
+                        None,
+                    )
             if st_type == "query_decompose" and isinstance(stage.max_subquestions, ast_nodes.Literal):
                 try:
                     max_sub_int = int(stage.max_subquestions.value)
@@ -4447,6 +4836,39 @@ def _validate_rag_evaluations(program: IRProgram) -> None:
             if eval_cfg.answer_column and eval_cfg.answer_column not in available_columns:
                 raise IRError(
                     f"Frame '{eval_cfg.dataset_frame}' does not have a column '{eval_cfg.answer_column}'. Available columns are: {', '.join(available_columns)}.",
+                    None,
+                )
+
+
+def _validate_tool_evaluations(program: IRProgram) -> None:
+    for eval_cfg in program.tool_evaluations.values():
+        if eval_cfg.tool not in program.tools and eval_cfg.tool not in BUILTIN_TOOL_NAMES:
+            raise IRError(
+                f"Tool evaluation '{eval_cfg.name}' references tool '{eval_cfg.tool}', but that tool is not declared.",
+                None,
+            )
+        if eval_cfg.dataset_frame not in program.frames:
+            raise IRError(
+                f"Tool evaluation '{eval_cfg.name}' refers to frame '{eval_cfg.dataset_frame}', but that frame is not declared.",
+                None,
+            )
+        frame_spec = program.frames[eval_cfg.dataset_frame]
+        available_columns = getattr(frame_spec, "select_cols", None) or []
+        if available_columns:
+            for mapped_col in (eval_cfg.input_mapping or {}).values():
+                if mapped_col and mapped_col not in available_columns:
+                    raise IRError(
+                        f"Frame '{eval_cfg.dataset_frame}' does not have a column '{mapped_col}'. Available columns are: {', '.join(available_columns)}.",
+                        None,
+                    )
+            if eval_cfg.expected_status_column and eval_cfg.expected_status_column not in available_columns:
+                raise IRError(
+                    f"Frame '{eval_cfg.dataset_frame}' does not have a column '{eval_cfg.expected_status_column}'. Available columns are: {', '.join(available_columns)}.",
+                    None,
+                )
+            if eval_cfg.expected_body_column and eval_cfg.expected_body_column not in available_columns:
+                raise IRError(
+                    f"Frame '{eval_cfg.dataset_frame}' does not have a column '{eval_cfg.expected_body_column}'. Available columns are: {', '.join(available_columns)}.",
                     None,
                 )
 

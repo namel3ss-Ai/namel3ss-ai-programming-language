@@ -11,9 +11,11 @@ from .embeddings_deterministic import DeterministicEmbeddingProvider
 from .embeddings_http_json import HTTPJsonEmbeddingProvider
 from .embeddings_openai import OpenAIEmbeddingProvider
 from .embedding_registry import EmbeddingProviderRegistry
+from .graph import GraphEngine
 
 __all__ = [
     "RAGEngine",
+    "GraphEngine",
     "RAGIndexConfig",
     "embed_text",
     "DocumentChunk",

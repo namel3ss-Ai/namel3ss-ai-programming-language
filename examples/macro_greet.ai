@@ -5,7 +5,7 @@ macro "greet_user" using ai is "codegen":
 use macro "greet_user"
 
 use macro "crud_ui" with:
-  entity "Example"
+  entity is "Example"
   fields:
     field is "name":
       type is "string"

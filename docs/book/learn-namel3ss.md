@@ -299,17 +299,21 @@ Cross-reference: parser memory rules `src/namel3ss/parser.py`; runtime memory st
 
 ---
 
-## 8. Data & RAG: Frames and Vector Stores
+## 8. Data & RAG: Frames, Vectors, and Graphs
 - **Frames:** Tables with backend and table name.
 - **Vector stores:** Point at frames with `text_column`, `id_column`, and embedding model/provider.
+- **Graphs:** `graph is "name": from frame is "..."; id_column/text_column; entities/relations config; optional storage frames.`
+- **Graph summaries:** `graph_summary is "name": graph is "..."; method/model; max_nodes_per_summary` to cache clustered context.
 - **Indexing:** `vector_index_frame` step.
 - **Query:** `vector_query` step returning matches for downstream AI.
+- **Graph-aware RAG:** `graph_query` and `graph_summary_lookup` stages sit next to `vector_retrieve` and `ai_answer` inside a pipeline.
 
 Example (ingest + answer):
 ```ai
 frame is "docs":
-  backend is "memory"
-  table is "docs"
+  source:
+    backend is "memory"
+    table is "docs"
 
 vector_store is "kb":
   backend is "memory"
@@ -317,6 +321,17 @@ vector_store is "kb":
   text_column is "content"
   id_column is "id"
   embedding_model is "default_embedding"
+
+graph is "support_graph":
+  from frame is "docs"
+  id_column is "id"
+  text_column is "content"
+  entities:
+    model is "gpt-4o-mini"
+
+graph_summary is "support_graph_summary":
+  graph is "support_graph"
+  method is "community"
 
 flow is "ingest_docs":
   step is "insert":
@@ -329,18 +344,31 @@ flow is "ingest_docs":
     kind is "vector_index_frame"
     vector_store is "kb"
 
+rag pipeline is "graph_qa":
+  use vector_store "kb"
+  stage is "graph_stage":
+    type is "graph_query"
+    graph is "support_graph"
+    max_hops is 2
+  stage is "summaries":
+    type is "graph_summary_lookup"
+    graph_summary is "support_graph_summary"
+    top_k is 3
+  stage is "retrieve":
+    type is "vector_retrieve"
+    top_k is 4
+  stage is "answer":
+    type is "ai_answer"
+    ai is "qa_ai"
+
 flow is "ask":
-  step is "retrieve":
-    kind is "vector_query"
-    vector_store is "kb"
-    query_text is state.question
-    top_k is 2
   step is "answer":
-    kind is "ai"
-    target is "qa_ai"
+    kind is "rag_query"
+    pipeline is "graph_qa"
+    question is state.question
 ```
 
-Cross-reference: parser data/vector rules `src/namel3ss/parser.py`; runtime RAG in `src/namel3ss/runtime/vectorstores.py`, `src/namel3ss/rag/*`; tests `tests/test_vector_store_parse.py`, `tests/test_vector_index_frame.py`, `tests/test_vector_query_runtime.py`, `tests/test_vector_runtime.py`; example `examples/rag_qa/rag_qa.ai`.
+Cross-reference: parser data/vector/graph rules `src/namel3ss/parser.py`; runtime RAG in `src/namel3ss/runtime/vectorstores.py`, `src/namel3ss/rag/*`; tests `tests/test_vector_store_parse.py`, `tests/test_vector_index_frame.py`, `tests/test_vector_query_runtime.py`, `tests/test_vector_runtime.py`, `tests/test_parser_rag_graph.py`, `tests/test_rag_graph_runtime.py`; examples `examples/rag_qa/rag_qa.ai`, `examples/graph_rag_demo/graph_rag.ai`.
 
 ---
 

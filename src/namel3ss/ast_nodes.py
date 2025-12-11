@@ -138,6 +138,8 @@ class AgentDecl:
     system_prompt: Optional[str] = None
     conditional_branches: Optional[List["ConditionalBranch"]] = None
     memory_name: Optional[str] = None
+    role: Optional[str] = None
+    can_delegate_to: Optional[List[str]] = None
     span: Optional[Span] = None
 
 
@@ -269,6 +271,17 @@ class FrameDecl:
     has_headers: bool = False
     select_cols: List[str] = field(default_factory=list)
     where: Optional["Expr"] = None
+    table_config: Optional["FrameTableConfig"] = None
+    span: Optional[Span] = None
+
+
+@dataclass
+class FrameTableConfig:
+    primary_key: str | None = None
+    display_columns: list[str] = field(default_factory=list)
+    time_column: str | None = None
+    text_column: str | None = None
+    image_column: str | None = None
     span: Optional[Span] = None
 
 
@@ -426,11 +439,55 @@ class VectorStoreDecl:
 
 
 @dataclass
+class GraphEntitiesConfig:
+    model: str | None = None
+    max_entities_per_doc: Expr | None = None
+    span: Optional[Span] = None
+
+
+@dataclass
+class GraphRelationsConfig:
+    model: str | None = None
+    max_relations_per_entity: Expr | None = None
+    span: Optional[Span] = None
+
+
+@dataclass
+class GraphStorageConfig:
+    nodes_frame: str | None = None
+    edges_frame: str | None = None
+    span: Optional[Span] = None
+
+
+@dataclass
+class GraphDecl:
+    name: str
+    source_frame: str | None = None
+    id_column: str | None = None
+    text_column: str | None = None
+    entities: GraphEntitiesConfig | None = None
+    relations: GraphRelationsConfig | None = None
+    storage: GraphStorageConfig | None = None
+    span: Optional[Span] = None
+
+
+@dataclass
+class GraphSummaryDecl:
+    name: str
+    graph: str | None = None
+    method: str | None = None
+    max_nodes_per_summary: Expr | None = None
+    model: str | None = None
+    span: Optional[Span] = None
+
+
+@dataclass
 class MacroDecl:
     """macro \"name\" using ai \"model\": description/sample/parameters."""
 
     name: str
     ai_model: str
+    version: str | None = None
     description: str | None = None
     sample: str | None = None
     parameters: List[str] = field(default_factory=list)
@@ -876,6 +933,19 @@ class RagPipelineStageDecl:
     type: str
     ai: str | None = None
     vector_store: str | None = None
+    frame: str | None = None
+    match_column: str | None = None
+    max_rows: Expr | None = None
+    group_by: str | None = None
+    max_groups: Expr | None = None
+    max_rows_per_group: Expr | None = None
+    image_column: str | None = None
+    text_column: str | None = None
+    embedding_model: str | None = None
+    output_vector_store: str | None = None
+    max_items: Expr | None = None
+    graph: str | None = None
+    graph_summary: str | None = None
     top_k: Expr | None = None
     where: Expr | None = None
     max_tokens: Expr | None = None
@@ -884,6 +954,9 @@ class RagPipelineStageDecl:
     max_subquestions: Expr | None = None
     from_stages: list[str] | None = None
     method: str | None = None
+    max_hops: Expr | None = None
+    max_nodes: Expr | None = None
+    strategy: str | None = None
     span: Optional[Span] = None
 
 
@@ -1221,6 +1294,19 @@ class ToolAuthConfig:
     location: str | None = None
     name: str | None = None
     value: Expr | None = None
+    # OAuth2 client credentials fields
+    token_url: Expr | None = None
+    client_id: Expr | None = None
+    client_secret: Expr | None = None
+    scopes: list[str] | None = None
+    audience: Expr | None = None
+    cache: str | None = None
+    # JWT fields
+    issuer: Expr | None = None
+    subject: Expr | None = None
+    private_key: Expr | None = None
+    algorithm: str | None = None
+    claims: Dict[str, Expr] = field(default_factory=dict)
 
 
 @dataclass
@@ -1249,10 +1335,13 @@ class ToolDeclaration:
     method: str | None = None
     url_template: str | None = None  # legacy placeholder-based templates
     url_expr: Expr | None = None
+    query_template: Expr | None = None
     headers: Dict[str, Expr] = field(default_factory=dict)
     query_params: Dict[str, Expr] = field(default_factory=dict)
     body_fields: Dict[str, Expr] = field(default_factory=dict)
     body_template: Expr | None = None  # legacy body expression
+    variables: Dict[str, Expr] = field(default_factory=dict)
+    input_fields: list[str] = field(default_factory=list)
     timeout: Expr | None = None
     retry: ToolRetryConfig | None = None
     auth: ToolAuthConfig | None = None
@@ -1261,6 +1350,43 @@ class ToolDeclaration:
     rate_limit: ToolRateLimitConfig | None = None
     multipart: Expr | None = None
     query_encoding: str | None = None
+    function: str | None = None
+    span: Optional[Span] = None
+
+
+@dataclass
+class ToolExpectedConfig:
+    status_column: str | None = None
+    body_column: str | None = None
+
+
+@dataclass
+class ToolEvaluationDecl:
+    name: str
+    tool: str
+    dataset_frame: str
+    input_mapping: Dict[str, str] = field(default_factory=dict)
+    expected: ToolExpectedConfig | None = None
+    metrics: list[str] | None = None
+    span: Optional[Span] = None
+
+
+@dataclass
+class AgentExpectedConfig:
+    answer_column: str | None = None
+    allow_llm_judge: bool = False
+    judge_model: str | None = None
+    expected_tool_column: str | None = None
+
+
+@dataclass
+class AgentEvaluationDecl:
+    name: str
+    agent: str
+    dataset_frame: str
+    input_mapping: Dict[str, str] = field(default_factory=dict)
+    expected: AgentExpectedConfig | None = None
+    metrics: list[str] | None = None
     span: Optional[Span] = None
 
 
@@ -1277,6 +1403,8 @@ Declaration = Union[
     RecordDecl,
     AuthDecl,
     VectorStoreDecl,
+    GraphDecl,
+    GraphSummaryDecl,
     MacroDecl,
     MacroUse,
     MacroTestDecl,
@@ -1290,4 +1418,6 @@ Declaration = Union[
     RuleGroupDecl,
     UIComponentDecl,
     ToolDeclaration,
+    ToolEvaluationDecl,
+    AgentEvaluationDecl,
 ]

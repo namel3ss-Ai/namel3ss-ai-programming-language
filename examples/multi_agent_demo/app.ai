@@ -1,0 +1,30 @@
+model is "gpt-4.1-mini":
+  provider is "openai"
+
+ai is "router":
+  model is "gpt-4.1-mini"
+
+ai is "billing_agent":
+  model is "gpt-4.1-mini"
+
+ai is "tech_agent":
+  model is "gpt-4.1-mini"
+
+agent is "router":
+  goal is "Route support questions to specialists."
+  role is "router"
+  can_delegate_to are ["billing_agent", "tech_agent"]
+
+agent is "billing_agent":
+  goal is "Answer billing questions."
+
+agent is "tech_agent":
+  goal is "Handle technical troubleshooting."
+
+flow is "support_entry":
+  description is "Demonstrates router pattern with a follow-up worker."
+  step is "route":
+    kind is "agent"
+    target is "router"
+  # In practice, you would match on state.last_output and call the chosen worker agent.
+  # This example keeps the flow minimal for parsing/demo purposes.

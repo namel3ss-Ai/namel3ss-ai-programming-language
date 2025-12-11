@@ -10,7 +10,7 @@ from namel3ss.runtime.engine import Engine
 def test_crud_ui_macro_expansion_generates_crud():
     src = (
         'use macro "crud_ui" with:\n'
-        '  entity "Product"\n'
+        '  entity is "Product"\n'
         "  fields:\n"
         '    field is "name":\n'
         '      type is "string"\n'
@@ -31,7 +31,7 @@ def test_crud_ui_macro_expansion_generates_crud():
 def test_crud_ui_macro_invalid_fields():
     src = (
         'use macro "crud_ui" with:\n'
-        '  entity "Product"\n'
+        '  entity is "Product"\n'
         "  fields:\n"
         '    field is "name"\n'
     )
@@ -42,7 +42,7 @@ def test_crud_ui_macro_invalid_fields():
 def test_engine_expands_crud_ui():
     src = (
         'use macro "crud_ui" with:\n'
-        '  entity "Widget"\n'
+        '  entity is "Widget"\n'
         "  fields:\n"
         '    field is "title":\n'
         '      type is "string"\n'

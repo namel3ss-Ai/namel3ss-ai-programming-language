@@ -4,17 +4,92 @@ Helpers for tool runtime behaviour such as schema validation and error formattin
 
 from __future__ import annotations
 
+import base64
+import hashlib
+import hmac
+import json
 import logging
 import time
 import uuid
 import io
+import urllib.parse
+import urllib.request
 from collections import deque, defaultdict
 from decimal import Decimal
 from typing import Any
+from datetime import datetime, timedelta
 
+from ..errors import Namel3ssError
 from .registry import DEFAULT_TOOL_LOGGING_LEVEL, ToolResponseSchema
 
 logger = logging.getLogger("namel3ss.tools")
+
+
+class OAuthTokenCache:
+    def __init__(self) -> None:
+        self._cache: dict[tuple, dict[str, Any]] = {}
+
+    def get_token(
+        self,
+        token_url: str,
+        client_id: str,
+        client_secret: str,
+        scopes: list[str] | None = None,
+        audience: str | None = None,
+        cache_key: str | None = None,
+    ) -> str:
+        key = (token_url, client_id, tuple(sorted(scopes or [])), audience, cache_key or "shared")
+        now = time.time()
+        entry = self._cache.get(key)
+        if entry and entry.get("expires_at", 0) > now + 5:
+            return entry["token"]
+        token, expires_in = self._fetch_token(token_url, client_id, client_secret, scopes, audience)
+        ttl = expires_in or 300
+        self._cache[key] = {"token": token, "expires_at": now + ttl}
+        return token
+
+    def _fetch_token(
+        self,
+        token_url: str,
+        client_id: str,
+        client_secret: str,
+        scopes: list[str] | None,
+        audience: str | None,
+    ) -> tuple[str, float | None]:
+        payload = {
+            "grant_type": "client_credentials",
+            "client_id": client_id,
+            "client_secret": client_secret,
+        }
+        if scopes:
+            payload["scope"] = " ".join(scopes)
+        if audience:
+            payload["audience"] = audience
+        data = urllib.parse.urlencode(payload).encode("utf-8")
+        req = urllib.request.Request(
+            token_url,
+            data=data,
+            headers={"Content-Type": "application/x-www-form-urlencoded"},
+            method="POST",
+        )
+        with urllib.request.urlopen(req, timeout=15) as resp:  # pragma: no cover - network path
+            raw = resp.read().decode("utf-8", errors="replace")
+        try:
+            parsed = json.loads(raw)
+        except Exception as exc:  # pragma: no cover - defensive
+            raise Namel3ssError(f"Failed to parse OAuth token response: {exc}")
+        token = parsed.get("access_token")
+        if not token:
+            raise Namel3ssError("OAuth token response did not include access_token.")
+        expires = parsed.get("expires_in")
+        try:
+            expires_val = float(expires) if expires is not None else None
+        except Exception:
+            expires_val = None
+        return token, expires_val
+
+
+oauth_token_cache = OAuthTokenCache()
 
 
 def normalize_logging_level(raw: str | None) -> str:
@@ -22,6 +97,135 @@ def normalize_logging_level(raw: str | None) -> str:
     if level in {"debug", "info", "quiet"}:
         return level
     return DEFAULT_TOOL_LOGGING_LEVEL
+
+
+def _b64url(data: bytes) -> str:
+    return base64.urlsafe_b64encode(data).rstrip(b"=").decode("ascii")
+
+
+def build_jwt_token(
+    tool_name: str,
+    issuer: str | None,
+    subject: str | None,
+    audience: str | None,
+    private_key: str,
+    algorithm: str | None = "RS256",
+    claims: dict[str, Any] | None = None,
+) -> str:
+    alg = (algorithm or "RS256").upper()
+    now = int(time.time())
+    payload: dict[str, Any] = {
+        "iat": now,
+        "exp": now + 300,
+    }
+    if issuer:
+        payload["iss"] = issuer
+    if subject:
+        payload["sub"] = subject
+    if audience:
+        payload["aud"] = audience
+    if claims:
+        payload.update({k: v for k, v in claims.items() if k})
+    header = {"alg": alg, "typ": "JWT"}
+    if alg.startswith("HS"):
+        digestmod = hashlib.sha256 if alg == "HS256" else None
+        if digestmod is None:
+            raise Namel3ssError(f"JWT algorithm '{alg}' is not supported without external libraries.")
+        signing_input = f"{_b64url(json.dumps(header, separators=(',', ':'), ensure_ascii=False).encode('utf-8'))}.{_b64url(json.dumps(payload, separators=(',', ':'), ensure_ascii=False).encode('utf-8'))}"
+        signature = hmac.new(private_key.encode("utf-8"), signing_input.encode("utf-8"), digestmod=digestmod).digest()
+        return f"{signing_input}.{_b64url(signature)}"
+    try:  # pragma: no cover - optional dependency
+        import jwt  # type: ignore
+
+        return jwt.encode(payload, private_key, algorithm=alg)
+    except ImportError as exc:  # pragma: no cover - optional dependency
+        raise Namel3ssError(
+            f"JWT algorithm '{alg}' requires PyJWT or compatible library. Install PyJWT to use this auth kind."
+        ) from exc
+
+
+def apply_auth_config(
+    auth_cfg: Any,
+    url: str,
+    headers: dict[str, str],
+    eval_value: Any,
+    tool_name: str,
+) -> tuple[str, dict[str, str]]:
+    if not auth_cfg or not getattr(auth_cfg, "kind", None):
+        return url, headers
+    auth_kind = (getattr(auth_cfg, "kind", "") or "").lower()
+    if auth_kind == "bearer":
+        token_val = eval_value(getattr(auth_cfg, "token", None))
+        if token_val is None:
+            raise Namel3ssError(f'Tool "{tool_name}" auth config is incomplete (missing token).')
+        headers["Authorization"] = f"Bearer {token_val}"
+        return url, headers
+    if auth_kind == "basic":
+        username = eval_value(getattr(auth_cfg, "username", None))
+        password = eval_value(getattr(auth_cfg, "password", None))
+        if username is None or password is None:
+            raise Namel3ssError(f'Tool "{tool_name}" auth config is incomplete (missing username/password).')
+        raw = f"{username}:{password}".encode("utf-8")
+        headers["Authorization"] = "Basic " + base64.b64encode(raw).decode("utf-8")
+        return url, headers
+    if auth_kind in {"api_key", "api-key", "apikey"}:
+        location = (getattr(auth_cfg, "location", "") or "").lower()
+        name = getattr(auth_cfg, "name", "") or ""
+        value = eval_value(getattr(auth_cfg, "value", None))
+        if not name or value is None:
+            raise Namel3ssError(f'Tool "{tool_name}" auth config is incomplete (missing api_key details).')
+        if location == "header":
+            headers[name] = "" if value is None else str(value)
+            return url, headers
+        if location == "query":
+            parsed = urllib.parse.urlparse(url)
+            query_items = urllib.parse.parse_qsl(parsed.query, keep_blank_values=True)
+            query_items.append((name, "" if value is None else str(value)))
+            updated = urllib.parse.urlunparse(parsed._replace(query=urllib.parse.urlencode(query_items, doseq=True)))
+            return updated, headers
+        raise Namel3ssError(f'Tool "{tool_name}" auth location must be "header" or "query".')
+    if auth_kind == "oauth2_client_credentials":
+        token_url = eval_value(getattr(auth_cfg, "token_url", None))
+        client_id = eval_value(getattr(auth_cfg, "client_id", None))
+        client_secret = eval_value(getattr(auth_cfg, "client_secret", None))
+        audience = eval_value(getattr(auth_cfg, "audience", None))
+        scopes = getattr(auth_cfg, "scopes", None) or []
+        cache_mode = getattr(auth_cfg, "cache", None) or "shared"
+        if not token_url or not client_id or client_secret is None:
+            raise Namel3ssError(f'Tool "{tool_name}" auth config is incomplete (missing oauth2 credentials).')
+        token = oauth_token_cache.get_token(
+            str(token_url),
+            str(client_id),
+            str(client_secret),
+            [str(s) for s in scopes],
+            str(audience) if audience is not None else None,
+            cache_key=f"{tool_name}:{cache_mode}",
+        )
+        headers["Authorization"] = f"Bearer {token}"
+        return url, headers
+    if auth_kind == "jwt":
+        private_key_val = eval_value(getattr(auth_cfg, "private_key", None))
+        if private_key_val is None:
+            raise Namel3ssError(f'Tool "{tool_name}" auth config is incomplete (missing private_key).')
+        issuer = eval_value(getattr(auth_cfg, "issuer", None))
+        subject = eval_value(getattr(auth_cfg, "subject", None))
+        audience = eval_value(getattr(auth_cfg, "audience", None))
+        claims_raw = getattr(auth_cfg, "claims", {}) or {}
+        claims: dict[str, Any] = {}
+        for k, v in claims_raw.items():
+            claims[k] = eval_value(v)
+        token = build_jwt_token(
+            tool_name,
+            issuer if issuer is None else str(issuer),
+            subject if subject is None else str(subject),
+            audience if audience is None else str(audience),
+            str(private_key_val),
+            getattr(auth_cfg, "algorithm", None),
+            claims,
+        )
+        headers["Authorization"] = f"Bearer {token}"
+        return url, headers
+    raise Namel3ssError(f'Tool "{tool_name}" auth kind "{auth_kind}" is not supported.')
 
 
 def _type_name(value: Any) -> str:
