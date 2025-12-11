@@ -47,7 +47,7 @@ def test_page_sections_ir():
 
 def test_plugin_ir_mapping():
     module = parse_source(
-        'plugin "stripe":\n'
+        'plugin is "stripe":\n'
         '  description "Payments"\n'
     )
     program = ast_to_ir(module)

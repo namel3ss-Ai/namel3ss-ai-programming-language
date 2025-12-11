@@ -63,7 +63,7 @@ BASE_DEFS = dedent(
         backend is "memory"
         table is "logs"
 
-    record "User":
+    record is "User":
       frame is "users"
       fields:
         id:
@@ -75,7 +75,7 @@ BASE_DEFS = dedent(
         name:
           type "string"
 
-    record "Order":
+    record is "Order":
       frame is "orders"
       fields:
         id:
@@ -87,7 +87,7 @@ BASE_DEFS = dedent(
         total:
           type "float"
 
-    record "Log":
+    record is "Log":
       frame is "logs"
       fields:
         id:

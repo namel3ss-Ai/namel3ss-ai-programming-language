@@ -225,6 +225,16 @@ def _eval_expr(expr, state: UIStateStore, extra_env: Optional[Dict[str, Any]] = 
     def resolver(name: str):
         if name == "state":
             return True, state.snapshot()
+        if name.startswith("state."):
+            current = state.snapshot()
+            parts = name.split(".")[1:]
+            for part in parts:
+                if isinstance(current, dict) and part in current:
+                    current = current.get(part)
+                else:
+                    current = None
+                    break
+            return True, current
         if env.has(name):
             return True, env.resolve(name)
         return False, None

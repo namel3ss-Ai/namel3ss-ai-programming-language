@@ -1,6 +1,6 @@
 # English-style Syntax for Namel3ss
 
-Namel3ss now supports a more readable, English-inspired surface syntax. The new style is fully backward compatible with the existing syntax and compiles to the same AST/IR and runtime behavior.
+Namel3ss uses a readable, English-inspired surface syntax. The English `is` headers are required; legacy forms such as `model "name":` now raise clear parse errors.
 
 Preferred usage, style, and deprecation notes live in `docs/language/style_guide.md`; the lint rules that reinforce the style are listed in `docs/language/lint_rules.md`.
 
@@ -20,17 +20,18 @@ ai is "classify_issue":
 agent is "support_agent":
   the goal is "Provide a clear, helpful support answer."
   the personality is "patient, concise, calm"
+  # Convention: define ai is "support_agent": for the actual model/tools/memory.
 
 flow is "support_flow":
   this flow will:
 
-    first step "classify request":
-      do ai is "classify_issue"
+    first step is "classify request":
+      do ai "classify_issue"
 
-    then step "respond to user":
-      do agent is "support_agent"
+    then step is "respond to user":
+      do agent "support_agent"
 
-    finally step "log interaction":
+    finally step is "log interaction":
       do tool "echo" with message:
         "User request was processed and logged."
 
@@ -56,7 +57,7 @@ page is "support_home":
 - `remember conversation as "name"` → conversation memory declaration.
 - `use model is "name" provided by "provider"` → model definition.
 - `ai is "name": when called: ...` → AI block with `model`, `input`, and optional `description`.
-- `agent is "name": the goal is "..."; the personality is "..."` → agent definition.
+- `agent is "name": the goal is "..."; the personality is "..."` → agent definition; at runtime the agent calls the `ai` with the same name (including its tools/memory) and merges goal/personality/system into the system prompt.
 - `flow is "name": this flow will: ... do ai/agent/tool ...` → flow with ordered steps; `first/then/finally` are readability sugar. Use `find <alias> where:` for record queries.
 - `app is "name": starts at page is "home"` → app entry page + description.
 - `page is "name": found at route "/"; titled "..."` → page declaration; `show text:` / `show form asking:` map to text/form components.
@@ -68,7 +69,7 @@ Inside an `ai` (or `agent`) block you may set exactly one system prompt:
 ```ai
 ai is "bot":
   model is "gpt-4.1"
-  system "You are a helpful assistant."
+  system is "You are a helpful assistant."
   input from user_text
 ```
 
@@ -81,7 +82,7 @@ Grant an AI access to specific tools/functions by listing them in the block:
 ```ai
 ai is "support_bot":
   model is "gpt-4.1-mini"
-  system "You are a helpful support assistant."
+  system is "You are a helpful support assistant."
   tools:
     - "weather_api"
     - tool is "create_ticket"
@@ -90,15 +91,16 @@ ai is "support_bot":
 
 - Each entry must reference a declared tool. Missing tools trigger `N3L-1410`.
 - Use `as is "alias"` to expose a friendlier function name to the model without renaming the underlying tool. Duplicate aliases raise `N3L-1411`.
-- When the model asks to call a tool, the runtime executes the HTTP/JSON definition, feeds the JSON result back to the model, and finally returns the natural-language answer.
+- When the model asks to call a tool, the runtime executes the tool definition (HTTP or local), feeds the JSON result back to the model, and finally returns the natural-language answer.
 - If the provider asks for an alias that does not map to any tool, the runtime raises `N3F-972`.
+- OpenAI/Azure OpenAI use function-calling payloads; Gemini uses `functionDeclarations`; local/dummy providers can be stubbed in tests, but all reuse the same `tool is "name":` syntax.
 
 Flows can override tool usage per step:
 
 ```ai
-step "answer":
-  kind "ai"
-  target "support_bot"
+step is "answer":
+  kind is "ai"
+  target is "support_bot"
   tools is "none"   # disable tools for this step (default is "auto")
 ```
 
@@ -133,8 +135,8 @@ Flows can branch at runtime using `if` with an optional `else`:
 
 ```ai
 flow is "check":
-  step "grade":
-    kind "script"
+  step is "grade":
+    kind is "script"
     let score = step.test.output
 
     if score >= 50:
@@ -151,12 +153,12 @@ Catch runtime errors and keep your flow alive:
 
 ```ai
 flow is "safe_call":
-  step "s":
-    kind "script"
+  step is "s":
+    kind is "script"
     try:
-      step "dangerous":
-        kind "ai"
-        target "bot"
+      step is "dangerous":
+        kind is "ai"
+        target is "bot"
     catch err:
       set state.error_message be err.message
 ```
@@ -286,16 +288,16 @@ frame is "conversations":
     table is "conversations"
 
 flow is "store_and_load":
-  step "insert":
-    kind "frame_insert"
-    frame "conversations"
+  step is "insert":
+    kind is "frame_insert"
+    frame is "conversations"
     values:
       user_id: state.user_id
       message: state.message
 
-  step "load":
-    kind "frame_query"
-    frame "conversations"
+  step is "load":
+    kind is "frame_query"
+    frame is "conversations"
     where:
       user_id: state.user_id
 
@@ -308,17 +310,17 @@ flow is "store_and_load":
 Updates and deletes use the same pattern:
 
 ```ai
-step "rename":
-  kind "frame_update"
-  frame "conversations"
+step is "rename":
+  kind is "frame_update"
+  frame is "conversations"
   where:
     user_id: state.user_id
   set:
     name: state.new_name
 
-step "remove":
-  kind "frame_delete"
-  frame "conversations"
+step is "remove":
+  kind is "frame_delete"
+  frame is "conversations"
   where:
     user_id: state.user_id
 ```
@@ -335,8 +337,8 @@ frame is "documents":
     backend is "memory"
     table is "documents"
 
-record "Document":
-  frame "documents"
+record is "Document":
+  frame is "documents"
   fields:
     id:
       type "uuid"
@@ -352,29 +354,29 @@ record "Document":
       default "now"
 
 flow is "manage_document":
-  step "create":
-    kind "db_create"
-    record "Document"
+  step is "create":
+    kind is "db_create"
+    record is "Document"
     values:
       id: state.doc_id
       project_id: state.project_id
       title: state.title
 
-  step "load":
+  step is "load":
     find documents where:
       id is state.doc_id
 
-  step "rename":
-    kind "db_update"
-    record "Document"
+  step is "rename":
+    kind is "db_update"
+    record is "Document"
     by id:
       id: state.doc_id
     set:
       title: state.new_title
 
-  step "remove":
-    kind "db_delete"
-    record "Document"
+  step is "remove":
+    kind is "db_delete"
+    record is "Document"
     by id:
       id: state.doc_id
 ```
@@ -389,9 +391,9 @@ These steps reuse the existing frame backend, so records automatically persist w
 
 ## Backward Compatibility
 
-The existing syntax (e.g., `memory "m":\n  type "conversation"`) remains fully supported. Formatter output continues to use the original concise style, and both styles can be mixed in the same file.
+Legacy headers such as `model "m":`, `provider "p"`, `flow "x":`, or `tool "t":` are no longer supported. Use the English `is` form everywhere: `model is "m": provider is "p"`, `flow is "x":`, `tool is "t":`.
 
-Use whichever style fits your team; new projects are encouraged to adopt the English-style syntax for readability.
+Older snippets should be rewritten; the parser now raises clear errors that point to the corrected header.
 
 ## Conditions (Phase 1)
 
@@ -399,17 +401,17 @@ Flow steps can branch using English-style `if / otherwise` chains or simple `whe
 
 ```ai
 flow is "support_flow":
-  step "route to handler":
+  step is "route to handler":
     if result.category is "billing":
-      do agent is "billing_agent"
+      do agent "billing_agent"
     otherwise if result.category is "technical":
-      do agent is "technical_agent"
+      do agent "technical_agent"
     otherwise:
-      do agent is "general_agent"
+      do agent "general_agent"
 
-  step "maybe escalate":
+  step is "maybe escalate":
     when result.priority is "high":
-      do agent is "escalation_agent"
+      do agent "escalation_agent"
 ```
 
 See `docs/language/conditions.md` for the full set of supported operators, macros, rulegroups, patterns, bindings, and flow redirection.
@@ -422,16 +424,16 @@ Inside a flow step (including inside condition branches), you can jump to anothe
 flow is "main_flow":
   step is "route":
     if result.category is "billing":
-      go to flow is "billing_flow"
+      go to flow "billing_flow"
     otherwise:
-      go to flow is "fallback_flow"
+      go to flow "fallback_flow"
 
 flow is "billing_flow":
   step is "finish":
     do tool "echo"
 ```
 
-`go to flow is "name"` ends the current flow and continues execution in the target flow. When used inside a conditional branch, only the selected branch's redirect runs, and subsequent steps in the current flow are skipped. Traces include a `flow.goto` event showing the source step and destination flow.
+`go to flow "name"` ends the current flow and continues execution in the target flow. When used inside a conditional branch, only the selected branch's redirect runs, and subsequent steps in the current flow are skipped. Traces include a `flow.goto` event showing the source step and destination flow.
 
 ## Variables and Expressions (Phase 1)
 
@@ -441,13 +443,13 @@ Example:
 
 ```ai
 flow is "scoring":
-  step "compute":
+  step is "compute":
     let base be 10
     let bonus be 5
     let total be base plus bonus
 
     if total is greater than 10:
-      do agent is "notify"
+      do agent "notify"
 ```
 
 Boolean expressions use `and`, `or`, and `not`, and parentheses are available for grouping. Redeclaring a variable in the same scope or assigning to an undefined variable produces a diagnostic.
@@ -518,7 +520,7 @@ Loop counts must be numeric and non-negative; for-each requires a list value.
 ### Example flow
 ```ai
 flow is "scoring":
-  step "compute":
+  step is "compute":
     let base be 10
     let bonus be 5
     let scores be [base, bonus, 7]
@@ -529,7 +531,7 @@ flow is "scoring":
       set total to total + s
 
     if total is greater than 30:
-      do agent is "notify"
+      do agent "notify"
 ```
 
 ## Strings & Built-ins (Phase 3)
@@ -564,11 +566,11 @@ Use `match` to branch on values:
 ```ai
 match user.intent:
   when "billing":
-    do agent is "billing_agent"
+    do agent "billing_agent"
   when "technical":
-    do agent is "technical_agent"
+    do agent "technical_agent"
   otherwise:
-    do agent is "fallback_agent"
+    do agent "fallback_agent"
 ```
 
 Handle result shapes explicitly:
@@ -576,9 +578,9 @@ Handle result shapes explicitly:
 ```ai
 match result:
   when success as value:
-    do agent is "handle_success" with data: value
+    do agent "handle_success" with data: value
   when error as err:
-    do agent is "handle_failure" with error: err
+    do agent "handle_failure" with error: err
 ```
 
 ## User Input, Logging, and Observability (Phase 5)
@@ -715,10 +717,20 @@ Generate fullstack CRUD UI and flows in one line:
 ```ai
 use macro "crud_ui" with:
   entity "Product"
-  fields ["name", "price", "quantity"]
+  fields:
+    field is "name":
+      type is "string"
+      required is true
+    field is "price":
+      type is "float"
+      required is true
+      min is 0
+    field is "quantity":
+      type is "int"
+      required is true
 ```
 
-The macro produces flows (list/create/update/delete/detail), a form, and UI pages (list/create/edit/detail/delete) with state, inputs, buttons, navigation, and basic styling.
+The macro produces a frame + `record is "Product"` declaration (with a generated UUID product_id), CRUD flows (`list_products`, `create_product`, `edit_product`, `delete_product`, `get_product`), and UI pages (list/create/edit/detail) wired to those flows with state, inputs, and navigation.
 
 ## UI Pages & Layout (Phase UI-1)
 

@@ -1,5 +1,12 @@
 macro "greet_user" using ai is "codegen":
   description "Generate a flow that greets the user by asking their name."
-  sample "flow \"greet\":\n  step \"hi\":\n    ask user for \"Name\" as name\n    log info \"hi\""
+  sample "flow is \"greet\":\n  step is \"hi\":\n    ask user for \"Name\" as name\n    log info \"hi\""
 
 use macro "greet_user"
+
+use macro "crud_ui" with:
+  entity "Example"
+  fields:
+    field is "name":
+      type is "string"
+      required is true

@@ -11,7 +11,7 @@ PROGRAM_TEXT = (
     '  agent "helper"\n'
     '  memory "short_term"\n'
     'model is "default":\n'
-    '  provider is "openai:gpt-4.1-mini"\n'
+    '  provider is "openai_default"\n'
     'ai is "summarise_message":\n'
     '  model is "default"\n'
     'agent is "helper":\n'

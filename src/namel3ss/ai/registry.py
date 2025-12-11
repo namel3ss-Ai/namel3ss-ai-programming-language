@@ -57,6 +57,22 @@ class ModelRegistry:
         provider_key = (provider_hint.split(":", 1)[0] if provider_hint else None) or ""
         if provider_hint and provider_hint in self.providers_config.providers:
             provider_key = provider_hint
+        # If an explicit provider_hint was given (e.g., "openai:gpt-4o") but the configured
+        # provider type is still the dummy shim from test fixtures, upgrade it to the real
+        # provider type so routed calls use the correct provider class.
+        if provider_key:
+            existing_cfg = self.providers_config.providers.get(provider_key)
+            if provider_key in {"openai", "openai_default", "anthropic", "gemini", "azure_openai"} and (
+                existing_cfg is None or existing_cfg.type == "dummy"
+            ):
+                self.providers_config.providers[provider_key] = ProviderConfig(
+                    type=provider_key,
+                    api_key=existing_cfg.api_key if existing_cfg else None,
+                    api_key_env=existing_cfg.api_key_env if existing_cfg else None,
+                    base_url=existing_cfg.base_url if existing_cfg else None,
+                    model_default=existing_cfg.model_default if existing_cfg else None,
+                    extra=dict(existing_cfg.extra) if existing_cfg else {},
+                )
         provider = provider_key or "dummy"
         model_config = ModelConfig(
             name=model_name,
@@ -99,6 +115,18 @@ class ModelRegistry:
             return self._provider_cache[provider_key]
         provider_cfg = self.providers_config.providers.get(provider_key)
         provider_type = provider_cfg.type if provider_cfg else (provider_key or "dummy")
+        # If a known provider key was configured as "dummy" (common in tests), but an API key is
+        # available, upgrade it to the real provider type before resolving keys.
+        if provider_cfg and provider_cfg.type == "dummy" and provider_key in {"openai", "openai_default", "anthropic", "gemini", "azure_openai"}:
+            provider_cfg = ProviderConfig(
+                type=provider_key,
+                api_key=provider_cfg.api_key,
+                api_key_env=provider_cfg.api_key_env,
+                base_url=provider_cfg.base_url,
+                model_default=provider_cfg.model_default,
+                extra=dict(provider_cfg.extra),
+            )
+            provider_type = provider_cfg.type
         if provider_cfg is None:
             provider_cfg = ProviderConfig(type=provider_type)
         resolved_key = self._resolve_api_key(provider_key, provider_cfg)
@@ -229,7 +257,21 @@ class ModelRegistry:
         return provider
 
     def resolve_provider_for_ai(self, ai_call) -> tuple[ModelProvider, str, str]:
-        provider_name = getattr(ai_call, "provider", None) or self.providers_config.default
+        model_name = getattr(ai_call, "model_name", None)
+        provider_hint = getattr(ai_call, "provider", None)
+        if model_name:
+            # Prefer an explicitly referenced model (logical name or provider:model spec).
+            if model_name in self.model_configs:
+                cfg = self.model_configs[model_name]
+            else:
+                # Treat an unregistered spec as a provider hint (e.g., openai:gpt-4o).
+                self.register_model(model_name, model_name)
+                cfg = self.model_configs[model_name]
+            provider = self.get_provider_for_model(cfg.name)
+            final_model = cfg.model or cfg.name
+            return provider, final_model, cfg.provider
+
+        provider_name = provider_hint or self.providers_config.default
         if not provider_name:
             raise ProviderConfigError(
                 "No provider configured. Add a provider config or set 'provider is \"...\"' on the ai block.",

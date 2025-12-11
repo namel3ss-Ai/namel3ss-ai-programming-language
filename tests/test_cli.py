@@ -1,5 +1,7 @@
 from pathlib import Path
 
+import pytest
+
 from namel3ss.cli import main
 
 
@@ -104,3 +106,71 @@ def test_cli_lint_command(tmp_path, capsys):
     main(["lint", str(program_file)])
     out = capsys.readouterr().out
     assert "N3-L001" in out
+
+
+def test_cli_macro_expand_outputs_expansion(tmp_path, capsys):
+    src = (
+        'macro "hello" using ai "codegen":\n'
+        '  description "hello macro"\n'
+        '  sample "flow is \\"hello_flow\\":\\n  step is \\"s\\":\\n    log info \\"hi\\""\n'
+        "\n"
+        'use macro "hello"\n'
+    )
+    path = tmp_path / "macro.ai"
+    path.write_text(src, encoding="utf-8")
+    main(["macro", "expand", str(path)])
+    out = capsys.readouterr().out
+    assert 'flow is "hello_flow"' in out
+
+
+def test_cli_macro_expand_failure(tmp_path, capsys):
+    src = (
+        'macro "bad" using ai "codegen":\n'
+        '  description "bad macro"\n'
+        '  sample "flow \\"legacy\\":\\n  step is \\"s\\":\\n    log info \\"hi\\""\n'
+        "\n"
+        'use macro "bad"\n'
+    )
+    path = tmp_path / "macro_bad.ai"
+    path.write_text(src, encoding="utf-8")
+    with pytest.raises(SystemExit) as excinfo:
+        main(["macro", "expand", str(path)])
+    msg = str(excinfo.value)
+    assert "macro" in msg.lower() and "bad" in msg.lower()
+
+
+def test_cli_macro_test_pass_and_fail(tmp_path, capsys):
+    src = (
+        'macro "rec" using ai "codegen":\n'
+        '  description "record macro"\n'
+        '  sample "\\nframe is \\"things_frame\\":\\n  source:\\n    backend is \\"memory\\"\\n    table is \\"things\\"\\n\\nrecord is \\"Thing\\":\\n  frame is \\"things_frame\\"\\n  fields:\\n    thing_id:\\n      type is \\"uuid\\"\\n      primary_key is true\\n      required is true\\n"\n'
+        "\n"
+        'macro test is "record_ok":\n'
+        "  use macro \"rec\"\n"
+        '  expect record "Thing"\n'
+        "\n"
+        'macro test is "record_missing_flow":\n'
+        "  use macro \"rec\"\n"
+        '  expect flow "missing"\n'
+    )
+    path = tmp_path / "macro_tests.ai"
+    path.write_text(src, encoding="utf-8")
+    with pytest.raises(SystemExit):
+        main(["macro", "test", str(path)])
+    output = capsys.readouterr().out
+    assert "record_missing_flow" in output or "missing" in output
+    # run again with only passing test filtered by name flag via trimmed file
+    passing = (
+        'macro "rec" using ai "codegen":\n'
+        '  description "record macro"\n'
+        '  sample "\\nframe is \\"things_frame\\":\\n  source:\\n    backend is \\"memory\\"\\n    table is \\"things\\"\\n\\nrecord is \\"Thing\\":\\n  frame is \\"things_frame\\"\\n  fields:\\n    thing_id:\\n      type is \\"uuid\\"\\n      primary_key is true\\n      required is true\\n"\n'
+        "\n"
+        'macro test is "record_ok":\n'
+        "  use macro \"rec\"\n"
+        '  expect record "Thing"\n'
+    )
+    path_ok = tmp_path / "macro_tests_ok.ai"
+    path_ok.write_text(passing, encoding="utf-8")
+    main(["macro", "test", str(path_ok)])
+    ok_out = capsys.readouterr().out
+    assert "Passed 1 macro test" in ok_out

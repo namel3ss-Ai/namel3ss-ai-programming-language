@@ -58,7 +58,7 @@ def test_ask_user_with_answer():
         '    ask user for "Email" as email\n'
         '    do agent "done"\n'
         'agent is "done":\n'
-        '  goal "Complete"\n'
+        '  goal is "Complete"\n'
     )
     ir_prog = ast_to_ir(parse_source(source))
     engine, _, agents = _make_engine(ir_prog)
@@ -76,7 +76,7 @@ def test_ask_user_requests_input_when_missing():
         '    ask user for "Email" as email\n'
         '    do agent "done"\n'
         'agent is "done":\n'
-        '  goal "Complete"\n'
+        '  goal is "Complete"\n'
     )
     ir_prog = ast_to_ir(parse_source(source))
     engine, _, agents = _make_engine(ir_prog)
@@ -98,7 +98,7 @@ def test_form_collects_values():
         '      field "Age" as age\n'
         '    do agent "done"\n'
         'agent is "done":\n'
-        '  goal "Complete"\n'
+        '  goal is "Complete"\n'
     )
     ir_prog = ast_to_ir(parse_source(source))
     engine, _, agents = _make_engine(ir_prog)
@@ -123,7 +123,7 @@ def test_logging_notes_and_checkpoints_are_recorded():
         '    checkpoint "after_midway"\n'
         '    do agent "done"\n'
         'agent is "done":\n'
-        '  goal "Complete"\n'
+        '  goal is "Complete"\n'
     )
     ir_prog = ast_to_ir(parse_source(source))
     engine, _, agents = _make_engine(ir_prog)

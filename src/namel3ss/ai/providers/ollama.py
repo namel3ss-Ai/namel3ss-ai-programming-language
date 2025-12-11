@@ -29,6 +29,8 @@ class OllamaProvider(ModelProvider):
         self.base_url = base_url.rstrip("/")
         self._http_client = http_client or self._default_http_client
         self._http_stream = http_stream or self._default_http_stream
+        self.supports_streaming = True
+        self.supports_tools = False
 
     def _build_body(self, messages: List[Dict[str, str]], stream: bool, **kwargs: Any) -> Dict[str, Any]:
         model = kwargs.get("model") or self.default_model
@@ -81,3 +83,13 @@ class OllamaProvider(ModelProvider):
 
     def _default_http_stream(self, url: str, body: Dict[str, Any], headers: Dict[str, str]) -> Iterable[Dict[str, Any]]:
         yield self._default_http_client(url, body, headers)
+
+    def chat_with_tools(
+        self,
+        messages: List[Dict[str, str]],
+        tools: List[Dict[str, Any]] | None = None,
+        tool_choice: str = "auto",
+        json_mode: bool = False,
+        **kwargs: Any,
+    ):
+        raise Namel3ssError("OllamaProvider does not support tool calling yet.")

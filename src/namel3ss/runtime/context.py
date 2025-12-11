@@ -14,6 +14,7 @@ from types import SimpleNamespace
 
 from ..ai.registry import ModelRegistry
 from ..ai.router import ModelRouter
+from ..ai.providers import ModelProvider
 from ..ir import (
     IRAgent,
     IRAiCall,
@@ -1554,6 +1555,13 @@ def execute_ai_call_with_registry(
 
     invocation = None
     if tools_enabled and tool_schemas:
+        provider_supports_tools = getattr(provider, "supports_tools", False) or (
+            hasattr(provider, "chat_with_tools") and type(provider).chat_with_tools is not ModelProvider.chat_with_tools
+        )
+        if not provider_supports_tools:
+            raise ProviderConfigError(
+                f"AI '{ai_call.name}' is configured with tools, but provider '{provider_name}' does not support tool calling."
+            )
         try:
             chat_response = provider.chat_with_tools(
                 messages=messages,

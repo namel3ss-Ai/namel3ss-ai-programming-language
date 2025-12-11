@@ -84,18 +84,22 @@ def load_config(env: Optional[dict] = None) -> N3Config:
     raw_providers = environ.get("N3_PROVIDERS_JSON")
     if raw_providers:
         try:
-            providers.update(json.loads(raw_providers))
+            parsed = json.loads(raw_providers)
         except Exception:
+            parsed = None
+        if isinstance(parsed, dict):
+            # If the payload looks like {"default": "...", "providers": {...}} handle both parts.
+            provider_entries = parsed.get("providers") if "providers" in parsed else parsed
+            if isinstance(provider_entries, dict):
+                for name, raw in provider_entries.items():
+                    if isinstance(raw, dict):
+                        providers_config.providers[name] = _build_provider(name, raw)
+            if isinstance(parsed.get("default"), str):
+                providers_config.default = parsed.get("default")
+            # Preserve raw providers mapping for backwards compatibility.
+            providers.update(provider_entries or {})
+        else:
             providers = {}
-        if not providers_config.providers:
-            try:
-                parsed = json.loads(raw_providers)
-                if isinstance(parsed, dict):
-                    for name, raw in parsed.items():
-                        if isinstance(raw, dict):
-                            providers_config.providers[name] = _build_provider(name, raw)
-            except Exception:
-                pass
 
     def _provider_entry(name: str, keys: list[str]) -> None:
         data: Dict[str, str] = {}

@@ -124,7 +124,12 @@ def collect_diagnostics(paths: Iterable[Path], strict: bool) -> tuple[list[Diagn
         if program is None:
             continue
         legacy_diags = run_diagnostics(program, available_plugins=set())
-        all_diags.extend(legacy_to_structured(d) for d in legacy_diags)
+        for d in legacy_diags:
+            structured = legacy_to_structured(d)
+            file_hint = structured.file or ""
+            if not file_hint or ".ai" not in file_hint:
+                structured = replace(structured, file=str(path))
+            all_diags.append(structured)
 
     all_diags, summary = apply_strict_mode(all_diags, strict)
     return all_diags, summary

@@ -14,7 +14,7 @@ PROGRAM_TEXT = (
     '    target "summarise_message"\n'
     'agent is "helper":\n'
     '  goal "Assist"\n'
-    'plugin "stripe":\n'
+    'plugin is "stripe":\n'
     '  description "payments"\n'
     'model is "default":\n'
     '  provider is "openai:gpt-4.1-mini"\n'

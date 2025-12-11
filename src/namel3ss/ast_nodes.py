@@ -442,7 +442,37 @@ class MacroUse:
     """use macro \"name\" with arguments."""
 
     macro_name: str
-    args: Dict[str, Expr] = field(default_factory=dict)
+    args: Dict[str, Expr | Any] = field(default_factory=dict)
+    span: Optional[Span] = None
+
+
+@dataclass
+class MacroFieldSpec:
+    """Structured field specification for crud_ui macro."""
+
+    name: str
+    field_type: str | None = None
+    required: bool | None = None
+    min_expr: Expr | None = None
+    max_expr: Expr | None = None
+    default_expr: Expr | None = None
+    span: Optional[Span] = None
+
+
+@dataclass
+class MacroExpectation:
+    kind: str
+    name: str
+    span: Optional[Span] = None
+
+
+@dataclass
+class MacroTestDecl:
+    """macro test is \"name\": use macros and assert expectations."""
+
+    name: str
+    uses: List[MacroUse] = field(default_factory=list)
+    expects: List[MacroExpectation] = field(default_factory=list)
     span: Optional[Span] = None
 
 
@@ -928,11 +958,13 @@ class ReturnStatement(Statement):
 @dataclass
 class SuccessPattern:
     binding: str | None = None
+    span: Optional[Span] = None
 
 
 @dataclass
 class ErrorPattern:
     binding: str | None = None
+    span: Optional[Span] = None
 
 
 @dataclass
@@ -1196,6 +1228,7 @@ Declaration = Union[
     VectorStoreDecl,
     MacroDecl,
     MacroUse,
+    MacroTestDecl,
     HelperDecl,
     ModuleUse,
     ImportDecl,

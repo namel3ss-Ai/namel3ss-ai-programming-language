@@ -1033,6 +1033,14 @@ def _collect_input_refs(expr: ast_nodes.Expr | None) -> set[str]:
                 return
             _visit(current)
             return
+        if isinstance(node, ast_nodes.VarRef):
+            root = (node.root or "").lower()
+            if root == "input":
+                if node.path:
+                    refs.add(".".join([p for p in node.path if p]))
+                elif node.name and node.name.startswith("input.") and len(node.name.split(".", 1)) == 2:
+                    refs.add(node.name.split(".", 1)[1])
+            return
         if isinstance(node, ast_nodes.Identifier):
             name = node.name or ""
             if name.startswith("input.") and len(name.split(".", 1)) == 2:
@@ -2566,6 +2574,8 @@ def ast_to_ir(module: ast_nodes.Module) -> IRProgram:
             continue
         if isinstance(decl, ast_nodes.RuleGroupDecl):
             continue
+        if isinstance(decl, ast_nodes.MacroTestDecl):
+            continue
         if isinstance(decl, ast_nodes.AppDecl):
             if decl.name in program.apps:
                 raise IRError(
@@ -2605,7 +2615,8 @@ def ast_to_ir(module: ast_nodes.Module) -> IRProgram:
 
             sections: list[IRSection] = []
             for sec in decl.sections:
-                sec_children_raw = [lower_layout_element(child, collected_states) for child in sec.layout]
+                # States in sections are collected when lowering the page layout below.
+                sec_children_raw = [lower_layout_element(child, None) for child in sec.layout]
                 sec_children = [c for c in sec_children_raw if c is not None]
                 sections.append(
                     IRSection(
@@ -2616,6 +2627,7 @@ def ast_to_ir(module: ast_nodes.Module) -> IRProgram:
                                 props={prop.key: prop.value for prop in comp.props},
                             )
                             for comp in sec.components
+                            if isinstance(comp, ast_nodes.ComponentDecl)
                         ],
                         layout=sec_children,
                         styles=lower_styles(sec.styles),
@@ -2624,8 +2636,10 @@ def ast_to_ir(module: ast_nodes.Module) -> IRProgram:
                     )
                 )
             # validate duplicate section names
-            section_names = [s.name for s in sections] + [el.name for el in decl.layout if isinstance(el, ast_nodes.SectionDecl)]
-            if len(section_names) != len(set(section_names)):
+            section_names = [s.name for s in sections]
+            layout_section_names = [el.name for el in decl.layout if isinstance(el, ast_nodes.SectionDecl)]
+            combined_section_names = section_names + [n for n in layout_section_names if n not in section_names]
+            if len(combined_section_names) != len(set(combined_section_names)):
                 raise IRError(
                     f"N3U-1100: duplicate section name in page '{decl.name}'",
                     decl.span and decl.span.line,
@@ -3247,22 +3261,31 @@ def ast_to_ir(module: ast_nodes.Module) -> IRProgram:
         elif isinstance(decl, ast_nodes.ToolDeclaration):
             if decl.name in program.tools:
                 raise IRError(f"Duplicate tool '{decl.name}'", decl.span and decl.span.line)
-            if not decl.kind or decl.kind != "http_json":
+            normalized_kind = (decl.kind or "").strip().lower()
+            if not normalized_kind:
                 raise IRError(
-                    f"N3L-960: Tool '{decl.name}' must specify kind 'http_json' (only 'http_json' is supported in this phase).",
+                    f"N3L-960: Tool '{decl.name}' must specify a kind (for example, http).",
                     decl.span and decl.span.line,
                 )
+            allowed_kinds = {"http", "http_json", "http_request", "function", "local"}
+            if normalized_kind not in allowed_kinds:
+                raise IRError(
+                    f"N3L-960: Tool '{decl.name}' uses unsupported kind '{decl.kind}'. Supported kinds are: http, function, or local.",
+                    decl.span and decl.span.line,
+                )
+            is_http_tool = normalized_kind in {"http_json", "http", "http_request"}
             allowed_methods = {"GET", "POST", "PUT", "PATCH", "DELETE"}
-            if not decl.method or decl.method.upper() not in allowed_methods:
-                raise IRError(
-                    f"N3L-961: Tool '{decl.name}' must specify method among {sorted(allowed_methods)}.",
-                    decl.span and decl.span.line,
-                )
-            if not decl.url_expr and not decl.url_template:
-                raise IRError(
-                    f"N3L-962: Tool '{decl.name}' must define a URL.",
-                    decl.span and decl.span.line,
-                )
+            if is_http_tool:
+                if not decl.method or decl.method.upper() not in allowed_methods:
+                    raise IRError(
+                        f"N3L-961: Tool '{decl.name}' must specify method among {sorted(allowed_methods)}.",
+                        decl.span and decl.span.line,
+                    )
+                if not decl.url_expr and not decl.url_template:
+                    raise IRError(
+                        f"N3L-962: Tool '{decl.name}' must define a URL.",
+                        decl.span and decl.span.line,
+                    )
             for key in decl.headers.keys():
                 if not key:
                     raise IRError(
@@ -3287,9 +3310,12 @@ def ast_to_ir(module: ast_nodes.Module) -> IRProgram:
             input_refs.update(_collect_input_refs_from_dict(decl.query_params))
             input_refs.update(_collect_input_refs_from_dict(decl.body_fields))
             input_refs.update(_collect_input_refs(decl.body_template))
+            kind_value = decl.kind
+            if is_http_tool and decl.kind and decl.kind.lower() == "http_json":
+                kind_value = "http"
             program.tools[decl.name] = IRTool(
                 name=decl.name,
-                kind=decl.kind,
+                kind=kind_value,
                 method=decl.method.upper() if decl.method else None,
                 url_template=decl.url_template,
                 url_expr=decl.url_expr,

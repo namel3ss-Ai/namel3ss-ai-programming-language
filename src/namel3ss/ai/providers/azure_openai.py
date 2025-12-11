@@ -9,7 +9,7 @@ from typing import Any, Callable, Dict, Iterable, List, Optional
 
 from ...errors import Namel3ssError
 from ..models import ModelResponse, ModelStreamChunk, TokenUsage
-from . import ModelProvider
+from . import ChatToolResponse, ModelProvider
 
 HttpClient = Callable[[str, Dict[str, Any], Dict[str, str]], Dict[str, Any]]
 HttpStreamClient = Callable[[str, Dict[str, Any], Dict[str, str]], Iterable[Dict[str, Any]]]
@@ -38,6 +38,8 @@ class AzureOpenAIProvider(ModelProvider):
         self.api_version = api_version
         self._http_client = http_client or self._default_http_client
         self._http_stream = http_stream or self._default_http_stream
+        self.supports_tools = True
+        self.supports_streaming = True
 
     def _endpoint(self) -> str:
         path = f"/openai/deployments/{self.deployment}/chat/completions"
@@ -118,3 +120,63 @@ class AzureOpenAIProvider(ModelProvider):
 
     def _default_http_stream(self, url: str, body: Dict[str, Any], headers: Dict[str, str]) -> Iterable[Dict[str, Any]]:
         yield self._default_http_client(url, body, headers)
+
+    def chat_with_tools(
+        self,
+        messages: List[Dict[str, str]],
+        tools: List[Dict[str, Any]] | None = None,
+        tool_choice: str = "auto",
+        json_mode: bool = False,
+        **kwargs: Any,
+    ):
+        if not self.api_key:
+            raise Namel3ssError("Azure OpenAI API key missing for provider")
+        body: Dict[str, Any] = {"messages": messages}
+        if json_mode:
+            body["response_format"] = {"type": "json_object"}
+        if tools:
+            normalized: List[Dict[str, Any]] = []
+            for tool in tools:
+                if "function" in tool:
+                    normalized.append(tool)
+                else:
+                    normalized.append(
+                        {
+                            "type": "function",
+                            "function": {
+                                "name": tool.get("name"),
+                                "description": tool.get("description"),
+                                "parameters": tool.get("parameters"),
+                            },
+                        }
+                    )
+            body["tools"] = normalized
+        if tool_choice:
+            body["tool_choice"] = tool_choice
+        for key in ("temperature", "top_p", "max_tokens", "seed", "frequency_penalty", "presence_penalty"):
+            if key in kwargs and kwargs[key] is not None:
+                body[key] = kwargs[key]
+        data = self._http_client(self._endpoint(), body, self._headers())
+        tool_calls: List[Dict[str, Any]] = []
+        content = ""
+        finish_reason = None
+        if isinstance(data, dict):
+            choices = data.get("choices") or []
+            if choices:
+                choice = choices[0]
+                finish_reason = choice.get("finish_reason")
+                message = choice.get("message", {}) or {}
+                content = message.get("content", "") or ""
+                tool_calls = message.get("tool_calls") or []
+        return ChatToolResponse(
+            final_text=content,
+            tool_calls=[
+                {
+                    "name": call.get("function", {}).get("name") or call.get("name"),
+                    "arguments": call.get("function", {}).get("arguments") or call.get("arguments"),
+                }
+                for call in tool_calls
+            ],
+            raw=data,
+            finish_reason=finish_reason,
+        )

@@ -16,6 +16,7 @@ class StubProvider(ModelProvider):
         super().__init__("stub")
         self.responses = responses
         self.calls = []
+        self.supports_tools = True
 
     def generate(self, messages, **kwargs):
         self.calls.append({"method": "generate", "messages": [dict(m) for m in messages], "kwargs": kwargs})

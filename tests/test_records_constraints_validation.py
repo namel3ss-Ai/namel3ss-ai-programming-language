@@ -53,7 +53,7 @@ BASE_DEFS = dedent(
         backend is "memory"
         table is "products"
 
-    record "Product":
+    record is "Product":
       frame is "products"
       fields:
         id:
@@ -416,7 +416,7 @@ def test_decimal_constraints_enforced():
 def test_parser_requires_list_for_enum():
     bad_source = dedent(
         """
-        record "Bad":
+        record is "Bad":
           frame is "products"
           fields:
             id:
@@ -439,7 +439,7 @@ def test_ir_rejects_length_on_int_field():
             backend is "memory"
             table is "numbers"
 
-        record "Value":
+        record is "Value":
           frame is "numbers"
           fields:
             id:
@@ -464,7 +464,7 @@ def test_ir_rejects_empty_enum_list():
             backend is "memory"
             table is "statuses"
 
-        record "Status":
+        record is "Status":
           frame is "statuses"
           fields:
             id:
@@ -489,7 +489,7 @@ def test_ir_rejects_pattern_on_non_string():
             backend is "memory"
             table is "data"
 
-        record "Sample":
+        record is "Sample":
           frame is "data"
           fields:
             id:

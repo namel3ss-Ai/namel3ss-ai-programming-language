@@ -143,6 +143,8 @@ KEYWORDS = {
     "define",
     "helper",
     "macro",
+    "test",
+    "expect",
     "using",
     "parameters",
     "takes",
@@ -374,6 +376,16 @@ class Lexer:
                 column += 1
                 value_chars = []
                 while i < len(line) and line[i] != '"':
+                    if line[i] == "\\" and i + 1 < len(line) and line[i + 1] == '"':
+                        value_chars.append('"')
+                        i += 2
+                        column += 2
+                        continue
+                    if line[i] == "\\" and i + 1 < len(line) and line[i + 1] == "\\":
+                        value_chars.append("\\")
+                        i += 2
+                        column += 2
+                        continue
                     value_chars.append(line[i])
                     i += 1
                     column += 1

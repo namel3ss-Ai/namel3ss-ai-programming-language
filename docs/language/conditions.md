@@ -9,19 +9,19 @@ flow is "support_flow":
   this flow will:
 
     step "classify request":
-      do ai is "classify_issue"
+      do ai "classify_issue"
 
     step "route to handler":
       if result.category is "billing":
-        do agent is "billing_agent"
+        do agent "billing_agent"
       otherwise if result.category is "technical":
-        do agent is "technical_agent"
+        do agent "technical_agent"
       otherwise:
-        do agent is "general_agent"
+        do agent "general_agent"
 
     step "maybe escalate":
       when result.priority is "high":
-        do agent is "escalation_agent"
+        do agent "escalation_agent"
 ```
 
 Rules:
@@ -42,10 +42,10 @@ Examples:
 
 ```ai
 if score > 0.8 and user.is_vip:
-  do agent is "vip_agent"
+  do agent "vip_agent"
 
 when not user.is_logged_in:
-  do agent is "login_helper"
+  do agent "login_helper"
 ```
 
 Identifiers can be dotted (e.g., `result.category`) and resolve against the flow state.
@@ -58,7 +58,7 @@ Flow:
 ```ai
 step "check_priority":
   unless result.priority is "low":
-    do agent is "handle_high_priority"
+    do agent "handle_high_priority"
 ```
 
 Agent:
@@ -81,7 +81,7 @@ Flow:
 ```ai
 step "route":
   if result.category is "billing" as cat:
-    do ai is "billing_classifier" with message:
+    do ai "billing_classifier" with message:
       cat
 ```
 
@@ -105,7 +105,7 @@ You can match shallow structures inside conditions:
 
 ```ai
 if result matches { category: "billing", priority: high } as details:
-  do agent is "billing_handler" with details: details
+  do agent "billing_handler" with details: details
 ```
 
 Rules:
@@ -130,7 +130,7 @@ Use the whole group (all rules must pass):
 
 ```ai
 if vip_rules:
-  do agent is "vip_handler"
+  do agent "vip_handler"
 ```
 
 Or an individual rule:
@@ -184,15 +184,15 @@ Semantics match flows: first true branch runs; `when` is a single-branch check; 
 
 ## Flow Redirection
 
-Inside a flow step or a conditional branch, you can jump to another flow using `go to flow is "name"`:
+Inside a flow step or a conditional branch, you can jump to another flow using `go to flow "name"`:
 
 ```ai
 flow is "router":
   step "route":
     if result.category is "billing":
-      go to flow is "billing_flow"
+      go to flow "billing_flow"
     otherwise:
-      go to flow is "fallback_flow"
+      go to flow "fallback_flow"
 ```
 
 `go to flow` stops the current flow and starts the target flow immediately. When used inside a conditional branch, only the chosen branch's redirect runs. Traces include a `flow.goto` event showing the source and destination flows.
@@ -208,7 +208,7 @@ define condition "is_vip" as:
 flow is "router":
   step "route":
     if is_vip:
-      do agent is "vip_handler"
+      do agent "vip_handler"
 ```
 
 Rules:

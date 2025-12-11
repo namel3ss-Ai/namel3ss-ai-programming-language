@@ -45,7 +45,7 @@ def _base_module() -> str:
         '    backend is "memory"\n'
         '    table is "users"\n'
         "\n"
-        'record "User":\n'
+        'record is "User":\n'
         '  frame is "users"\n'
         "  fields:\n"
         "    id:\n"

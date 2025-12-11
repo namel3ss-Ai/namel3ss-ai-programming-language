@@ -36,6 +36,8 @@ class OpenAIProvider(ModelProvider):
         self._http_client = http_client or self._default_http_client
         self._http_stream = http_stream or self._default_http_stream
         self._extra_headers = extra_headers or {}
+        self.supports_tools = True
+        self.supports_streaming = True
 
     def _build_headers(self) -> Dict[str, str]:
         headers = {

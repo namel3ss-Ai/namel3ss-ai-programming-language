@@ -1,13 +1,16 @@
-use macro "crud_ui" with:
+use macro "app_scaffold" with:
   entity "Product"
+
   fields:
     field is "name":
       type is "string"
       required is true
+
     field is "price":
       type is "float"
       required is true
       min is 0
-    field is "quantity":
-      type is "int"
-      required is true
+
+    field is "is_active":
+      type is "bool"
+      default is true

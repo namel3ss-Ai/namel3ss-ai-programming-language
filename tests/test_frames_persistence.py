@@ -142,5 +142,7 @@ def test_runtime_filtered_query():
     engine, runtime_ctx = _build_engine(program)
     result = engine.run_flow(flow, runtime_ctx.execution_context, initial_state={})
     rows = result.state.get("last_output")
-    assert isinstance(rows, dict)
-    assert rows.get("user_id") == 2 and rows.get("message") == "b"
+    assert isinstance(rows, list)
+    assert len(rows) == 1
+    row = rows[0]
+    assert row.get("user_id") == 2 and row.get("message") == "b"

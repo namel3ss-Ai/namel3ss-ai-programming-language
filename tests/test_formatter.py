@@ -13,10 +13,10 @@ def test_format_source_formats_and_idempotent():
         '      value "Hello"'
     )
     expected = (
-        'app "demo":\n'
+        'app is "demo":\n'
         '  description "Sample"\n'
         '\n'
-        'page "home":\n'
+        'page is "home":\n'
         '  route "/"\n'
         '  section "main":\n'
         '    component "text":\n'

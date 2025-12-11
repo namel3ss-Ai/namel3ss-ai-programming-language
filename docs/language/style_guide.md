@@ -46,7 +46,7 @@ let total = base + bonus
 - Favor English list built-ins: `length of xs`, `sorted form of xs`.
 
 ## Frames and Data
-- Name frames descriptively: `frame "sales_data": ...`.
+- Name frames descriptively: `frame is "sales_data": ...`.
 - Prefer `has headers` plus `select` to keep row records lean.
 - Filter with `all row from sales_data where ...` and aggregate with `sum of all row.revenue from sales_data`.
 

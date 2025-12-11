@@ -60,6 +60,7 @@ def test_openai_body_includes_tools(monkeypatch):
     assert captured_body["tools"][0]["function"]["name"] == "get_weather"
     params = captured_body["tools"][0]["function"]["parameters"]
     assert params["type"] == "object"
+    assert "city" in params["properties"]
 
 
 def test_openai_body_without_tools(monkeypatch):

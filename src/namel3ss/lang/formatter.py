@@ -52,7 +52,7 @@ def _format_decl(decl: ast_nodes.Declaration, level: int) -> List[str]:
             body.append(_indent(level + 1, f"entry_page {_q(decl.entry_page)}"))
         if decl.description:
             body.append(_indent(level + 1, f"description {_q(decl.description)}"))
-        return [_indent(level, f"app {_q(decl.name)}:")] + body
+        return [_indent(level, f"app is {_q(decl.name)}:")] + body
     if isinstance(decl, ast_nodes.PageDecl):
         body: List[str] = []
         if decl.route:
@@ -74,7 +74,7 @@ def _format_decl(decl: ast_nodes.Declaration, level: int) -> List[str]:
             body.append(_indent(level + 1, f"memory {_q(mem_ref.name)}"))
         for section in decl.sections:
             body.extend(_format_section(section, level + 1))
-        return [_indent(level, f"page {_q(decl.name)}:")] + body
+        return [_indent(level, f"page is {_q(decl.name)}:")] + body
     if isinstance(decl, ast_nodes.ModelDecl):
         body: List[str] = []
         if decl.provider:
@@ -83,16 +83,16 @@ def _format_decl(decl: ast_nodes.Declaration, level: int) -> List[str]:
     if isinstance(decl, ast_nodes.AICallDecl):
         body: List[str] = []
         if decl.model_name:
-            body.append(_indent(level + 1, f"model {_q(decl.model_name)}"))
+            body.append(_indent(level + 1, f"model is {_q(decl.model_name)}"))
         if getattr(decl, "provider", None):
-            body.append(_indent(level + 1, f"provider {_q(decl.provider or '')}"))
+            body.append(_indent(level + 1, f"provider is {_q(decl.provider or '')}"))
         if getattr(decl, "system_prompt", None):
-            body.append(_indent(level + 1, f"system {_q(decl.system_prompt or '')}"))
+            body.append(_indent(level + 1, f"system is {_q(decl.system_prompt or '')}"))
         if decl.input_source:
             body.append(_indent(level + 1, f"input from {_q(decl.input_source)}"))
         if getattr(decl, "description", None):
             body.append(_indent(level + 1, f"description {_q(decl.description or '')}"))
-        return [_indent(level, f"ai {_q(decl.name)}:")] + body
+        return [_indent(level, f"ai is {_q(decl.name)}:")] + body
     if isinstance(decl, ast_nodes.AgentDecl):
         body: List[str] = []
         if decl.goal:
@@ -100,29 +100,29 @@ def _format_decl(decl: ast_nodes.Declaration, level: int) -> List[str]:
         if decl.personality:
             body.append(_indent(level + 1, f"personality {_q(decl.personality)}"))
         if getattr(decl, "system_prompt", None):
-            body.append(_indent(level + 1, f"system {_q(decl.system_prompt or '')}"))
-        return [_indent(level, f"agent {_q(decl.name)}:")] + body
+            body.append(_indent(level + 1, f"system is {_q(decl.system_prompt or '')}"))
+        return [_indent(level, f"agent is {_q(decl.name)}:")] + body
     if isinstance(decl, ast_nodes.MemoryDecl):
         body: List[str] = []
         if decl.memory_type:
             body.append(_indent(level + 1, f"type {_q(decl.memory_type)}"))
         return [_indent(level, f"memory {_q(decl.name)}:")] + body
     if isinstance(decl, ast_nodes.MemoryProfileDecl):
-        return [_indent(level, f"memory profile {_q(decl.name)}:")]
+        return [_indent(level, f"memory profile is {_q(decl.name)}:")]
     if isinstance(decl, ast_nodes.PluginDecl):
         if decl.description:
             return [
-                _indent(level, f"plugin {_q(decl.name)}:"),
+                _indent(level, f"plugin is {_q(decl.name)}:"),
                 _indent(level + 1, f"description {_q(decl.description)}"),
             ]
-        return [_indent(level, f"plugin {_q(decl.name)}")]
+        return [_indent(level, f"plugin is {_q(decl.name)}")]
     if isinstance(decl, ast_nodes.FlowDecl):
         body: List[str] = []
         if decl.description:
             body.append(_indent(level + 1, f"description {_q(decl.description)}"))
         for step in decl.steps:
             body.extend(_format_flow_step(step, level + 1))
-        return [_indent(level, f"flow {_q(decl.name)}:")] + body
+        return [_indent(level, f"flow is {_q(decl.name)}:")] + body
     raise ValueError(f"Unknown declaration type: {type(decl)}")
 
 

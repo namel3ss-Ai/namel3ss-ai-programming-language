@@ -31,6 +31,8 @@ class AnthropicProvider(ModelProvider):
         self.base_url = base_url or "https://api.anthropic.com/v1/messages"
         self._http_client = http_client or self._default_http_client
         self._http_stream = http_stream or self._default_http_stream
+        self.supports_streaming = True
+        self.supports_tools = False
 
     def _build_headers(self) -> Dict[str, str]:
         return {
@@ -109,6 +111,16 @@ class AnthropicProvider(ModelProvider):
                 raw=chunk,
                 is_final=False,
             )
+
+    def chat_with_tools(
+        self,
+        messages: List[Dict[str, str]],
+        tools: List[Dict[str, Any]] | None = None,
+        tool_choice: str = "auto",
+        json_mode: bool = False,
+        **kwargs: Any,
+    ):
+        raise Namel3ssError("AnthropicProvider does not support tool calling yet.")
 
     def _default_http_client(self, url: str, body: Dict[str, Any], headers: Dict[str, str]) -> Dict[str, Any]:
         payload = json.dumps(body).encode("utf-8")

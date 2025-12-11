@@ -45,7 +45,7 @@ def test_where_operators_cover_comparisons_and_in():
         '    backend is "memory"\n'
         '    table is "users"\n'
         "\n"
-        'record "User":\n'
+        'record is "User":\n'
         '  frame is "users"\n'
         "  fields:\n"
         "    id:\n"
@@ -162,7 +162,7 @@ def test_where_invalid_operator_has_clear_error():
         '    backend is "memory"\n'
         '    table is "users"\n'
         "\n"
-        'record "User":\n'
+        'record is "User":\n'
         '  frame is "users"\n'
         "  fields:\n"
         "    id:\n"

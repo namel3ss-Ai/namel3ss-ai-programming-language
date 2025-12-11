@@ -7,7 +7,7 @@ PROGRAM = (
     'flow is "pipeline":\n'
     '  step is "call":\n'
     '    kind is "ai"\n'
-    '    target "summarise_message"\n'
+    '    target is "summarise_message"\n'
     'page is "home" at "/":\n'
     '  title "Home"\n'
     '  section "hero":\n'

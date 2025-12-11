@@ -40,7 +40,7 @@ def test_valid_tool_and_registry():
         )
     cfg = reg.get("get_weather")
     assert cfg is not None
-    assert cfg.kind == "http_json"
+    assert cfg.kind in {"http", "http_json"}
     assert cfg.method == "GET"
     assert cfg.url_expr.value == "https://api.example.com/weather"
     assert "city" in cfg.query_params

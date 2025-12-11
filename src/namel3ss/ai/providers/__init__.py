@@ -36,6 +36,10 @@ class ModelProvider(ABC):
         self.default_model = default_model
         self.cost_per_token: float = 0.0
         self.latency_ms: float = 0.0
+        # Providers that implement function/tool calling should set this to True.
+        self.supports_tools: bool = False
+        # Providers that implement streaming should set this to True.
+        self.supports_streaming: bool = False
 
     @abstractmethod
     def generate(self, messages: List[Dict[str, str]], **kwargs: Any) -> ModelResponse:
@@ -71,12 +75,21 @@ class ModelProvider(ABC):
             finish_reason=response.finish_reason,
         )
 
+    # Convenience aliases for parity; runtime still calls generate/stream directly.
+    def chat(self, messages: List[Dict[str, str]], **kwargs: Any) -> ModelResponse:
+        return self.generate(messages, **kwargs)
+
+    def chat_stream(self, messages: List[Dict[str, str]], **kwargs: Any) -> Iterable[ModelStreamChunk]:
+        return self.stream(messages, **kwargs)
+
 
 class DummyProvider(ModelProvider):
     """Deterministic provider used for tests/CI."""
 
     def __init__(self, name: str = "dummy", default_model: str | None = None) -> None:
         super().__init__(name, default_model=default_model or "dummy-model")
+        self.supports_streaming = False
+        self.supports_tools = False
 
     def generate(self, messages: List[Dict[str, str]], **kwargs: Any) -> ModelResponse:
         user_content = messages[-1]["content"] if messages else ""
@@ -97,3 +110,12 @@ class DummyProvider(ModelProvider):
             raw={"messages": messages},
             is_final=True,
         )
+
+    def chat_with_tools(
+        self,
+        messages: List[Dict[str, str]],
+        tools: List[ToolSchema] | None = None,
+        tool_choice: str = "auto",
+        **kwargs: Any,
+    ) -> ChatToolResponse:
+        raise Namel3ssError("DummyProvider does not support tool calling.")

@@ -12,7 +12,11 @@ def _dummy_providers(monkeypatch):
             "openai_default": {
                 "type": "dummy",
                 "api_key": "test-key",
-            }
+            },
+            "openai": {
+                "type": "dummy",
+                "api_key": "test-key",
+            },
         },
     }
     monkeypatch.setenv("N3_PROVIDERS_JSON", json.dumps(payload))

@@ -96,8 +96,10 @@ def test_runtime_update_and_query():
     engine, runtime_ctx = _build_engine(program)
     result = engine.run_flow(flow, runtime_ctx.execution_context, initial_state={})
     rows = result.state.get("last_output")
-    assert isinstance(rows, dict)
-    assert rows.get("name") == "Alice"
+    assert isinstance(rows, list)
+    assert len(rows) == 1
+    row = rows[0]
+    assert row.get("name") == "Bob"
 
 
 def test_runtime_delete_and_count_output():
@@ -139,11 +141,11 @@ def test_runtime_delete_and_count_output():
     engine, runtime_ctx = _build_engine(program)
     result = engine.run_flow(flow, runtime_ctx.execution_context, initial_state={})
     rows = result.state.get("last_output")
-    assert isinstance(rows, dict)
-    assert rows.get("id") == 2
+    assert isinstance(rows, list)
+    assert rows == []
     # registry store should only contain the row with id 2
     stored = runtime_ctx.frames._store.get("users", [])
-    assert len(stored) == 2 and any(row["id"] == 2 for row in stored)
+    assert len(stored) == 1 and any(row["id"] == 2 for row in stored)
 
 
 def test_runtime_invalid_update_missing_set():

@@ -11,7 +11,7 @@ def test_diagnostics_warnings_and_errors():
         'page is "home":\n'
         '  title "Home"\n'
         'flow is "pipeline":\n'
-        'plugin "stripe":\n'
+        'plugin is "stripe":\n'
         '  description "payments"\n'
         'agent is "helper":\n'
         '  goal "Assist"\n'

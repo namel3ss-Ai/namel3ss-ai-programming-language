@@ -42,6 +42,27 @@ def test_match_when_literal_only():
     assert patterns == ["billing", "support"]
 
 
+def test_match_success_and_error_patterns_parse():
+    source = (
+        'flow is "router":\n'
+        '  step is "route":\n'
+        '    match result:\n'
+        '      when success as value:\n'
+        '        set state.ok be value\n'
+        '      when error:\n'
+        '        set state.err be true\n'
+        "      otherwise:\n"
+        '        set state.fallback be true\n'
+    )
+    module = parse_source(source)
+    flow = next(d for d in module.declarations if isinstance(d, ast_nodes.FlowDecl))
+    match_stmt = next(s for s in flow.steps[0].statements if isinstance(s, ast_nodes.MatchStatement))
+    assert isinstance(match_stmt.branches[0].pattern, ast_nodes.SuccessPattern)
+    assert match_stmt.branches[0].pattern.binding == "value"
+    assert isinstance(match_stmt.branches[1].pattern, ast_nodes.ErrorPattern)
+    assert match_stmt.branches[1].pattern.binding is None
+
+
 def test_standalone_when_errors():
     source = (
         'flow is "f":\n'

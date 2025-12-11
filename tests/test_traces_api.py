@@ -6,10 +6,10 @@ from namel3ss.server import create_app
 PROGRAM_TEXT = (
     'flow is "pipeline":\n'
     '  step is "call":\n'
-    '    kind "ai"\n'
+    '    kind is "ai"\n'
     '    target "summarise_message"\n'
     'model is "default":\n'
-    '  provider is "openai:gpt-4.1-mini"\n'
+    '  provider is "openai_default"\n'
     'ai is "summarise_message":\n'
     '  model is "default"\n'
 )

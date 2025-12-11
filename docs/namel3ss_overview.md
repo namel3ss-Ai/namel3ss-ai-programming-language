@@ -4,7 +4,7 @@
 Namel3ss V3 is an AI-native programming language and runtime that treats AI models, agents, tools, RAG, and UI as first-class concepts. It combines an English-like DSL with strong optional typing, a composable runtime, and a distributed execution model so apps can move from local runs to background workers without changing source.
 
 ## 2. Mental Model
-- **Language (DSL):** Declarative, English-style syntax for apps, pages, flows, agents, models, memory, plugins, and UI components. Legacy syntax is auto-transformed but discouraged.
+- **Language (DSL):** Declarative, English-style syntax for apps, pages, flows, agents, models, memory, plugins, and UI components. Legacy headers like `model "foo":` are rejected; use the `is` form everywhere.
 - **Runtime (engine + context):** Executes IR, builds graphs, and orchestrates AI, agents, flows, tools, memory, and RAG.
 - **AI platform:** ModelRegistry + ModelRouter, dummy provider today, cost-aware hooks via MetricsTracker.
 - **Workflow system:** Flows, jobs, workers, scheduler, async helpers for background execution.
@@ -16,9 +16,9 @@ Namel3ss V3 is an AI-native programming language and runtime that treats AI mode
   - Declare routes, metadata, and UI sections/components.
   - Example:
     ```
-    app "support":
-      entry_page "home"
-    page "home":
+    app is "support":
+      entry_page is "home"
+    page is "home":
       route "/"
       section "hero":
         component "text":
@@ -30,7 +30,7 @@ Namel3ss V3 is an AI-native programming language and runtime that treats AI mode
     ```ai
     model is "default":
       provider is "openai:gpt-4.1-mini"
-    ai "summarise":
+    ai is "summarise":
       model is "default"
       input from "user_input"
     ```

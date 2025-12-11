@@ -107,7 +107,7 @@ Each block kind has required and optional fields aligned with the current IR:
 - **macro**
   - required: `name`, `using ai "<model>"`, `description`
   - optional: `sample`, `parameters`
-  - semantics: defines an AI-assisted macro that expands to Namel3ss code when invoked with `use macro "name"` (optionally with arguments). Expansions are parsed, linted, and merged at load-time.
+  - semantics: defines a macro that expands to Namel3ss code when invoked with `use macro "name"` (optionally with arguments). If an AI callback is available it is used; otherwise the `sample` string is treated as a template and `{Param}` placeholders are replaced with argument values. Expansions are parsed, linted, and merged at load-time.
 - **page (UI layout)**
   - required: `name`, `at "<route>"` starting with `/`, layout block
   - layout: `section`, `heading`, `text`, `image`, `use form "<name>"`, UI-2 controls (`state`, `input`, `button`, `when/otherwise` with `show:`)
@@ -134,11 +134,28 @@ Each block kind has required and optional fields aligned with the current IR:
 - Constants: `let constant <name> be <expression>` declares an immutable local.
 - Mutation: `set state.<name> be <expression>` updates flow/page state. Assigning to an undefined local with `set` is an error.
 - Frames: frame values behave like lists of record rows in collection pipelines (`keep/drop rows`, `group by`, `sort`, `take/skip`) and loops (`repeat for each row in sales_data`).
-- Macros: `use macro "name"` expands AI-generated code at load-time; macro definitions capture description/sample/parameters.
+- Macros: `use macro "name"` expands code at load-time. If AI is configured it generates code; otherwise the `sample` string is used as a template where `{ParamName}` placeholders are replaced with evaluated argument values. Advanced AI macros may return a structured `{"macro_plan": {...}}` JSON instead of raw DSL; the macro engine converts that plan into deterministic Namel3ss declarations (records/flows/pages) before running the usual parse/lint steps.
 - Built-in AI macro `crud_ui` generates CRUD flows, forms, and UI pages for an entity:
-  - `use macro "crud_ui" with: entity "Product" fields ["name", "price"]`
-- UI pages: `page "name" at "/route":` with layout elements for static rendering; sections group layout children; `use form` embeds previously declared forms. UI-2 adds `state`, `input "label" as var [type is ...]`, `button "Label": on click: ...`, and conditional blocks `when <expr>: show: ... otherwise: ...`.
+  ```
+  use macro "crud_ui" with:
+    entity "Product"
+    fields:
+      field is "name":
+        type is "string"
+        required is true
+      field is "price":
+        type is "float"
+        required is true
+        min is 0
+      field is "is_active":
+        type is "bool"
+        default is true
+  ```
+  The macro emits a frame, a `record is "Product"` declaration (with a generated UUID product_id), CRUD flows (`list_products`, `create_product`, `edit_product`, `delete_product`, `get_product`), and scaffold pages (`products_list`, `product_create`, `product_edit`, `product_detail`) that wire buttons to the generated flows using the provided fields (type/required/default/min/max).
+- Built-in macro `app_scaffold` builds on `crud_ui` to emit a full app skeleton (CRUD data model + flows/pages, a simple RAG vector_store/pipeline, a support AI/agent, and a starter RAG evaluation block) from the same `entity`/`fields` block.
+- UI pages: `page is "name" at "/route":` with layout elements for static rendering; sections group layout children; `use form` embeds previously declared forms. UI-2 adds `state`, `input "label" as var [type is ...]`, `button "Label": on click: ...`, and conditional blocks `when <expr>: show: ... otherwise: ...`.
 - Literals: strings, booleans (`true`/`false`), and numbers (int/float).
+- Macro arguments support literal values (strings, numbers, booleans, lists); variables or function calls are not supported in this phase.
 - Operators:
   - Logical: `and`, `or`, `not`
   - Comparisons: `==`, `!=`, `<`, `>`, `<=`, `>=` plus English forms (`is greater than`, `is less than`, `is at least`, `is at most`)

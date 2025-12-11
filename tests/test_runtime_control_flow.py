@@ -179,6 +179,46 @@ def test_match_selects_branch_by_literal_value():
     assert result.state.get("route") == "support_flow"
 
 
+def test_match_success_and_error_patterns_runtime():
+    flow = IRFlow(
+        name="match_result",
+        description=None,
+        steps=[
+            _script_step(
+                "router",
+                [
+                    IRMatch(
+                        target=ast_nodes.Identifier(name="state.result"),
+                        branches=[
+                            IRMatchBranch(
+                                pattern=ast_nodes.SuccessPattern(binding="val"),
+                                actions=[IRSet(name="state.output", expr=ast_nodes.Identifier(name="val"))],
+                            ),
+                            IRMatchBranch(
+                                pattern=ast_nodes.ErrorPattern(binding="err"),
+                                actions=[IRSet(name="state.error_value", expr=ast_nodes.Identifier(name="err"))],
+                            ),
+                            IRMatchBranch(
+                                pattern=None,
+                                actions=[IRSet(name="state.fallback", expr=ast_nodes.Literal(value=True))],
+                                label="otherwise",
+                            ),
+                        ],
+                    )
+                ],
+            )
+        ],
+    )
+    success_result = _run_flow(flow, initial_state={"result": {"result": 5}})
+    assert success_result.state.get("output") == 5
+    assert success_result.state.get("error_value") is None
+    error_result = _run_flow(flow, initial_state={"result": {"error": "bad"}})
+    assert error_result.state.get("error_value") == "bad"
+    assert error_result.state.get("output") is None
+    fallback_result = _run_flow(flow, initial_state={"result": "noop"})
+    assert fallback_result.state.get("fallback") is True
+
+
 def test_match_uses_otherwise_when_nothing_matches():
     flow = IRFlow(
         name="match_fallback",

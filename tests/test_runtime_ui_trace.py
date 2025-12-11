@@ -12,7 +12,7 @@ PROGRAM_TEXT = (
     '    component "text":\n'
     '      value "Welcome"\n'
     'model is "default":\n'
-    '  provider is "openai:gpt-4.1-mini"\n'
+    '  provider is "openai_default"\n'
     'ai is "summarise_message":\n'
     '  model is "default"\n'
 )

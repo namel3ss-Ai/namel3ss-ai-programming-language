@@ -8,12 +8,13 @@ from dataclasses import dataclass, field
 import re
 from typing import Any, Dict, List, Optional, Sequence
 
+from ..errors import Namel3ssError
 
 @dataclass
 class ToolConfig:
     name: str
     kind: str
-    method: str
+    method: str | None
     url_expr: object | None = None
     url_template: str | None = None
     headers: dict = field(default_factory=dict)
@@ -59,9 +60,32 @@ def build_ai_tool_specs(tool_refs: Sequence[Any], tool_registry: ToolRegistry) -
     """
     Build provider-neutral tool specs for AI function/tool-calling.
 
-    Parameters are derived from placeholders in url_template; all are treated as string.
+    Parameters are derived from url placeholders, input references, and request field names.
     """
     specs: List[AiToolSpec] = []
+
+    def _collect_names(tool: ToolConfig) -> list[str]:
+        names: list[str] = []
+
+        def _add(name: str) -> None:
+            if not name:
+                return
+            if name not in names:
+                names.append(name)
+
+        for name in getattr(tool, "input_fields", []) or []:
+            _add(name)
+        for placeholder in _PLACEHOLDER_RE.findall(getattr(tool, "url_template", "") or ""):
+            _add(placeholder)
+        for mapping in (getattr(tool, "query_params", {}) or {}, getattr(tool, "body_fields", {}) or {}, getattr(tool, "headers", {}) or {}):
+            for key in mapping.keys():
+                _add(str(key))
+        body_template = getattr(tool, "body_template", None)
+        if isinstance(body_template, str):
+            for placeholder in _PLACEHOLDER_RE.findall(body_template):
+                _add(placeholder)
+        return names
+
     for ref in tool_refs:
         if isinstance(ref, str):
             internal_name = ref
@@ -73,16 +97,13 @@ def build_ai_tool_specs(tool_refs: Sequence[Any], tool_registry: ToolRegistry) -
             continue
         tool = tool_registry.get(internal_name)
         if tool is None:
-            raise ValueError(f"Unknown tool '{internal_name}'")
-        input_fields = list(getattr(tool, "input_fields", []) or [])
-        if not input_fields:
-            placeholders = _PLACEHOLDER_RE.findall(getattr(tool, "url_template", "") or "")
-            input_fields = list(dict.fromkeys(placeholders))
-        properties = {name: {"type": "string"} for name in input_fields}
+            raise Namel3ssError(f"AI tool '{internal_name}' is not declared or registered.")
+        param_names = _collect_names(tool)
+        properties = {name: {"type": "string"} for name in param_names}
         parameters = {
             "type": "object",
             "properties": properties,
-            "required": list(dict.fromkeys(input_fields)),
+            "required": list(dict.fromkeys(getattr(tool, "input_fields", []) or param_names)),
         }
         specs.append(
             AiToolSpec(

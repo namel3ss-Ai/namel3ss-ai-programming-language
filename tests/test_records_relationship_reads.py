@@ -101,7 +101,7 @@ def _relationship_source(include_missing_user: bool = False, include_tenant: boo
     parts.append("\n")
     parts.extend(
         [
-            'record "User":\n',
+            'record is "User":\n',
             '  frame is "users"\n',
             "  fields:\n",
             "    id:\n",
@@ -115,7 +115,7 @@ def _relationship_source(include_missing_user: bool = False, include_tenant: boo
     if include_tenant:
         parts.extend(
             [
-                'record "Tenant":\n',
+                'record is "Tenant":\n',
                 '  frame is "tenants"\n',
                 "  fields:\n",
                 "    id:\n",
@@ -128,7 +128,7 @@ def _relationship_source(include_missing_user: bool = False, include_tenant: boo
         )
     parts.extend(
         [
-            'record "Order":\n',
+            'record is "Order":\n',
             '  frame is "orders"\n',
             "  fields:\n",
             "    id:\n",
@@ -240,13 +240,13 @@ def test_parser_rejects_unknown_base_alias():
         '  source:\n'
         '    backend is "memory"\n'
         '    table is "orders"\n'
-        'record "User":\n'
+        'record is "User":\n'
         '  frame is "users"\n'
         "  fields:\n"
         "    id:\n"
         '      type "string"\n'
         '      primary_key true\n'
-        'record "Order":\n'
+        'record is "Order":\n'
         '  frame is "orders"\n'
         "  fields:\n"
         "    id:\n"
@@ -275,13 +275,13 @@ def test_ir_error_when_via_field_missing():
         '  source:\n'
         '    backend is "memory"\n'
         '    table is "orders"\n'
-        'record "User":\n'
+        'record is "User":\n'
         '  frame is "users"\n'
         "  fields:\n"
         "    id:\n"
         '      type "string"\n'
         '      primary_key true\n'
-        'record "Order":\n'
+        'record is "Order":\n'
         '  frame is "orders"\n'
         "  fields:\n"
         "    id:\n"
@@ -309,13 +309,13 @@ def test_ir_error_when_field_not_foreign_key():
         '  source:\n'
         '    backend is "memory"\n'
         '    table is "orders"\n'
-        'record "User":\n'
+        'record is "User":\n'
         '  frame is "users"\n'
         "  fields:\n"
         "    id:\n"
         '      type "string"\n'
         '      primary_key true\n'
-        'record "Order":\n'
+        'record is "Order":\n'
         '  frame is "orders"\n'
         "  fields:\n"
         "    id:\n"

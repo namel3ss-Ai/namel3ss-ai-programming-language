@@ -41,6 +41,8 @@ class HTTPJsonProvider(ModelProvider):
         self.response_path = response_path
         self._http_client = http_client or self._default_http_client
         self._headers = headers or {"Content-Type": "application/json"}
+        self.supports_streaming = False
+        self.supports_tools = False
 
     def generate(self, messages: List[Dict[str, str]], **kwargs: Any) -> ModelResponse:
         model_name = kwargs.get("model") or self.default_model or "http-json"
@@ -83,3 +85,13 @@ class HTTPJsonProvider(ModelProvider):
         if "message" in data and isinstance(data["message"], dict) and "content" in data["message"]:
             return data["message"]["content"]
         raise Namel3ssError("HTTP JSON provider expected 'content' in response")
+
+    def chat_with_tools(
+        self,
+        messages: List[Dict[str, str]],
+        tools: List[Dict[str, Any]] | None = None,
+        tool_choice: str = "auto",
+        json_mode: bool = False,
+        **kwargs: Any,
+    ):
+        raise Namel3ssError("HTTPJsonProvider does not support tool calling.")

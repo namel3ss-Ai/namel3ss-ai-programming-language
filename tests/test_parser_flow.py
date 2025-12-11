@@ -40,7 +40,7 @@ def test_parse_page_sections_and_components():
 
 def test_parse_plugin_decl():
     module = parse_source(
-        'plugin "stripe":\n'
+        'plugin is "stripe":\n'
         '  description "Payments"\n'
     )
     plugin = next(d for d in module.declarations if isinstance(d, ast_nodes.PluginDecl))

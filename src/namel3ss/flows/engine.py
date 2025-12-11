@@ -2792,24 +2792,58 @@ class FlowEngine:
                 return True
         return False
 
+    def _is_success_result(self, value: Any) -> bool:
+        if self._is_error_result(value):
+            return False
+        if hasattr(value, "is_success"):
+            try:
+                return bool(getattr(value, "is_success"))
+            except Exception:
+                return False
+        if isinstance(value, dict):
+            if "success" in value:
+                return bool(value.get("success"))
+            if "result" in value or "value" in value:
+                return True
+        if hasattr(value, "result"):
+            return True
+        if hasattr(value, "value"):
+            return True
+        return False
+
     def _extract_success_payload(self, value: Any) -> Any:
         if isinstance(value, dict):
             if "result" in value:
                 return value.get("result")
             if "value" in value:
                 return value.get("value")
+        if hasattr(value, "result"):
+            try:
+                return getattr(value, "result")
+            except Exception:
+                pass
+        if hasattr(value, "value"):
+            try:
+                return getattr(value, "value")
+            except Exception:
+                pass
         return value
 
     def _extract_error_payload(self, value: Any) -> Any:
         if isinstance(value, dict) and "error" in value:
             return value.get("error")
+        if hasattr(value, "error"):
+            try:
+                return getattr(value, "error")
+            except Exception:
+                pass
         return value
 
     def _match_branch(self, br: IRMatchBranch, target_val: Any, evaluator: ExpressionEvaluator, state: FlowState) -> bool:
         pattern = br.pattern
         env = state.variables or VariableEnvironment()
         if isinstance(pattern, ast_nodes.SuccessPattern):
-            if self._is_error_result(target_val):
+            if not self._is_success_result(target_val):
                 return False
             if pattern.binding:
                 if env.has(pattern.binding):
@@ -3186,6 +3220,10 @@ class FlowEngine:
         """Evaluate WHERE conditions into a normalized boolean tree."""
         if not conditions:
             return None
+        if isinstance(conditions, dict) and conditions and not (
+            {"field", "op"} <= set(conditions.keys()) or conditions.get("type") in {"leaf", "and", "or", "all", "any"}
+        ):
+            conditions = [{"field": key, "op": "eq", "value": value} for key, value in conditions.items()]
         allowed_ops = {"eq", "neq", "gt", "lt", "ge", "le", "in", "is_null", "is_not_null"}
 
         def _eval_leaf(cond_obj: object) -> dict:

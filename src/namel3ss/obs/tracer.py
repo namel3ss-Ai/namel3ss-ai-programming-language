@@ -258,6 +258,17 @@ class Tracer:
         if self._current_flow:
             self._current_flow.events.append({"event": event, **payload})
 
+    def span(self, name: str, attributes: Optional[dict] = None):
+        """Simple context manager stub to satisfy tracing hooks in runtimes."""
+        class _Span:
+            def __enter__(self_inner):
+                return self_inner
+
+            def __exit__(self_inner, exc_type, exc, tb):
+                return False
+
+        return _Span()
+
     @property
     def last_trace(self) -> Optional[AppTrace]:
         return self._current_app

@@ -1,8 +1,11 @@
 from textwrap import dedent
 
+import pytest
+
 from namel3ss.lexer import Lexer
 from namel3ss.parser import Parser
 from namel3ss import ast_nodes
+from namel3ss.errors import ParseError
 
 
 def test_parse_tool_with_query_and_url_expr():
@@ -25,10 +28,14 @@ def test_parse_tool_with_query_and_url_expr():
     assert tool.url_expr.value == "https://api.example.com/weather"
     assert "city" in tool.query_params
     city_expr = tool.query_params["city"]
-    assert isinstance(city_expr, ast_nodes.RecordFieldAccess)
-    assert isinstance(city_expr.target, ast_nodes.Identifier)
-    assert city_expr.target.name == "input"
-    assert city_expr.field == "city"
+    if isinstance(city_expr, ast_nodes.VarRef):
+        assert city_expr.root == "input"
+        assert city_expr.path == ["city"]
+    else:
+        assert isinstance(city_expr, ast_nodes.RecordFieldAccess)
+        assert isinstance(city_expr.target, ast_nodes.Identifier)
+        assert city_expr.target.name == "input"
+        assert city_expr.field == "city"
     assert tool.headers == {}
     assert tool.body_fields == {}
 
@@ -54,12 +61,34 @@ def test_parse_tool_with_headers_and_body_block():
     assert "Accept" in tool.headers
     assert isinstance(tool.headers["Accept"], ast_nodes.Literal)
     title_expr = tool.body_fields["title"]
-    assert isinstance(title_expr, ast_nodes.RecordFieldAccess)
-    assert isinstance(title_expr.target, ast_nodes.Identifier)
-    assert title_expr.target.name == "input"
-    assert title_expr.field == "title"
+    if isinstance(title_expr, ast_nodes.VarRef):
+        assert title_expr.root == "input"
+        assert title_expr.path == ["title"]
+    else:
+        assert isinstance(title_expr, ast_nodes.RecordFieldAccess)
+        assert isinstance(title_expr.target, ast_nodes.Identifier)
+        assert title_expr.target.name == "input"
+        assert title_expr.field == "title"
     api_expr = tool.body_fields["api_key"]
-    assert isinstance(api_expr, ast_nodes.RecordFieldAccess)
-    assert isinstance(api_expr.target, ast_nodes.Identifier)
-    assert api_expr.target.name == "secret"
-    assert api_expr.field == "SERVICE_KEY"
+    if isinstance(api_expr, ast_nodes.VarRef):
+        assert api_expr.root == "secret"
+        assert api_expr.path == ["SERVICE_KEY"]
+    else:
+        assert isinstance(api_expr, ast_nodes.RecordFieldAccess)
+        assert isinstance(api_expr.target, ast_nodes.Identifier)
+        assert api_expr.target.name == "secret"
+        assert api_expr.field == "SERVICE_KEY"
+
+
+def test_legacy_tool_header_rejected():
+    code = dedent(
+        '''
+        tool "legacy":
+          kind is "http_json"
+          method is "GET"
+          url is "https://api.example.com/weather"
+        '''
+    )
+    with pytest.raises(ParseError) as excinfo:
+        Parser(Lexer(code).tokenize()).parse_module()
+    assert 'Use tool is "legacy": instead.' in str(excinfo.value)

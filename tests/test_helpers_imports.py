@@ -50,6 +50,8 @@ def test_helper_call_with_return():
         '  step is "s":\n'
         "    let val be double(3)\n"
         '    do agent "done"\n'
+        'agent is "done":\n'
+        '  goal is "Complete"\n'
     )
     ir_prog = ast_to_ir(parse_source(source))
     engine, runner = _make_engine(ir_prog)
@@ -69,6 +71,8 @@ def test_helper_return_none():
         '  step is "s":\n'
         "    let val be noop()\n"
         '    do agent "done"\n'
+        'agent is "done":\n'
+        '  goal is "Complete"\n'
     )
     ir_prog = ast_to_ir(parse_source(source))
     engine, runner = _make_engine(ir_prog)

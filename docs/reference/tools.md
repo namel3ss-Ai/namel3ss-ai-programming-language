@@ -1,10 +1,10 @@
-# Tools & External Integrations (HTTP JSON)
+# Tools & External Integrations (provider-agnostic)
 
 Declare a tool once, wire its inputs, then call it from any flow step.
 
 ```ai
 tool is "weather_api":
-  kind is "http_json"
+  kind is "http"
   method is "GET"
   url is "https://api.example.com/weather"
   headers:
@@ -28,11 +28,11 @@ flow is "get_city_weather":
 
 Key details:
 
-- Supported kinds: `http_json`.
+- Supported kinds: `http`/`http_json` for HTTP calls, plus `function`/`local` for non-HTTP adapters.
 - `method` must be one of GET/POST/PUT/PATCH/DELETE.
 - `url` can be any expression (literal, `config.X`, etc.).
 - `query`, `headers`, and `body` blocks accept nested expressions referencing `input.*`, `secret.*`, literals, or other expressions.
-- Tool steps use an `input:` object. Every `input.foo` reference inside the tool definition becomes a required field; missing values trigger `N3F-965`.
+- Tool steps use an `input:` object. Every `input.foo` reference inside the tool definition (and placeholders inside `url_template`/`body_template`) becomes a required field; missing values trigger `N3F-965`.
 - The step result is a dict: `{"ok": bool, "status": int | None, "data": <parsed JSON or str>, "headers": {...}, "error"?: str}`.
 
 Diagnostics:
@@ -64,6 +64,8 @@ Rules & diagnostics:
 - Use `as is "alias"` to expose a friendlier name to the model without renaming the underlying tool.
 - Exposed names must be unique within the AI (`N3L-1411` if duplicated).
 - If the model ever asks for an alias that does not map to a declared tool, the runtime raises `N3F-972`.
+- Providers translate the same tool DSL into their own payloads: OpenAI/compatible (function calling), Gemini (functionDeclarations), Azure OpenAI, or local/dummy providers you stub in tests.
+- Provider capabilities are listed in `docs/reference/providers.md`; if a provider does not support tools, the runtime raises a clear error instead of ignoring the `tools:` block.
 
 When the AI step runs (non-streaming mode):
 

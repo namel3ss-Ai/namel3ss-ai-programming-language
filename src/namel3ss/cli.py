@@ -23,6 +23,7 @@ from pathlib import Path
 
 from . import ir, lexer, parser
 from . import ast_nodes
+from .macros import MacroExpander, MacroExpansionError, render_module_source, run_macro_tests
 from .secrets.manager import SecretsManager, get_default_secrets_manager
 from .diagnostics import Diagnostic
 from .diagnostics.runner import apply_strict_mode, collect_diagnostics, collect_lint, iter_ai_files
@@ -171,6 +172,14 @@ def build_cli_parser() -> argparse.ArgumentParser:
     lint_cmd.add_argument("--file", type=Path, help="Legacy single-file flag")
     lint_cmd.add_argument("--json", action="store_true", help="Emit lint results as JSON")
     lint_cmd.add_argument("--strict", action="store_true", help="Treat warnings as errors")
+
+    macro_cmd = register("macro", help="Macro utilities (expand, test)")
+    macro_sub = macro_cmd.add_subparsers(dest="macro_command", required=True)
+    macro_expand_cmd = macro_sub.add_parser("expand", help="Expand macros and print the expanded source")
+    macro_expand_cmd.add_argument("file", type=Path, help="Path to .ai source")
+    macro_expand_cmd.add_argument("--macro", dest="macro_name", help="Only expand uses of this macro name")
+    macro_test_cmd = macro_sub.add_parser("test", help="Run macro tests defined in a file")
+    macro_test_cmd.add_argument("file", type=Path, help="Path to .ai source containing macro tests")
 
     bundle_cmd = register("bundle", help="Create an app bundle")
     bundle_cmd.add_argument("path", nargs="?", type=Path, help="Path to .ai file or project")
@@ -436,6 +445,43 @@ def main(argv: list[str] | None = None) -> None:
         program = ir.ast_to_ir(module)
         print(json.dumps(asdict(program), indent=2))
         return
+
+    if args.command == "macro":
+        if args.macro_command == "expand":
+            module = load_module_from_file(args.file)
+            if getattr(args, "macro_name", None):
+                filtered: list[ast_nodes.Declaration] = []
+                for decl in module.declarations:
+                    if isinstance(decl, ast_nodes.MacroUse):
+                        if decl.macro_name == args.macro_name:
+                            filtered.append(decl)
+                        continue
+                    if isinstance(decl, ast_nodes.MacroDecl):
+                        filtered.append(decl)
+                        continue
+                    if isinstance(decl, ast_nodes.MacroTestDecl):
+                        continue
+                    filtered.append(decl)
+                module = ast_nodes.Module(declarations=filtered)
+            try:
+                expanded = MacroExpander(None).expand_module(module)
+            except MacroExpansionError as exc:
+                raise SystemExit(str(exc)) from exc
+            except Exception as exc:  # pragma: no cover - safety net
+                raise SystemExit(str(exc)) from exc
+            print(render_module_source(expanded))
+            return
+        if args.macro_command == "test":
+            module = load_module_from_file(args.file)
+            passed, failures = run_macro_tests(module, ai_callback=None)
+            if not passed and not failures:
+                raise SystemExit("No macro tests found in file.")
+            if failures:
+                for msg in failures:
+                    print(f"FAIL: {msg}")
+                raise SystemExit(1)
+            print(f"Passed {len(passed)} macro test(s).")
+            return
 
     if args.command == "export":
         if args.export_command == "ir":
@@ -1135,6 +1181,10 @@ def _check_port_available(port: int, name: str) -> None:
         s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         try:
             s.bind(("127.0.0.1", port))
+        except PermissionError:
+            # In restricted environments we may not be allowed to bind just to test availability.
+            # Assume the port is usable and continue.
+            return
         except OSError:
             raise SystemExit(f"Port {port} is in use. Try: n3 studio --{name}-port <other>")
 

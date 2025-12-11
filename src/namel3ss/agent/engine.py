@@ -8,6 +8,7 @@ import time
 import numbers
 import urllib.error
 from typing import Any, Optional
+import copy
 
 from .. import ast_nodes
 from ..ai.registry import ModelRegistry
@@ -31,6 +32,7 @@ from ..ir import (
     IRMatchBranch,
     IRNote,
     IRProgram,
+    IRAiCall,
     IRRepeatUpTo,
     IRRetry,
     IRReturn,
@@ -136,7 +138,34 @@ class AgentRunner:
                     description="Echo last output",
                 )
             )
-        return AgentExecutionPlan(steps=steps, current_index=0, max_retries_per_step=1)
+        return AgentExecutionPlan(steps=steps, current_index=0, max_retries_per_step=1, agent_name=agent.name)
+
+    def _bind_ai_for_agent(self, agent: IRAgent) -> IRAiCall | None:
+        """
+        Resolve the AI backing this agent. Convention: use an ai with the same name.
+        Returns a shallow copy with agent goal/personality/system folded into the system prompt,
+        and the agent's memory bound if the AI did not set one.
+        """
+        ai_name = agent.name
+        ai_call = self.program.ai_calls.get(ai_name)
+        if not ai_call:
+            return None
+        ai_copy = copy.copy(ai_call)
+        prompt_parts: list[str] = []
+        if agent.system_prompt:
+            prompt_parts.append(agent.system_prompt)
+        if agent.goal:
+            prompt_parts.append(f"Goal: {agent.goal}")
+        if agent.personality:
+            prompt_parts.append(f"Personality: {agent.personality}")
+        if ai_call.system_prompt:
+            prompt_parts.append(ai_call.system_prompt)
+        combined_prompt = "\n".join([p for p in prompt_parts if p])
+        if combined_prompt:
+            ai_copy.system_prompt = combined_prompt
+        if agent.memory_name and not getattr(ai_copy, "memory_name", None):
+            ai_copy.memory_name = agent.memory_name
+        return ai_copy
 
     def run(
         self,
@@ -149,7 +178,12 @@ class AgentRunner:
             if agent_name not in self.program.agents:
                 raise Namel3ssError(f"Unknown agent '{agent_name}'")
             agent = self.program.agents[agent_name]
-            plan = self.build_plan(agent, page_ai_fallback=page_ai_fallback)
+            bound_ai = self._bind_ai_for_agent(agent)
+            if not bound_ai and not page_ai_fallback:
+                raise Namel3ssError(
+                    f"Agent '{agent.name}' has no bound AI. Declare 'ai is \"{agent.name}\":' or provide a fallback."
+                )
+            plan = self.build_plan(agent, page_ai_fallback=page_ai_fallback or (bound_ai.name if bound_ai else None))
             results: list[AgentStepResult] = []
             reflection_cfg = self.config.reflection if self.config else None
 
@@ -197,6 +231,8 @@ class AgentRunner:
             last_result: Optional[AgentStepResult] = None
             while attempt <= max(step.max_retries, plan.max_retries_per_step) and not stopped:
                 try:
+                    if step.kind == "ai" and step.config.get("ai_call") is None and bound_ai:
+                        step.config["ai_call"] = bound_ai
                     output = self._run_step(step, last_output, context)
                     success = True
                 except Exception as exc:  # pragma: no cover - retry path
@@ -381,6 +417,13 @@ class AgentRunner:
     def _stringify_answer(self, answer: Any) -> Optional[str]:
         if answer is None:
             return None
+        if hasattr(answer, "final_answer"):
+            try:
+                val = getattr(answer, "final_answer")
+                if val:
+                    return str(val)
+            except Exception:
+                pass
         if isinstance(answer, dict):
             provider_result = answer.get("provider_result")
             if provider_result is not None:
@@ -401,9 +444,11 @@ class AgentRunner:
                 context.metrics.record_tool_call(provider=step.target, cost=0.0005)
             return result
         if step.kind == "ai":
-            if step.target not in self.program.ai_calls:
-                raise Namel3ssError(f"AI call '{step.target}' not found")
-            ai_call = self.program.ai_calls[step.target]
+            ai_call = step.config.get("ai_call") if isinstance(step.config, dict) else None
+            if ai_call is None:
+                if step.target not in self.program.ai_calls:
+                    raise Namel3ssError(f"AI call '{step.target}' not found")
+                ai_call = self.program.ai_calls[step.target]
             provider, provider_model, provider_name = self.model_registry.resolve_provider_for_ai(ai_call)
             provider_model = provider_model or ai_call.model_name or provider_name
             provider_key = f"model:{provider_name}:{provider_model}"
@@ -448,7 +493,7 @@ class AgentRunner:
         if step.kind == "subagent":
             if step.target not in self.program.agents:
                 raise Namel3ssError(f"Sub-agent '{step.target}' not found")
-            return {"subagent": step.target}
+            return self.run(step.target, context)
         raise Namel3ssError(f"Unsupported step kind '{step.kind}'")
 
     # ---------- Conditional execution for agents ----------
@@ -563,17 +608,49 @@ class AgentRunner:
                 return True
         return False
 
+    def _is_success_result(self, value: Any) -> bool:
+        if self._is_error_result(value):
+            return False
+        if hasattr(value, "is_success"):
+            try:
+                return bool(getattr(value, "is_success"))
+            except Exception:
+                return False
+        if isinstance(value, dict):
+            if "success" in value:
+                return bool(value.get("success"))
+            if "result" in value or "value" in value:
+                return True
+        if hasattr(value, "result") or hasattr(value, "value"):
+            return True
+        return False
+
     def _extract_success_payload(self, value: Any) -> Any:
         if isinstance(value, dict):
             if "result" in value:
                 return value.get("result")
             if "value" in value:
                 return value.get("value")
+        if hasattr(value, "result"):
+            try:
+                return getattr(value, "result")
+            except Exception:
+                pass
+        if hasattr(value, "value"):
+            try:
+                return getattr(value, "value")
+            except Exception:
+                pass
         return value
 
     def _extract_error_payload(self, value: Any) -> Any:
         if isinstance(value, dict) and "error" in value:
             return value.get("error")
+        if hasattr(value, "error"):
+            try:
+                return getattr(value, "error")
+            except Exception:
+                pass
         return value
 
     def _require_list_iterable(self, value: Any, *, context: str, detail: str | None = None) -> list[Any]:
@@ -606,7 +683,7 @@ class AgentRunner:
         pattern = br.pattern
         env = getattr(context, "_env", None) or VariableEnvironment(context.variables)
         if isinstance(pattern, ast_nodes.SuccessPattern):
-            if self._is_error_result(target_val):
+            if not self._is_success_result(target_val):
                 return False
             if pattern.binding:
                 if env.has(pattern.binding):

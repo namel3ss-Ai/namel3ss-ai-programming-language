@@ -2,7 +2,7 @@ import pytest
 
 from namel3ss import ast_nodes
 from namel3ss.errors import Namel3ssError
-from namel3ss.macros import MacroExpander, expand_macros
+from namel3ss.macros import MacroExpander, MacroExpansionError, expand_macros
 from namel3ss.parser import parse_source
 
 
@@ -101,10 +101,14 @@ def test_macro_output_parse_error():
   )
 
   def ai_cb(macro, args):
-      return "```not code```"
+      return 'flow "legacy":\n  step is "s":\n    log info "hi"\n'
 
-  with pytest.raises(Namel3ssError):
+  with pytest.raises(MacroExpansionError) as excinfo:
       _expand(src, ai_cb)
+  message = str(excinfo.value)
+  assert 'Macro "bad"' in message
+  assert 'flow "legacy": is not supported' in message
+  assert "line" in message
 
 
 def test_macro_name_conflict():
@@ -139,10 +143,48 @@ def test_macro_expansion_too_large():
   )
 
   def ai_cb(macro, args):
-      return "flow \"x\":\n  step \"s\":\n    log info \"hi\"\n" + ("x" * 2100)
+      return 'flow is "x":\n  step is "s":\n    log info "hi"\n' + ("x" * 20000)
 
-  with pytest.raises(Namel3ssError):
+  with pytest.raises(MacroExpansionError) as excinfo:
       _expand(src, ai_cb)
+  assert "Macro \"big\"" in str(excinfo.value)
+  assert "limit" in str(excinfo.value) or "too large" in str(excinfo.value)
+
+
+def test_macro_respects_configurable_limit(monkeypatch):
+  src = (
+      'macro "big" using ai "codegen":\n'
+      '  description "big"\n'
+      '\n'
+      'use macro "big"\n'
+  )
+  monkeypatch.setenv("NAMEL3SS_MAX_MACRO_OUTPUT", "60")
+
+  def ai_cb(macro, args):
+      return 'flow is "x":\n  step is "s":\n    log info "hi"\n' + ("y" * 55)
+
+  with pytest.raises(MacroExpansionError) as excinfo:
+      _expand(src, ai_cb)
+  assert "NAMEL3SS" not in str(excinfo.value)  # just ensure formatted message, not env name
+  assert "Macro \"big\"" in str(excinfo.value)
+  assert "limit" in str(excinfo.value)
+
+
+def test_macro_under_limit_passes(monkeypatch):
+  src = (
+      'macro "small" using ai "codegen":\n'
+      '  description "small"\n'
+      '\n'
+      'use macro "small"\n'
+  )
+  monkeypatch.setenv("NAMEL3SS_MAX_MACRO_OUTPUT", "200")
+
+  def ai_cb(macro, args):
+      return 'flow is "ok":\n  step is "s":\n    log info "fine"\n'
+
+  expanded = _expand(src, ai_cb)
+  flows = [d for d in expanded.declarations if isinstance(d, ast_nodes.FlowDecl)]
+  assert flows and flows[0].name == "ok"
 
 
 def test_macro_recursion_detected():
@@ -156,5 +198,171 @@ def test_macro_recursion_detected():
   def ai_cb(macro, args):
       return 'use macro "loop"\n'
 
-  with pytest.raises(Namel3ssError):
+  with pytest.raises(MacroExpansionError):
       _expand(src, ai_cb)
+
+
+def test_nested_macro_expansion():
+  src = (
+      'macro "inner" using ai "codegen":\n'
+      '  description "inner macro"\n'
+      '  sample "flow is \\"inner_flow\\":\\n  step is \\"s\\":\\n    log info \\"inner\\""\n'
+      '\n'
+      'macro "outer" using ai "codegen":\n'
+      '  description "outer macro"\n'
+      '  sample "use macro \\"inner\\"\\nflow is \\"outer_flow\\":\\n  step is \\"s\\":\\n    log info \\"outer\\""\n'
+      '\n'
+      'use macro "outer"\n'
+  )
+  module = parse_source(src)
+  expanded = MacroExpander(None).expand_module(module)
+  flows = {d.name for d in expanded.declarations if isinstance(d, ast_nodes.FlowDecl)}
+  assert {"inner_flow", "outer_flow"} <= flows
+
+
+def test_macro_cycle_reports_chain():
+  src = (
+      'macro "A" using ai "codegen":\n'
+      '  description "calls B"\n'
+      '  sample "use macro \\"B\\""\n'
+      '\n'
+      'macro "B" using ai "codegen":\n'
+      '  description "calls A"\n'
+      '  sample "use macro \\"A\\""\n'
+      '\n'
+      'use macro "A"\n'
+  )
+  module = parse_source(src)
+  with pytest.raises(MacroExpansionError) as excinfo:
+      MacroExpander(None).expand_module(module)
+  msg = str(excinfo.value)
+  assert "Macro \"A\"" in msg
+  assert "B" in msg
+  assert "chain" in msg or "Recursive" in msg
+
+
+def test_macro_backtick_error_message():
+  src = (
+      'macro "ticks" using ai "codegen":\n'
+      '  description "bad ticks"\n'
+      '\n'
+      'use macro "ticks"\n'
+  )
+
+  def ai_cb(macro, args):
+      return "```flow is \"x\":\n  step is \"s\":\n    log info \"hi\"```"
+
+  with pytest.raises(MacroExpansionError) as excinfo:
+      _expand(src, ai_cb)
+  message = str(excinfo.value)
+  assert 'Macro "ticks"' in message
+  assert "backticks" in message.lower()
+
+
+def test_template_macro_expands_without_ai():
+  src = (
+      'macro "tmpl" using ai "codegen":\n'
+      '  description "Template flow"\n'
+      '  sample "flow is \\"{FlowName}\\":\\n  step is \\"start\\":\\n    log info \\"Hello, {name}\\""\n'
+      '\n'
+      'use macro "tmpl" with:\n'
+      '  FlowName "welcome"\n'
+      '  name "Disan"\n'
+  )
+  module = parse_source(src)
+  expander = MacroExpander(None)
+  expanded = expander.expand_module(module)
+  flows = [d for d in expanded.declarations if isinstance(d, ast_nodes.FlowDecl)]
+  assert flows and flows[0].name == "welcome"
+  stmt = flows[0].steps[0].statements[0]
+  assert isinstance(stmt, ast_nodes.LogStatement)
+  assert stmt.message == "Hello, Disan"
+
+
+def test_template_fallback_when_ai_missing():
+  src = (
+      'macro "tmpl" using ai "codegen":\n'
+      '  description "Template flow"\n'
+      '  sample "flow is \\"fallback\\":\\n  step is \\"s\\":\\n    log info \\"ok\\""\n'
+      '\n'
+      'use macro "tmpl"\n'
+  )
+  expander = MacroExpander(None)
+  expanded = _expand(src, lambda m, a: (_ for _ in ()).throw(MacroExpansionError("no ai")) )
+  flows = [d for d in expanded.declarations if isinstance(d, ast_nodes.FlowDecl)]
+  assert flows and flows[0].name == "fallback"
+
+
+def test_macro_arg_expression_errors():
+  src = (
+      'macro "tmpl" using ai "codegen":\n'
+      '  description "Template flow"\n'
+      '  sample "flow is \\"f\\":\\n  step is \\"s\\":\\n    log info \\"ok\\""\n'
+      '\n'
+      'use macro "tmpl" with:\n'
+      '  name other_var\n'
+  )
+  module = parse_source(src)
+  expander = MacroExpander(None)
+  with pytest.raises(MacroExpansionError) as excinfo:
+      expander.expand_module(module)
+  msg = str(excinfo.value)
+  assert 'Macro "tmpl"' in msg
+  assert "literal values" in msg
+
+
+def test_crud_ui_accepts_field_blocks():
+  src = (
+      'use macro "crud_ui" with:\n'
+      '  entity "Product"\n'
+      "  fields:\n"
+      '    field is "name":\n'
+      '      type is "string"\n'
+      '      required is true\n'
+      '    field is "price":\n'
+      '      type is "float"\n'
+      '      required is true\n'
+      '      min is 0\n'
+      '    field is "is_active":\n'
+      '      type is "bool"\n'
+      '      default is true\n'
+  )
+  module = parse_source(src)
+  expander = MacroExpander(None)
+  expanded = expander.expand_module(module)
+  flows = [d for d in expanded.declarations if isinstance(d, ast_nodes.FlowDecl)]
+  assert any(f.name == "create_product" for f in flows)
+  assert any(f.name == "edit_product" for f in flows)
+  code = "\n".join(f'{d.name}' for d in flows)
+  assert "create_product" in code and "edit_product" in code
+
+
+def test_crud_ui_generates_records_and_db_steps():
+  src = (
+      'use macro "crud_ui" with:\n'
+      '  entity "Product"\n'
+      "  fields:\n"
+      '    field is "name":\n'
+      '      type is "string"\n'
+      '      required is true\n'
+      '    field is "price":\n'
+      '      type is "float"\n'
+      '      required is true\n'
+      '      min is 0\n'
+  )
+  module = parse_source(src)
+  expanded = MacroExpander(None).expand_module(module)
+  record = next(d for d in expanded.declarations if isinstance(d, ast_nodes.RecordDecl))
+  assert record.name == "Product"
+  assert record.frame == "products_frame"
+  field_map = {f.name: f for f in record.fields}
+  assert "product_id" in field_map and field_map["product_id"].primary_key is True
+  assert "name" in field_map and field_map["name"].required is True
+  flows = {d.name: d for d in expanded.declarations if isinstance(d, ast_nodes.FlowDecl)}
+  assert {"list_products", "create_product", "edit_product", "delete_product"} <= set(flows.keys())
+  create_step = flows["create_product"].steps[0]
+  assert create_step.kind == "db_create"
+  assert create_step.target == "Product"
+  assert "values" in create_step.params
+  list_step = flows["list_products"].steps[0]
+  assert list_step.params.get("query")

@@ -2,11 +2,23 @@ import pytest
 
 from namel3ss import parser
 from namel3ss.ast_nodes import VectorStoreDecl
+from namel3ss.errors import ParseError
 from namel3ss.ir import ast_to_ir
 
 
 def parse_module(src: str):
     return parser.parse_source(src)
+
+
+def test_legacy_model_header_rejected():
+    with pytest.raises(ParseError) as excinfo:
+        parse_module(
+            '''
+model "dummy":
+  provider "openai_default"
+'''
+        )
+    assert 'Use model is "dummy": instead.' in str(excinfo.value)
 
 
 def test_frame_is_syntax_parses():

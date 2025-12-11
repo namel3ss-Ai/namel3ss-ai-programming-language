@@ -9,7 +9,7 @@ from typing import Any, Callable, Dict, Iterable, List, Optional
 
 from ...errors import Namel3ssError
 from ..models import ModelResponse, ModelStreamChunk
-from . import ModelProvider
+from . import ChatToolResponse, ModelProvider
 
 HttpClient = Callable[[str, Dict[str, Any], Dict[str, str]], Dict[str, Any]]
 HttpStreamClient = Callable[[str, Dict[str, Any], Dict[str, str]], Iterable[Dict[str, Any]]]
@@ -32,6 +32,8 @@ class GeminiProvider(ModelProvider):
         self.base_url = base_url or "https://generativelanguage.googleapis.com/v1beta"
         self._http_client = http_client or self._default_http_client
         self._http_stream = http_stream or self._default_http_stream
+        self.supports_tools = True
+        self.supports_streaming = True
 
     def _build_url(self, model: str) -> str:
         return urllib.parse.urljoin(self.base_url + "/", f"models/{model}:generateContent")
@@ -111,3 +113,62 @@ class GeminiProvider(ModelProvider):
     def _default_http_stream(self, url: str, body: Dict[str, Any], headers: Dict[str, str]) -> Iterable[Dict[str, Any]]:
         # Basic fallback: reuse non-streaming client and wrap as a single chunk.
         yield self._default_http_client(url, body, headers)
+
+    def chat_with_tools(
+        self,
+        messages: List[Dict[str, str]],
+        tools: List[Dict[str, Any]] | None = None,
+        tool_choice: str = "auto",
+        json_mode: bool = False,
+        **kwargs: Any,
+    ) -> ChatToolResponse:
+        if not self.api_key:
+            raise Namel3ssError("Gemini API key missing for provider")
+        model = kwargs.get("model") or self.default_model
+        if not model:
+            raise Namel3ssError("Gemini model name is required")
+        contents = [{"role": msg.get("role", "user"), "parts": [{"text": msg.get("content", "")}]} for msg in messages]
+        body: Dict[str, Any] = {"contents": contents}
+        if json_mode:
+            body["generationConfig"] = {"responseMimeType": "application/json"}
+        if tools:
+            body["tools"] = [
+                {
+                    "functionDeclarations": [
+                        {
+                            "name": tool.get("name"),
+                            "description": tool.get("description"),
+                            "parameters": tool.get("parameters"),
+                        }
+                        for tool in tools
+                    ]
+                }
+            ]
+        url = f"{self._build_url(model)}?key={urllib.parse.quote(self.api_key)}"
+        data = self._http_client(url, body, {"Content-Type": "application/json"})
+        tool_calls: List[Dict[str, Any]] = []
+        final_text: str | None = None
+        finish_reason: str | None = None
+        if isinstance(data, dict):
+            candidates = data.get("candidates") or []
+            if candidates:
+                choice = candidates[0]
+                finish_reason = choice.get("finish_reason")
+                parts = choice.get("content", {}).get("parts", []) or []
+                for part in parts:
+                    func = part.get("functionCall") or part.get("function_call")
+                    if func:
+                        tool_calls.append(
+                            {
+                                "name": func.get("name"),
+                                "arguments": func.get("args") or func.get("arguments") or {},
+                            }
+                        )
+                    if final_text is None and "text" in part:
+                        final_text = part.get("text") or ""
+        return ChatToolResponse(
+            final_text=final_text,
+            tool_calls=tool_calls,
+            raw=data,
+            finish_reason=finish_reason,
+        )
