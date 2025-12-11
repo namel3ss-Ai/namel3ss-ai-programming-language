@@ -574,6 +574,7 @@ class FlowStepDecl:
     statements: List["Statement | FlowAction"] = field(default_factory=list)
     conditional_branches: Optional[list["ConditionalBranch"]] = None
     when_expr: Optional[Expr] = None
+    timeout: Expr | None = None
     streaming: bool = False
     stream_channel: Optional[str] = None
     stream_role: Optional[str] = None
@@ -1200,6 +1201,48 @@ class UIConditional(LayoutElement):
 
 
 @dataclass
+class ToolRetryConfig:
+    max_attempts: Expr | None = None
+    backoff: str | None = None
+    initial_delay: Expr | None = None
+    max_delay: Expr | None = None
+    jitter: Expr | None = None
+    retry_on_status: Expr | None = None
+    retry_on_exceptions: Expr | None = None
+    allow_unsafe: Expr | None = None
+
+
+@dataclass
+class ToolAuthConfig:
+    kind: str | None = None
+    token: Expr | None = None
+    username: Expr | None = None
+    password: Expr | None = None
+    location: str | None = None
+    name: str | None = None
+    value: Expr | None = None
+
+
+@dataclass
+class ToolRateLimitConfig:
+    max_calls_per_minute: Expr | None = None
+    max_calls_per_second: Expr | None = None
+    burst: Expr | None = None
+
+
+@dataclass
+class SimpleTypeSchema:
+    type: str | None = None
+
+
+@dataclass
+class ResponseSchema:
+    type: str | None = None
+    required: list[str] = field(default_factory=list)
+    properties: Dict[str, SimpleTypeSchema] = field(default_factory=dict)
+
+
+@dataclass
 class ToolDeclaration:
     name: str
     kind: str | None = None
@@ -1210,6 +1253,14 @@ class ToolDeclaration:
     query_params: Dict[str, Expr] = field(default_factory=dict)
     body_fields: Dict[str, Expr] = field(default_factory=dict)
     body_template: Expr | None = None  # legacy body expression
+    timeout: Expr | None = None
+    retry: ToolRetryConfig | None = None
+    auth: ToolAuthConfig | None = None
+    response_schema: ResponseSchema | None = None
+    logging: str | None = None
+    rate_limit: ToolRateLimitConfig | None = None
+    multipart: Expr | None = None
+    query_encoding: str | None = None
     span: Optional[Span] = None
 
 

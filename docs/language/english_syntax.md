@@ -94,6 +94,12 @@ ai is "support_bot":
 - When the model asks to call a tool, the runtime executes the tool definition (HTTP or local), feeds the JSON result back to the model, and finally returns the natural-language answer.
 - If the provider asks for an alias that does not map to any tool, the runtime raises `N3F-972`.
 - OpenAI/Azure OpenAI use function-calling payloads; Gemini uses `functionDeclarations`; local/dummy providers can be stubbed in tests, but all reuse the same `tool is "name":` syntax.
+- Tool definitions support `timeout is <seconds>`, optional `retry:` (max_attempts, backoff, initial/max delay, jitter, retry_on_status/exceptions, allow_unsafe), and optional `auth:` blocks (`bearer`, `basic`, `api_key`). Default timeout: 15 seconds; default retry behaviour: single attempt.
+- Optional `response_schema:` blocks validate JSON responses (`type`, `required [...]`, `properties:` with `type`). Validation failures set `ok` to `false` and include the missing/invalid field in the error text.
+- Optional `logging is "debug"|"info"|"quiet"` toggles tool-call logging; debug logs include method/url/headers/status and a short response snippet. Interceptors (`before_tool_call`/`after_tool_call`) are available for custom observability.
+- Optional `rate_limit:` blocks add basic in-process throttling (`max_calls_per_minute`/`max_calls_per_second`, optional `burst`). Exceeding the limit returns a clear tool error.
+- `multipart is true` sends the `body:` fields as multipart/form-data (bytes or file-like values are treated as file uploads; other values are plain form fields). Default is JSON.
+- `query_encoding is "repeat" | "brackets" | "csv"` controls how list query params are encoded (default `repeat`: `ids=1&ids=2`).
 
 Flows can override tool usage per step:
 
@@ -105,6 +111,7 @@ step is "answer":
 ```
 
 Streaming steps do not support tools yet—using `tools is "none"` (or disabling streaming) is required for tool-enabled AIs when streaming (`N3F-975`).
+Tool steps can override a tool timeout per call with `timeout is <seconds>` inside the step block.
 
 ## Local variables (let)
 

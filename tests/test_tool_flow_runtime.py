@@ -54,11 +54,12 @@ def test_tool_flow_runtime_success(monkeypatch):
 
     captured = {}
 
-    def fake_http(method, url, headers, body):
+    def fake_http(method, url, headers, body, timeout=None):
         captured["method"] = method
         captured["url"] = url
         captured["headers"] = headers
         captured["body"] = body
+        captured["timeout"] = timeout
         return 200, {"Content-Type": "application/json"}, json.dumps({"temp_c": 21, "condition": "Sunny"})
 
     engine._http_json_request = fake_http  # type: ignore
@@ -133,7 +134,7 @@ def test_tool_flow_runtime_http_error(monkeypatch):
     ir = ast_to_ir(parser.parse_source(code))
     engine = _build_engine(ir)
 
-    def fake_http(method, url, headers, body):
+    def fake_http(method, url, headers, body, timeout=None):
         return 500, {"Content-Type": "application/json"}, json.dumps({"error": "bad request"})
 
     engine._http_json_request = fake_http  # type: ignore

@@ -6,14 +6,17 @@ error boundaries.
 from __future__ import annotations
 
 import asyncio
+import base64
 import inspect
 import json
+import random
 import re
 import time
 import urllib.error
 import urllib.parse
 import urllib.request
 import numbers
+import logging
 from dataclasses import asdict, is_dataclass
 from datetime import datetime
 from decimal import Decimal, InvalidOperation
@@ -94,7 +97,9 @@ from ..runtime.expressions import (
 from ..runtime.frames import FrameRegistry
 from ..runtime.vectorstores import VectorStoreRegistry
 from ..secrets.manager import SecretsManager
-from ..tools.registry import ToolRegistry, ToolConfig
+from ..tools.registry import DEFAULT_TOOL_TIMEOUT_SECONDS, ToolRegistry, ToolConfig
+from ..tools.runtime import build_tool_result, format_tool_error, rate_limiter, encode_query_items, build_multipart_body
+from ..tools.observability import before_tool_call, after_tool_call
 from ..memory.engine import MemoryEngine
 from ..memory.models import MemorySpaceConfig, MemoryType
 from .graph import (
@@ -106,6 +111,9 @@ from .graph import (
     flow_ir_to_graph,
 )
 from .models import FlowRunResult, FlowStepMetrics, FlowStepResult, StreamEvent
+
+
+logger = logging.getLogger(__name__)
 
 
 class ReturnSignal(Exception):
@@ -163,6 +171,14 @@ class FlowEngine:
                             body_fields=getattr(tool, "body_fields", {}) or {},
                             body_template=getattr(tool, "body_template", None),
                             input_fields=list(getattr(tool, "input_fields", []) or []),
+                            timeout_seconds=getattr(tool, "timeout_seconds", None),
+                            retry=getattr(tool, "retry", None),
+                            auth=getattr(tool, "auth", None),
+                            response_schema=getattr(tool, "response_schema", None),
+                            logging=getattr(tool, "logging", None),
+                            rate_limit=getattr(tool, "rate_limit", None),
+                            multipart=getattr(tool, "multipart", False),
+                            query_encoding=getattr(tool, "query_encoding", None),
                         )
                     )
 
@@ -2959,11 +2975,11 @@ class FlowEngine:
         return aliases
 
     def _http_json_request(
-        self, method: str, url: str, headers: dict[str, str], body: bytes | None
+        self, method: str, url: str, headers: dict[str, str], body: bytes | None, timeout: float | None = None
     ) -> tuple[int, dict[str, str], str]:
         req = urllib.request.Request(url, data=body, headers=headers, method=method)
         try:  # pragma: no cover - exercised via monkeypatch in tests
-            with urllib.request.urlopen(req, timeout=15) as resp:
+            with urllib.request.urlopen(req, timeout=timeout or DEFAULT_TOOL_TIMEOUT_SECONDS) as resp:
                 text = resp.read().decode("utf-8", errors="replace")
                 status = resp.getcode()
                 resp_headers = dict(resp.headers.items())
@@ -2972,6 +2988,96 @@ class FlowEngine:
             text = exc.read().decode("utf-8", errors="replace") if exc.fp else ""
             resp_headers = dict(exc.headers.items()) if exc.headers else {}
             return exc.code, resp_headers, text
+
+    def _coerce_tool_timeout(self, value: Any, tool_name: str) -> float:
+        if value is None:
+            return DEFAULT_TOOL_TIMEOUT_SECONDS
+        try:
+            timeout_val = float(value)
+        except Exception as exc:  # pragma: no cover - defensive
+            raise Namel3ssError(f"Timeout for tool '{tool_name}' must be a number of seconds.") from exc
+        if timeout_val <= 0:
+            raise Namel3ssError(f"Timeout for tool '{tool_name}' must be greater than 0 seconds.")
+        return timeout_val
+
+    def _allow_retry_for_method(self, method: str, retry_cfg: Any | None) -> bool:
+        safe_methods = {"GET", "HEAD"}
+        if method.upper() in safe_methods:
+            return True
+        return bool(getattr(retry_cfg, "allow_unsafe", False))
+
+    def _should_retry_exception(self, exc: BaseException, retry_cfg: Any | None) -> bool:
+        if not retry_cfg:
+            return False
+        names = getattr(retry_cfg, "retry_on_exceptions", None) or []
+        if not names:
+            return False
+        exc_name = exc.__class__.__name__
+        return any(exc_name == name or exc_name.endswith(name) for name in names)
+
+    def _compute_tool_retry_delay(self, attempt: int, retry_cfg: Any | None) -> float:
+        if not retry_cfg:
+            return 0.0
+        mode = (getattr(retry_cfg, "backoff", None) or "none").lower()
+        base = getattr(retry_cfg, "initial_delay", None) or 0.0
+        delay = 0.0
+        if mode == "constant":
+            delay = base
+        elif mode == "exponential":
+            delay = base * (2 ** max(attempt - 1, 0))
+        if getattr(retry_cfg, "max_delay", None) is not None:
+            delay = min(delay, getattr(retry_cfg, "max_delay", 0.0) or 0.0)
+        if delay and getattr(retry_cfg, "jitter", False):
+            delay = random.uniform(0, delay)
+        return max(delay, 0.0)
+
+    async def _sleep_tool_retry(self, attempt: int, retry_cfg: Any | None) -> None:
+        delay = self._compute_tool_retry_delay(attempt, retry_cfg)
+        if delay > 0:
+            await asyncio.sleep(delay)
+
+    def _apply_tool_auth(
+        self,
+        auth_cfg: Any,
+        url: str,
+        headers: dict[str, str],
+        eval_value: Callable[[Any], Any],
+        tool_name: str,
+    ) -> tuple[str, dict[str, str]]:
+        if not auth_cfg or not getattr(auth_cfg, "kind", None):
+            return url, headers
+        auth_kind = (getattr(auth_cfg, "kind", "") or "").lower()
+        if auth_kind == "bearer":
+            token_val = eval_value(getattr(auth_cfg, "token", None))
+            if token_val is None:
+                raise Namel3ssError(f'Tool "{tool_name}" auth config is incomplete (missing token).')
+            headers["Authorization"] = f"Bearer {token_val}"
+            return url, headers
+        if auth_kind == "basic":
+            username = eval_value(getattr(auth_cfg, "username", None))
+            password = eval_value(getattr(auth_cfg, "password", None))
+            if username is None or password is None:
+                raise Namel3ssError(f'Tool "{tool_name}" auth config is incomplete (missing username/password).')
+            raw = f"{username}:{password}".encode("utf-8")
+            headers["Authorization"] = "Basic " + base64.b64encode(raw).decode("utf-8")
+            return url, headers
+        if auth_kind in {"api_key", "api-key", "apikey"}:
+            location = (getattr(auth_cfg, "location", "") or "").lower()
+            name = getattr(auth_cfg, "name", "") or ""
+            value = eval_value(getattr(auth_cfg, "value", None))
+            if not name or value is None:
+                raise Namel3ssError(f'Tool "{tool_name}" auth config is incomplete (missing api_key details).')
+            if location == "header":
+                headers[name] = "" if value is None else str(value)
+                return url, headers
+            if location == "query":
+                parsed = urllib.parse.urlparse(url)
+                query_items = urllib.parse.parse_qsl(parsed.query, keep_blank_values=True)
+                query_items.append((name, "" if value is None else str(value)))
+                updated = urllib.parse.urlunparse(parsed._replace(query=urllib.parse.urlencode(query_items, doseq=True)))
+                return updated, headers
+            raise Namel3ssError(f'Tool "{tool_name}" auth location must be "header" or "query".')
+        raise Namel3ssError(f'Tool "{tool_name}" auth kind "{auth_kind}" is not supported.')
 
     async def _execute_tool_call(self, node, state: FlowState, runtime_ctx: FlowRuntimeContext, tool_override=None):
         target = node.config.get("target") if isinstance(node.config, dict) else None
@@ -3058,15 +3164,12 @@ class FlowEngine:
         if query_exprs:
             parsed = urllib.parse.urlparse(url_str)
             query_items = urllib.parse.parse_qsl(parsed.query, keep_blank_values=True)
+            query_mode = getattr(tool_cfg, "query_encoding", None) or "repeat"
             for qk, q_expr in query_exprs.items():
                 val = _eval_value(q_expr)
                 if val is None:
                     continue
-                if isinstance(val, list):
-                    for item in val:
-                        query_items.append((qk, "" if item is None else str(item)))
-                else:
-                    query_items.append((qk, "" if val is None else str(val)))
+                query_items.extend(encode_query_items(qk, val, query_mode))
             url_str = urllib.parse.urlunparse(parsed._replace(query=urllib.parse.urlencode(query_items, doseq=True)))
 
         body_payload: Any = None
@@ -3079,7 +3182,15 @@ class FlowEngine:
             body_payload = tool_evaluator.evaluate(tool_cfg.body_template)
 
         body_bytes: bytes | None = None
-        if body_payload is not None:
+        is_multipart = bool(getattr(tool_cfg, "multipart", False))
+        if is_multipart:
+            if body_payload is None:
+                body_payload = {}
+            if not isinstance(body_payload, dict):
+                raise Namel3ssError(f"Tool '{tool_cfg.name}' multipart body must be a record/object.")
+            body_bytes, content_type = build_multipart_body(body_payload)
+            headers["Content-Type"] = content_type
+        elif body_payload is not None:
             if isinstance(body_payload, (dict, list)):
                 body_bytes = json.dumps(body_payload).encode("utf-8")
                 headers.setdefault("Content-Type", "application/json")
@@ -3088,6 +3199,74 @@ class FlowEngine:
             else:
                 body_bytes = json.dumps(body_payload).encode("utf-8")
                 headers.setdefault("Content-Type", "application/json")
+
+        timeout_override_expr = node.config.get("timeout") if isinstance(node.config, dict) else None
+        timeout_seconds = getattr(tool_cfg, "timeout_seconds", None)
+        if timeout_seconds is None:
+            timeout_seconds = DEFAULT_TOOL_TIMEOUT_SECONDS
+        if timeout_override_expr is not None:
+            try:
+                override_val = _eval_value(timeout_override_expr)
+            except Exception as exc:
+                raise Namel3ssError(f"Failed to evaluate timeout for tool '{tool_cfg.name}': {exc}") from exc
+            if override_val is not None:
+                timeout_seconds = self._coerce_tool_timeout(override_val, tool_cfg.name)
+
+        auth_cfg = getattr(tool_cfg, "auth", None)
+        try:
+            url_str, headers = self._apply_tool_auth(auth_cfg, url_str, headers, _eval_value, tool_cfg.name)
+        except Namel3ssError:
+            raise
+        except Exception as exc:
+            raise Namel3ssError(f"Failed to apply auth for tool '{tool_cfg.name}': {exc}") from exc
+
+        retry_cfg = getattr(tool_cfg, "retry", None)
+        max_attempts = getattr(retry_cfg, "max_attempts", 1) if retry_cfg else 1
+        if max_attempts is None or max_attempts < 1:
+            max_attempts = 1
+        can_retry = self._allow_retry_for_method(method, retry_cfg)
+        if not can_retry:
+            max_attempts = 1
+
+        rate_cfg = getattr(tool_cfg, "rate_limit", None)
+        if rate_cfg:
+            allowed = rate_limiter.allow(
+                getattr(tool_cfg, "name", "tool"),
+                getattr(rate_cfg, "max_calls_per_minute", None),
+                getattr(rate_cfg, "max_calls_per_second", None),
+                getattr(rate_cfg, "burst", None),
+            )
+            if not allowed:
+                desc_parts = []
+                if getattr(rate_cfg, "max_calls_per_second", None) is not None:
+                    desc_parts.append(f"{rate_cfg.max_calls_per_second} calls/second")
+                if getattr(rate_cfg, "max_calls_per_minute", None) is not None:
+                    desc_parts.append(f"{rate_cfg.max_calls_per_minute} calls/minute")
+                if getattr(rate_cfg, "burst", None) is not None:
+                    desc_parts.append(f"burst {rate_cfg.burst}")
+                reason = "rate limit exceeded"
+                if desc_parts:
+                    reason += f" ({', '.join(desc_parts)})"
+                error_msg = format_tool_error(tool_cfg.name, method, url_str, None, reason)
+                return {
+                    "ok": False,
+                    "status": None,
+                    "data": None,
+                    "headers": {},
+                    "error": error_msg,
+                }
+
+        request_info = {
+            "method": method,
+            "url": url_str,
+            "headers": dict(headers),
+            "body": body_payload,
+            "timeout": timeout_seconds,
+        }
+        try:
+            before_tool_call(tool_cfg, request_info)
+        except Exception:
+            logger.debug("before_tool_call interceptor failed", exc_info=True)
 
         if runtime_ctx.event_logger:
             try:
@@ -3106,16 +3285,66 @@ class FlowEngine:
             except Exception:
                 pass
 
+        async def _do_request() -> tuple[int, dict[str, str], str]:
+            return await asyncio.to_thread(
+                self._http_json_request, method, url_str, headers, body_bytes, timeout_seconds
+            )
+
+        status: int | None = None
+        response_headers: dict[str, str] = {}
+        raw_text = ""
         try:
-            status, response_headers, raw_text = self._http_json_request(method, url_str, headers, body_bytes)
-        except urllib.error.URLError as exc:
+            attempt = 0
+            while attempt < max_attempts:
+                attempt += 1
+                try:
+                    status, response_headers, raw_text = await _do_request()
+                except Exception as exc:
+                    if not (can_retry and self._should_retry_exception(exc, retry_cfg)) or attempt >= max_attempts:
+                        raise
+                    await self._sleep_tool_retry(attempt, retry_cfg)
+                    continue
+                if (
+                    can_retry
+                    and retry_cfg
+                    and getattr(retry_cfg, "retry_on_status", None)
+                    and status is not None
+                    and status in (retry_cfg.retry_on_status or [])
+                    and attempt < max_attempts
+                ):
+                    await self._sleep_tool_retry(attempt, retry_cfg)
+                    continue
+                break
+        except (urllib.error.URLError, TimeoutError, ConnectionError) as exc:
+            error_msg = format_tool_error(
+                getattr(tool_cfg, "name", "tool"),
+                method,
+                url_str,
+                None,
+                f"Network error: {getattr(exc, 'reason', exc)}",
+            )
             result = {
                 "ok": False,
                 "status": None,
                 "data": None,
                 "headers": {},
-                "error": f"Network error: {getattr(exc, 'reason', exc)}",
+                "error": error_msg,
             }
+            try:
+                after_tool_call(
+                    tool_cfg,
+                    {
+                        "ok": False,
+                        "status": None,
+                        "error": error_msg,
+                        "method": method,
+                        "url": url_str,
+                        "headers": {},
+                        "raw_text": raw_text,
+                    },
+                )
+            except Exception:
+                logger.debug("after_tool_call interceptor failed", exc_info=True)
             if runtime_ctx.event_logger:
                 try:
                     runtime_ctx.event_logger.log(
@@ -3126,7 +3355,7 @@ class FlowEngine:
                             "step": node.id,
                             "flow_name": state.context.get("flow_name"),
                             "status": "error",
-                            "message": result["error"],
+                            "message": error_msg,
                         }
                     )
                 except Exception:
@@ -3140,15 +3369,25 @@ class FlowEngine:
             except ValueError:
                 parsed_body = raw_text
 
-        ok = 200 <= (status or 0) < 300
-        result = {
-            "ok": ok,
-            "status": status,
-            "data": parsed_body,
-            "headers": response_headers,
-        }
-        if not ok:
-            result["error"] = f"HTTP {status}"
+        result = build_tool_result(tool_cfg, method, url_str, status, parsed_body, response_headers, raw_text)
+        ok = bool(result.get("ok"))
+
+        try:
+            after_tool_call(
+                tool_cfg,
+                {
+                    "ok": ok,
+                    "status": status,
+                    "error": result.get("error"),
+                    "method": method,
+                    "url": url_str,
+                    "headers": response_headers,
+                    "raw_text": raw_text,
+                    "data": parsed_body,
+                },
+            )
+        except Exception:
+            logger.debug("after_tool_call interceptor failed", exc_info=True)
 
         if runtime_ctx.event_logger:
             try:

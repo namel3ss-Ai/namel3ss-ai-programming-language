@@ -8,9 +8,13 @@ import copy
 from dataclasses import dataclass, field
 from datetime import datetime, timezone, timedelta
 from typing import Any, Dict, List, Optional, TypedDict
+import base64
 import math
+import random
 import re
+import time
 from types import SimpleNamespace
+import logging
 
 from ..ai.registry import ModelRegistry
 from ..ai.router import ModelRouter
@@ -39,8 +43,16 @@ from ..errors import Namel3ssError, ProviderAuthError, ProviderConfigError, Prov
 from ..obs.tracer import Tracer
 from ..rag.engine import RAGEngine
 from ..secrets.manager import SecretsManager, get_default_secrets_manager
-from ..tools.registry import ToolRegistry
+from ..tools.registry import DEFAULT_TOOL_TIMEOUT_SECONDS, ToolRegistry
 from ..tools.registry import build_ai_tool_specs
+from ..tools.runtime import (
+    build_tool_result,
+    format_tool_error,
+    rate_limiter,
+    encode_query_items,
+    build_multipart_body,
+)
+from ..tools.observability import before_tool_call, after_tool_call
 from .. import ast_nodes
 from ..observability.metrics import default_metrics
 from .deprecation import warn_deprecated
@@ -71,6 +83,7 @@ from .vectorstores import VectorStoreRegistry
 PROFILE_HISTORY_WINDOW = 50
 EMAIL_PATTERN = re.compile(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}", re.IGNORECASE)
 IP_PATTERN = re.compile(r"\b\d{1,3}(?:\.\d{1,3}){3}\b")
+logger = logging.getLogger(__name__)
 
 
 class _SecretProxy:
@@ -1357,8 +1370,16 @@ def execute_ai_call_with_registry(
             diagnostics=memory_state.get("last_recall_diagnostics"),
         )
 
-    def _http_json_request(method: str, url: str, headers: dict[str, str], body: bytes | None, provider_key: str | None = None, provider_cache: ProviderCacheBackend | None = None) -> dict:
-        retry_cfg = get_default_retry_config()
+    def _http_json_request(
+        method: str,
+        url: str,
+        headers: dict[str, str],
+        body: bytes | None,
+        *,
+        timeout: float,
+        provider_key: str | None = None,
+        provider_cache: ProviderCacheBackend | None = None,
+    ) -> tuple[int, dict[str, str], str]:
         cache_key = None
         cache_enabled = provider_cache is not None
         if cache_enabled:
@@ -1368,36 +1389,42 @@ def execute_ai_call_with_registry(
                 "headers": headers,
                 "body": body.decode("utf-8") if isinstance(body, (bytes, bytearray)) else body,
             }
-            cache_key = build_provider_cache_key("http", url, cache_payload)
+            cache_key = build_provider_cache_key("http", provider_key or url, cache_payload)
             cached = cache_get_sync(provider_cache, cache_key)
             if cached is not None:
                 try:
                     default_metrics.record_provider_cache_hit("http", url)
                 except Exception:
                     pass
-                return cached
+                return (
+                    cached.get("status"),
+                    cached.get("headers", {}),
+                    cached.get("text", ""),
+                )
             else:
                 try:
                     default_metrics.record_provider_cache_miss("http", url)
                 except Exception:
                     pass
 
-        def _do_request() -> dict:
-            req = urllib.request.Request(url, data=body, headers=headers, method=method)
-            with urllib.request.urlopen(req, timeout=retry_cfg.timeout) as resp:  # pragma: no cover - live calls
-                text = resp.read().decode("utf-8")
-                return json.loads(text)
-
-        response = run_with_retries_and_timeout(
-            _do_request,
-            config=retry_cfg,
-            error_types=(ProviderTimeoutError, urllib.error.HTTPError, urllib.error.URLError, TimeoutError),
-            circuit_breaker=default_circuit_breaker,
-            provider_key=provider_key or f"http:{url}",
-        )
+        req = urllib.request.Request(url, data=body, headers=headers, method=method)
+        try:  # pragma: no cover - live calls
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
+                text = resp.read().decode("utf-8", errors="replace")
+                status = resp.getcode()
+                resp_headers = dict(resp.headers.items())
+        except urllib.error.HTTPError as exc:  # pragma: no cover - fallback
+            text = exc.read().decode("utf-8", errors="replace") if exc.fp else ""
+            status = exc.code
+            resp_headers = dict(exc.headers.items()) if exc.headers else {}
         if cache_enabled and cache_key:
-            cache_set_sync(provider_cache, cache_key, response, ttl=get_provider_cache_ttl_seconds())
-        return response
+            cache_set_sync(
+                provider_cache,
+                cache_key,
+                {"status": status, "headers": resp_headers, "text": text},
+                ttl=get_provider_cache_ttl_seconds(),
+            )
+        return status, resp_headers, text
 
     def _execute_tool_by_name(tool_name: str, args: dict[str, Any]) -> Any:
         if not context.tool_registry:
@@ -1469,15 +1496,12 @@ def execute_ai_call_with_registry(
         if query_exprs:
             parsed = urllib.parse.urlparse(url_str)
             query_items = urllib.parse.parse_qsl(parsed.query, keep_blank_values=True)
+            query_mode = getattr(tool_cfg, "query_encoding", None) or "repeat"
             for qk, q_expr in query_exprs.items():
                 val = _eval(q_expr)
                 if val is None:
                     continue
-                if isinstance(val, list):
-                    for item in val:
-                        query_items.append((qk, "" if item is None else str(item)))
-                else:
-                    query_items.append((qk, "" if val is None else str(val)))
+                query_items.extend(encode_query_items(qk, val, query_mode))
             url_str = urllib.parse.urlunparse(parsed._replace(query=urllib.parse.urlencode(query_items, doseq=True)))
 
         body_payload: Any = None
@@ -1490,7 +1514,15 @@ def execute_ai_call_with_registry(
             body_payload = _eval(tool_cfg.body_template)
 
         body_bytes: bytes | None = None
-        if body_payload is not None:
+        is_multipart = bool(getattr(tool_cfg, "multipart", False))
+        if is_multipart:
+            if body_payload is None:
+                body_payload = {}
+            if not isinstance(body_payload, dict):
+                raise Namel3ssError(f"Tool '{tool_cfg.name}' multipart body must be a record/object.")
+            body_bytes, content_type = build_multipart_body(body_payload)
+            headers["Content-Type"] = content_type
+        elif body_payload is not None:
             if isinstance(body_payload, (dict, list)):
                 body_bytes = json.dumps(body_payload).encode("utf-8")
                 headers.setdefault("Content-Type", "application/json")
@@ -1499,20 +1531,201 @@ def execute_ai_call_with_registry(
             else:
                 body_bytes = json.dumps(body_payload).encode("utf-8")
                 headers.setdefault("Content-Type", "application/json")
-        try:
-            provider_key = f"tool:{tool_cfg.name}" if getattr(tool_cfg, "name", None) else f"tool:{url_str}"
-            return _http_json_request(
-                method,
-                url_str,
-                headers,
-                body_bytes,
-                provider_key=provider_key,
-                provider_cache=provider_cache,
+        auth_cfg = getattr(tool_cfg, "auth", None)
+        if auth_cfg and getattr(auth_cfg, "kind", None):
+            auth_kind = (getattr(auth_cfg, "kind", "") or "").lower()
+            if auth_kind == "bearer":
+                token_val = _eval(getattr(auth_cfg, "token", None))
+                if token_val is None:
+                    raise Namel3ssError(f'Tool "{tool_cfg.name}" auth config is incomplete (missing token).')
+                headers["Authorization"] = f"Bearer {token_val}"
+            elif auth_kind == "basic":
+                username = _eval(getattr(auth_cfg, "username", None))
+                password = _eval(getattr(auth_cfg, "password", None))
+                if username is None or password is None:
+                    raise Namel3ssError(
+                        f'Tool "{tool_cfg.name}" auth config is incomplete (missing username/password).'
+                    )
+                raw = f"{username}:{password}".encode("utf-8")
+                headers["Authorization"] = "Basic " + base64.b64encode(raw).decode("utf-8")
+            elif auth_kind in {"api_key", "api-key", "apikey"}:
+                location = (getattr(auth_cfg, "location", "") or "").lower()
+                name = getattr(auth_cfg, "name", "") or ""
+                value = _eval(getattr(auth_cfg, "value", None))
+                if not name or value is None:
+                    raise Namel3ssError(f'Tool "{tool_cfg.name}" auth config is incomplete (missing api_key details).')
+                if location == "header":
+                    headers[name] = "" if value is None else str(value)
+                elif location == "query":
+                    parsed = urllib.parse.urlparse(url_str)
+                    query_items = urllib.parse.parse_qsl(parsed.query, keep_blank_values=True)
+                    query_items.append((name, "" if value is None else str(value)))
+                    url_str = urllib.parse.urlunparse(parsed._replace(query=urllib.parse.urlencode(query_items, doseq=True)))
+                else:
+                    raise Namel3ssError(f'Tool "{tool_cfg.name}" auth location must be "header" or "query".')
+            else:
+                raise Namel3ssError(f'Tool "{tool_cfg.name}" auth kind "{auth_kind}" is not supported.')
+
+        retry_cfg = getattr(tool_cfg, "retry", None)
+        max_attempts = getattr(retry_cfg, "max_attempts", 1) if retry_cfg else 1
+        if max_attempts is None or max_attempts < 1:
+            max_attempts = 1
+        can_retry = method in {"GET", "HEAD"} or bool(getattr(retry_cfg, "allow_unsafe", False))
+        if not can_retry:
+            max_attempts = 1
+
+        rate_cfg = getattr(tool_cfg, "rate_limit", None)
+        if rate_cfg:
+            allowed = rate_limiter.allow(
+                getattr(tool_cfg, "name", "tool"),
+                getattr(rate_cfg, "max_calls_per_minute", None),
+                getattr(rate_cfg, "max_calls_per_second", None),
+                getattr(rate_cfg, "burst", None),
             )
-        except urllib.error.HTTPError as exc:  # pragma: no cover - fallback
-            raise Namel3ssError(f"N3F-963: Tool '{tool_cfg.name}' failed with HTTP {exc.code}")
-        except urllib.error.URLError as exc:  # pragma: no cover - fallback
-            raise Namel3ssError(f"N3F-963: Tool '{tool_cfg.name}' failed with HTTP error: {exc}")
+            if not allowed:
+                parts = []
+                if getattr(rate_cfg, "max_calls_per_second", None) is not None:
+                    parts.append(f"{rate_cfg.max_calls_per_second} calls/second")
+                if getattr(rate_cfg, "max_calls_per_minute", None) is not None:
+                    parts.append(f"{rate_cfg.max_calls_per_minute} calls/minute")
+                if getattr(rate_cfg, "burst", None) is not None:
+                    parts.append(f"burst {rate_cfg.burst}")
+                reason = "rate limit exceeded"
+                if parts:
+                    reason += f" ({', '.join(parts)})"
+                error_msg = format_tool_error(tool_cfg.name, method, url_str, None, reason)
+                return {
+                    "ok": False,
+                    "status": None,
+                    "data": None,
+                    "headers": {},
+                    "error": error_msg,
+                }
+
+        def _retry_delay(attempt: int) -> float:
+            if not retry_cfg:
+                return 0.0
+            mode = (getattr(retry_cfg, "backoff", None) or "none").lower()
+            base = getattr(retry_cfg, "initial_delay", None) or 0.0
+            delay = 0.0
+            if mode == "constant":
+                delay = base
+            elif mode == "exponential":
+                delay = base * (2 ** max(attempt - 1, 0))
+            if getattr(retry_cfg, "max_delay", None) is not None:
+                delay = min(delay, getattr(retry_cfg, "max_delay", 0.0) or 0.0)
+            if delay and getattr(retry_cfg, "jitter", False):
+                delay = random.uniform(0, delay)
+            return max(delay, 0.0)
+
+        def _should_retry_exception(exc: BaseException) -> bool:
+            names = getattr(retry_cfg, "retry_on_exceptions", None) or []
+            if not names or not can_retry:
+                return False
+            exc_name = exc.__class__.__name__
+            return any(exc_name == name or exc_name.endswith(name) for name in names)
+
+        def _should_retry_status(status: int | None) -> bool:
+            if not retry_cfg or not can_retry:
+                return False
+            codes = getattr(retry_cfg, "retry_on_status", None) or []
+            return status is not None and status in codes
+
+        timeout_seconds = getattr(tool_cfg, "timeout_seconds", None)
+        if timeout_seconds is None:
+            timeout_seconds = DEFAULT_TOOL_TIMEOUT_SECONDS
+        request_info = {
+            "method": method,
+            "url": url_str,
+            "headers": dict(headers),
+            "body": body_payload,
+            "timeout": timeout_seconds,
+        }
+        try:
+            before_tool_call(tool_cfg, request_info)
+        except Exception:
+            logger.debug("before_tool_call interceptor failed", exc_info=True)
+        provider_key = f"tool:{tool_cfg.name}" if getattr(tool_cfg, "name", None) else f"tool:{url_str}"
+        status: int | None = None
+        response_headers: dict[str, str] = {}
+        raw_text = ""
+        attempt = 0
+        while attempt < max_attempts:
+            attempt += 1
+            try:
+                status, response_headers, raw_text = _http_json_request(
+                    method,
+                    url_str,
+                    headers,
+                    body_bytes,
+                    timeout=timeout_seconds,
+                    provider_key=provider_key,
+                    provider_cache=provider_cache,
+                )
+            except (urllib.error.URLError, TimeoutError, ConnectionError) as exc:
+                error_msg = format_tool_error(
+                    getattr(tool_cfg, "name", "tool"),
+                    method,
+                    url_str,
+                    None,
+                    f"Network error: {getattr(exc, 'reason', exc)}",
+                )
+                if not _should_retry_exception(exc) or attempt >= max_attempts:
+                    result = {
+                        "ok": False,
+                        "status": None,
+                        "data": None,
+                        "headers": {},
+                        "error": error_msg,
+                    }
+                    try:
+                        after_tool_call(
+                            tool_cfg,
+                            {
+                                "ok": False,
+                                "status": None,
+                                "error": error_msg,
+                                "method": method,
+                                "url": url_str,
+                                "headers": {},
+                                "raw_text": raw_text,
+                            },
+                        )
+                    except Exception:
+                        logger.debug("after_tool_call interceptor failed", exc_info=True)
+                    return result
+                time.sleep(_retry_delay(attempt))
+                continue
+            if _should_retry_status(status) and attempt < max_attempts:
+                time.sleep(_retry_delay(attempt))
+                continue
+            break
+
+        parsed_body: Any = None
+        if raw_text:
+            try:
+                parsed_body = json.loads(raw_text)
+            except ValueError:
+                parsed_body = raw_text
+        result = build_tool_result(tool_cfg, method, url_str, status, parsed_body, response_headers, raw_text)
+        ok = bool(result.get("ok"))
+        try:
+            after_tool_call(
+                tool_cfg,
+                {
+                    "ok": ok,
+                    "status": status,
+                    "error": result.get("error"),
+                    "method": method,
+                    "url": url_str,
+                    "headers": response_headers,
+                    "raw_text": raw_text,
+                    "data": parsed_body,
+                },
+            )
+        except Exception:
+            logger.debug("after_tool_call interceptor failed", exc_info=True)
+        return result
 
     provider_cache = getattr(context, "provider_cache", None)
     cache_ttl = get_provider_cache_ttl_seconds()

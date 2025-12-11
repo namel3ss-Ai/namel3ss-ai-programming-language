@@ -12,6 +12,29 @@ tool is "weather_api":
     x-api-key: secret.WEATHER_API_KEY
   query:
     city: input.city
+  timeout is 5 seconds
+  retry:
+    max_attempts is 3
+    backoff is "exponential"
+    initial_delay is 200 milliseconds
+    retry_on_status are [429, 500, 502, 503, 504]
+  auth:
+    kind is "bearer"
+    token is secret.WEATHER_TOKEN
+  response_schema:
+    type is "object"
+    required ["temp_c", "condition"]
+    properties:
+      temp_c:
+        type is "number"
+      condition:
+        type is "string"
+  logging is "debug"
+  rate_limit:
+    max_calls_per_minute is 60
+    burst is 10
+  multipart is false
+  query_encoding is "repeat"
 
 flow is "get_city_weather":
   step is "fetch":
@@ -33,7 +56,16 @@ Key details:
 - `url` can be any expression (literal, `config.X`, etc.).
 - `query`, `headers`, and `body` blocks accept nested expressions referencing `input.*`, `secret.*`, literals, or other expressions.
 - Tool steps use an `input:` object. Every `input.foo` reference inside the tool definition (and placeholders inside `url_template`/`body_template`) becomes a required field; missing values trigger `N3F-965`.
+- `timeout is ...` sets the per-attempt timeout (default: 15 seconds). Flows can override per step with `timeout is ...` inside the step block.
+- `retry:` block (optional): `max_attempts`, `backoff` (`none`/`constant`/`exponential`), `initial_delay`, `max_delay`, `jitter`, `retry_on_status` (list of HTTP status codes), `retry_on_exceptions` (list of exception names or `true` for network defaults). Unsafe methods are not retried unless `allow_unsafe` is set.
+- `auth:` block (optional): `kind` (`bearer`/`basic`/`api_key`). Bearer: `token`; Basic: `username`/`password`; API key: `location` (`header`/`query`), `name`, `value`.
+- `response_schema:` block (optional) validates JSON responses. Supported: `type` (`object`/`array`/`string`/`number`/`boolean`), `required [...]` for objects, and `properties:` with per-field `type`. Schema failures set `ok` to `false` and surface a detailed error with a response snippet.
+- `logging is "debug" | "info" | "quiet"` toggles request/response logging. `debug` logs method/url/headers and response snippets; `info` logs starts and errors; `quiet` only logs failures. Hooks (`before_tool_call` / `after_tool_call`) let you add custom metrics/logging interceptors.
 - The step result is a dict: `{"ok": bool, "status": int | None, "data": <parsed JSON or str>, "headers": {...}, "error"?: str}`.
+- Errors include the tool name, method + URL, HTTP status (when present), and a short snippet of the raw response to aid debugging.
+- `rate_limit:` block (optional) enables a basic in-process limiter. Fields: `max_calls_per_minute` and/or `max_calls_per_second` (>=1), optional `burst` (>=1). Exceeding the limit returns `ok: false` with a clear rate limit error. Limits are per-tool, per-process (not cluster-wide).
+- `multipart is true` switches body encoding to multipart/form-data. Each `body:` field becomes a form part; file-like values (bytes or objects with `.read()`) are sent as files. Without multipart, bodies are JSON (default).
+- `query_encoding is "repeat" | "brackets" | "csv"` controls how list query params are encoded. Default: `repeat` (`ids=1&ids=2`). `brackets` => `ids[]=1&ids[]=2`; `csv` => `ids=1,2`.
 
 Diagnostics:
 

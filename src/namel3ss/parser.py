@@ -2346,6 +2346,14 @@ class Parser:
         query_params: dict[str, ast_nodes.Expr] = {}
         body_fields: dict[str, ast_nodes.Expr] = {}
         body_template: ast_nodes.Expr | None = None
+        timeout_expr: ast_nodes.Expr | None = None
+        retry_cfg: ast_nodes.ToolRetryConfig | None = None
+        auth_cfg: ast_nodes.ToolAuthConfig | None = None
+        response_schema: ast_nodes.ResponseSchema | None = None
+        logging_level: str | None = None
+        rate_limit_cfg: ast_nodes.ToolRateLimitConfig | None = None
+        multipart_expr: ast_nodes.Expr | None = None
+        query_encoding: str | None = None
         self.consume("COLON")
         self.consume("NEWLINE")
         if self.check("INDENT"):
@@ -2387,12 +2395,275 @@ class Parser:
                         url_expr = self.parse_expression()
                     self.optional_newline()
                     continue
+                if tok.value == "timeout":
+                    self.consume("KEYWORD", "timeout")
+                    if self.match_value("KEYWORD", "is"):
+                        timeout_expr = self._parse_duration_value()
+                    else:
+                        timeout_expr = self._parse_duration_value()
+                    self.optional_newline()
+                    continue
+                if tok.value == "multipart":
+                    self.consume("KEYWORD", "multipart")
+                    if self.match_value("KEYWORD", "is"):
+                        multipart_expr = self.parse_expression()
+                    else:
+                        multipart_expr = self.parse_expression()
+                    self.optional_newline()
+                    continue
+                if tok.value == "query_encoding":
+                    self.consume("KEYWORD", "query_encoding")
+                    if self.match_value("KEYWORD", "is"):
+                        q_tok = self.consume_any({"STRING", "IDENT", "KEYWORD"})
+                    else:
+                        q_tok = self.consume_any({"STRING", "IDENT", "KEYWORD"})
+                    query_encoding = q_tok.value
+                    self.optional_newline()
+                    continue
                 if tok.value == "body_template":
                     self.consume("KEYWORD", "body_template")
                     if self.match_value("KEYWORD", "is"):
                         body_template = self.parse_expression()
                     else:
                         body_template = self.parse_expression()
+                    self.optional_newline()
+                    continue
+                if tok.value == "logging":
+                    self.consume("KEYWORD", "logging")
+                    if self.match_value("KEYWORD", "is"):
+                        log_tok = self.consume_any({"STRING", "IDENT", "KEYWORD"})
+                    else:
+                        log_tok = self.consume_any({"STRING", "IDENT", "KEYWORD"})
+                    logging_level = log_tok.value
+                    self.optional_newline()
+                    continue
+                if tok.value == "retry":
+                    self.consume("KEYWORD", "retry")
+                    self.consume("COLON")
+                    self.consume("NEWLINE")
+                    cfg = ast_nodes.ToolRetryConfig()
+                    if self.check("INDENT"):
+                        self.consume("INDENT")
+                        while not self.check("DEDENT"):
+                            if self.match("NEWLINE"):
+                                continue
+                            field_tok = self.consume_any({"KEYWORD", "IDENT"})
+                            field_name = field_tok.value or ""
+                            if field_name == "max_attempts":
+                                if self.match_value("KEYWORD", "is"):
+                                    cfg.max_attempts = self.parse_expression()
+                                else:
+                                    cfg.max_attempts = self.parse_expression()
+                            elif field_name == "backoff":
+                                if self.match_value("KEYWORD", "is"):
+                                    backoff_tok = self.consume_any({"STRING", "IDENT", "KEYWORD"})
+                                else:
+                                    backoff_tok = self.consume_any({"STRING", "IDENT", "KEYWORD"})
+                                cfg.backoff = backoff_tok.value
+                            elif field_name in {"initial_delay", "max_delay"}:
+                                if self.match_value("KEYWORD", "is"):
+                                    delay_expr = self._parse_duration_value()
+                                else:
+                                    delay_expr = self._parse_duration_value()
+                                if field_name == "initial_delay":
+                                    cfg.initial_delay = delay_expr
+                                else:
+                                    cfg.max_delay = delay_expr
+                            elif field_name == "jitter":
+                                if self.match_value("KEYWORD", "is"):
+                                    cfg.jitter = self.parse_expression()
+                                else:
+                                    cfg.jitter = self.parse_expression()
+                            elif field_name in {"retry_on_status", "retry_on_statuses"}:
+                                if self.match_value("KEYWORD", "are") or self.match_value("KEYWORD", "is"):
+                                    cfg.retry_on_status = self.parse_expression()
+                                else:
+                                    cfg.retry_on_status = self.parse_expression()
+                            elif field_name == "retry_on_exceptions":
+                                if self.match_value("KEYWORD", "are") or self.match_value("KEYWORD", "is"):
+                                    cfg.retry_on_exceptions = self.parse_expression()
+                                else:
+                                    cfg.retry_on_exceptions = self.parse_expression()
+                            elif field_name == "allow_unsafe":
+                                if self.match_value("KEYWORD", "is"):
+                                    cfg.allow_unsafe = self.parse_expression()
+                                else:
+                                    cfg.allow_unsafe = self.parse_expression()
+                            else:
+                                raise self.error(
+                                    f"Unexpected field '{field_name}' in retry block",
+                                    field_tok,
+                                )
+                            self.optional_newline()
+                        self.consume("DEDENT")
+                    retry_cfg = cfg
+                    self.optional_newline()
+                    continue
+                if tok.value == "rate_limit":
+                    self.consume("KEYWORD", "rate_limit")
+                    self.consume("COLON")
+                    self.consume("NEWLINE")
+                    cfg = ast_nodes.ToolRateLimitConfig()
+                    if self.check("INDENT"):
+                        self.consume("INDENT")
+                        while not self.check("DEDENT"):
+                            if self.match("NEWLINE"):
+                                continue
+                            field_tok = self.consume_any({"KEYWORD", "IDENT"})
+                            field_name = field_tok.value or ""
+                            if field_name == "max_calls_per_minute":
+                                if self.match_value("KEYWORD", "is"):
+                                    cfg.max_calls_per_minute = self.parse_expression()
+                                else:
+                                    cfg.max_calls_per_minute = self.parse_expression()
+                            elif field_name == "max_calls_per_second":
+                                if self.match_value("KEYWORD", "is"):
+                                    cfg.max_calls_per_second = self.parse_expression()
+                                else:
+                                    cfg.max_calls_per_second = self.parse_expression()
+                            elif field_name == "burst":
+                                if self.match_value("KEYWORD", "is"):
+                                    cfg.burst = self.parse_expression()
+                                else:
+                                    cfg.burst = self.parse_expression()
+                            else:
+                                raise self.error(
+                                    f"Unexpected field '{field_name}' in rate_limit block",
+                                    field_tok,
+                                )
+                            self.optional_newline()
+                        self.consume("DEDENT")
+                    rate_limit_cfg = cfg
+                    self.optional_newline()
+                    continue
+                if tok.value == "response_schema":
+                    self.consume("KEYWORD", "response_schema")
+                    self.consume("COLON")
+                    self.consume("NEWLINE")
+                    schema = ast_nodes.ResponseSchema()
+                    if self.check("INDENT"):
+                        self.consume("INDENT")
+                        while not self.check("DEDENT"):
+                            if self.match("NEWLINE"):
+                                continue
+                            field_tok = self.consume_any({"KEYWORD", "IDENT"})
+                            field_name = field_tok.value or ""
+                            if field_name == "type":
+                                if self.match_value("KEYWORD", "is"):
+                                    type_tok = self.consume_any({"STRING", "IDENT", "KEYWORD"})
+                                else:
+                                    type_tok = self.consume_any({"STRING", "IDENT", "KEYWORD"})
+                                schema.type = type_tok.value
+                            elif field_name == "required":
+                                if self.match_value("KEYWORD", "are") or self.match_value("KEYWORD", "is"):
+                                    pass
+                                start_list = self.peek()
+                                schema.required = self._parse_string_list_literal(start_list)
+                            elif field_name == "properties":
+                                self.consume("COLON")
+                                self.consume("NEWLINE")
+                                props: dict[str, ast_nodes.SimpleTypeSchema] = {}
+                                if self.check("INDENT"):
+                                    self.consume("INDENT")
+                                    while not self.check("DEDENT"):
+                                        if self.match("NEWLINE"):
+                                            continue
+                                        prop_name_tok = self.consume_any({"IDENT", "STRING", "KEYWORD"})
+                                        self.consume("COLON")
+                                        prop_schema = ast_nodes.SimpleTypeSchema()
+                                        self.consume("NEWLINE")
+                                        if self.check("INDENT"):
+                                            self.consume("INDENT")
+                                            while not self.check("DEDENT"):
+                                                if self.match("NEWLINE"):
+                                                    continue
+                                                inner_field = self.consume_any({"KEYWORD", "IDENT"})
+                                                inner_name = inner_field.value or ""
+                                                if inner_name == "type":
+                                                    if self.match_value("KEYWORD", "is"):
+                                                        type_tok = self.consume_any({"STRING", "IDENT", "KEYWORD"})
+                                                    else:
+                                                        type_tok = self.consume_any({"STRING", "IDENT", "KEYWORD"})
+                                                    prop_schema.type = type_tok.value
+                                                else:
+                                                    raise self.error(
+                                                        f"Unexpected field '{inner_name}' in response_schema properties",
+                                                        inner_field,
+                                                    )
+                                                self.optional_newline()
+                                            self.consume("DEDENT")
+                                        props[prop_name_tok.value or ""] = prop_schema
+                                        self.optional_newline()
+                                    self.consume("DEDENT")
+                                schema.properties = props
+                            else:
+                                raise self.error(
+                                    f"Unexpected field '{field_name}' in response_schema block",
+                                    field_tok,
+                                )
+                            self.optional_newline()
+                        self.consume("DEDENT")
+                    response_schema = schema
+                    self.optional_newline()
+                    continue
+                if tok.value == "auth":
+                    self.consume("KEYWORD", "auth")
+                    self.consume("COLON")
+                    self.consume("NEWLINE")
+                    cfg = ast_nodes.ToolAuthConfig()
+                    if self.check("INDENT"):
+                        self.consume("INDENT")
+                        while not self.check("DEDENT"):
+                            if self.match("NEWLINE"):
+                                continue
+                            field_tok = self.consume_any({"KEYWORD", "IDENT"})
+                            field_name = field_tok.value or ""
+                            if field_name == "kind":
+                                if self.match_value("KEYWORD", "is"):
+                                    kind_tok = self.consume_any({"STRING", "IDENT"})
+                                else:
+                                    kind_tok = self.consume_any({"STRING", "IDENT"})
+                                cfg.kind = kind_tok.value
+                            elif field_name == "token":
+                                if self.match_value("KEYWORD", "is"):
+                                    cfg.token = self.parse_expression()
+                                else:
+                                    cfg.token = self.parse_expression()
+                            elif field_name == "username":
+                                if self.match_value("KEYWORD", "is"):
+                                    cfg.username = self.parse_expression()
+                                else:
+                                    cfg.username = self.parse_expression()
+                            elif field_name == "password":
+                                if self.match_value("KEYWORD", "is"):
+                                    cfg.password = self.parse_expression()
+                                else:
+                                    cfg.password = self.parse_expression()
+                            elif field_name == "location":
+                                if self.match_value("KEYWORD", "is"):
+                                    loc_tok = self.consume_any({"STRING", "IDENT"})
+                                else:
+                                    loc_tok = self.consume_any({"STRING", "IDENT"})
+                                cfg.location = loc_tok.value
+                            elif field_name == "name":
+                                if self.match_value("KEYWORD", "is"):
+                                    name_tok = self.consume_any({"STRING", "IDENT", "KEYWORD"})
+                                else:
+                                    name_tok = self.consume_any({"STRING", "IDENT", "KEYWORD"})
+                                cfg.name = name_tok.value
+                            elif field_name == "value":
+                                if self.match_value("KEYWORD", "is"):
+                                    cfg.value = self.parse_expression()
+                                else:
+                                    cfg.value = self.parse_expression()
+                            else:
+                                raise self.error(
+                                    f"Unexpected field '{field_name}' in auth block",
+                                    field_tok,
+                                )
+                            self.optional_newline()
+                        self.consume("DEDENT")
+                    auth_cfg = cfg
                     self.optional_newline()
                     continue
                 if tok.value == "headers":
@@ -2455,6 +2726,14 @@ class Parser:
              query_params=query_params,
              body_fields=body_fields,
             body_template=body_template,
+            timeout=timeout_expr,
+            retry=retry_cfg,
+            auth=auth_cfg,
+            response_schema=response_schema,
+            logging=logging_level,
+            rate_limit=rate_limit_cfg,
+            multipart=multipart_expr,
+            query_encoding=query_encoding,
             span=self._span(start),
         )
 
@@ -4226,6 +4505,7 @@ class Parser:
             conditional_branches,
             goto_action,
             when_expr,
+            timeout_expr,
         ) = self._parse_step_body(allow_fields=True)
         self.consume("DEDENT")
         self.optional_newline()
@@ -4240,6 +4520,7 @@ class Parser:
             conditional_branches,
             goto_action,
             when_expr,
+            timeout_expr,
         )
 
     def parse_flow_loop(self, start_token: Token | None = None) -> ast_nodes.FlowLoopDecl:
@@ -4358,6 +4639,7 @@ class Parser:
             conditional_branches,
             goto_action,
             when_expr,
+            timeout_expr,
         ) = self._parse_step_body(allow_fields=True)
         self.consume("DEDENT")
         self.optional_newline()
@@ -4372,6 +4654,7 @@ class Parser:
             conditional_branches,
             goto_action,
             when_expr,
+            timeout_expr,
         )
 
     def _parse_where_conditions(self) -> ast_nodes.BooleanCondition:
@@ -4556,6 +4839,32 @@ class Parser:
             return ast_nodes.ConditionLeaf(field_name=expr.left.name, op="eq", value_expr=expr.right, span=span)
         return ast_nodes.ConditionLeaf(field_name=field_name, op=op, value_expr=expr, span=span)
 
+    def _parse_duration_value(self) -> ast_nodes.Expr:
+        tok = self.peek()
+        if tok.type == "NUMBER":
+            num_tok = self.consume("NUMBER")
+            raw_val = num_tok.value or "0"
+            try:
+                number: float | int | str
+                if "." in raw_val:
+                    number = float(raw_val)
+                else:
+                    number = int(raw_val)
+            except Exception:
+                number = raw_val
+            unit_tok = self.peek()
+            if unit_tok.type in {"IDENT", "KEYWORD"}:
+                unit_val = (unit_tok.value or "").lower()
+                if unit_val in {"second", "seconds", "sec", "s", "millisecond", "milliseconds", "ms"}:
+                    self.advance()
+                    if unit_val.startswith("ms") or unit_val.startswith("millisecond"):
+                        try:
+                            number = float(number) / 1000.0
+                        except Exception:
+                            pass
+            return ast_nodes.Literal(value=number, span=self._span(num_tok))
+        return self.parse_expression()
+
     def _parse_step_body(
         self, allow_fields: bool = True
     ) -> tuple[
@@ -4567,6 +4876,7 @@ class Parser:
         list[ast_nodes.ConditionalBranch] | None,
         ast_nodes.FlowAction | None,
         ast_nodes.Expr | None,
+        ast_nodes.Expr | None,
     ]:
         kind = None
         target = None
@@ -4576,6 +4886,7 @@ class Parser:
         conditional_branches: list[ast_nodes.ConditionalBranch] | None = None
         goto_action: ast_nodes.FlowAction | None = None
         when_expr: ast_nodes.Expr | None = None
+        timeout_expr: ast_nodes.Expr | None = None
         allowed_fields: Set[str] = {
             "kind",
             "target",
@@ -4597,6 +4908,7 @@ class Parser:
             "by",
             "limit",
             "when",
+            "timeout",
             "streaming",
             "stream_channel",
             "stream_role",
@@ -5028,6 +5340,11 @@ class Parser:
                     when_expr = self.parse_expression()
                 else:
                     when_expr = self.parse_expression()
+            elif field_token.value == "timeout":
+                if self.match_value("KEYWORD", "is"):
+                    timeout_expr = self._parse_duration_value()
+                else:
+                    timeout_expr = self._parse_duration_value()
             elif field_token.value == "frame":
                 if self.match_value("KEYWORD", "is"):
                     frame_tok = self.consume_any({"STRING", "IDENT", "KEYWORD"})
@@ -5179,7 +5496,7 @@ class Parser:
                 span=None,
             )
             statements.append(action)
-        return kind, target, message, extra_params, statements, conditional_branches, goto_action, when_expr
+        return kind, target, message, extra_params, statements, conditional_branches, goto_action, when_expr, timeout_expr
 
     def _build_flow_step_decl(
         self,
@@ -5193,6 +5510,7 @@ class Parser:
         conditional_branches,
         goto_action,
         when_expr,
+        timeout_expr,
     ) -> ast_nodes.FlowStepDecl:
         streaming_flag = bool(extra_params.get("streaming"))
         stream_channel = extra_params.get("stream_channel") or None
@@ -5236,6 +5554,7 @@ class Parser:
                     params=action.args or extra_params or {},
                     statements=[],
                     when_expr=when_expr,
+                    timeout=timeout_expr,
                     **stream_kwargs,
                     tools_mode=tools_mode,
                     span=self._span(step_name_token),
@@ -5249,6 +5568,7 @@ class Parser:
                 params=extra_params or {},
                 statements=statements,
                 when_expr=when_expr,
+                timeout=timeout_expr,
                 **stream_kwargs,
                 tools_mode=tools_mode,
                 span=self._span(step_name_token),
@@ -5262,6 +5582,7 @@ class Parser:
                 params=extra_params or {},
                 conditional_branches=conditional_branches,
                 when_expr=when_expr,
+                timeout=timeout_expr,
                 **stream_kwargs,
                 tools_mode=tools_mode,
                 span=self._span(step_name_token),
@@ -5273,6 +5594,7 @@ class Parser:
                 kind="goto_flow",
                 target=goto_action.target,
                 when_expr=when_expr,
+                timeout=timeout_expr,
                 **stream_kwargs,
                 tools_mode=tools_mode,
                 span=self._span(step_name_token),
@@ -5293,6 +5615,7 @@ class Parser:
             message=message,
             params=extra_params or {},
             when_expr=when_expr,
+            timeout=timeout_expr,
             **stream_kwargs,
             tools_mode=tools_mode,
             span=self._span(step_name_token),

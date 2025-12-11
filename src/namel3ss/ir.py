@@ -15,6 +15,14 @@ from . import ast_nodes
 from .config import load_config
 from .errors import IRError
 from .tools.builtin import BUILTIN_TOOL_NAMES
+from .tools.registry import (
+    DEFAULT_TOOL_LOGGING_LEVEL,
+    DEFAULT_TOOL_TIMEOUT_SECONDS,
+    ToolAuthConfig,
+    ToolResponseSchema,
+    ToolRateLimitConfig,
+    ToolRetryConfig,
+)
 from .version import IR_VERSION
 
 
@@ -291,6 +299,7 @@ class IRFlowStep:
     conditional_branches: list["IRConditionalBranch"] | None = None
     statements: list["IRStatement"] | None = None
     when_expr: ast_nodes.Expr | None = None
+    timeout: ast_nodes.Expr | None = None
     streaming: bool = False
     stream_channel: str | None = None
     stream_role: str | None = None
@@ -959,6 +968,14 @@ class IRTool:
     body_fields: Dict[str, Expr] = field(default_factory=dict)
     body_template: Expr | None = None
     input_fields: list[str] = field(default_factory=list)
+    timeout_seconds: float | None = None
+    retry: ToolRetryConfig | None = None
+    auth: ToolAuthConfig | None = None
+    response_schema: ToolResponseSchema | None = None
+    logging: str | None = None
+    rate_limit: ToolRateLimitConfig | None = None
+    multipart: bool = False
+    query_encoding: str | None = None
 
 
 SUPPORTED_PII_POLICIES = {"none", "strip-email-ip"}
@@ -1807,6 +1824,194 @@ def _coerce_enum_values_for_field(
 
 
 def ast_to_ir(module: ast_nodes.Module) -> IRProgram:
+    default_exception_names = ["URLError", "TimeoutError", "ConnectionError"]
+
+    def _literal_value(expr: ast_nodes.Expr | None) -> object | None:
+        if expr is None:
+            return None
+        if isinstance(expr, ast_nodes.Literal):
+            return expr.value
+        return expr
+
+    def _coerce_seconds(expr: ast_nodes.Expr | None, *, label: str, line: int | None) -> float | None:
+        if expr is None:
+            return None
+        value = _literal_value(expr)
+        if isinstance(value, (int, float)):
+            if value < 0:
+                raise IRError(f"{label} must be a non-negative number of seconds.", line)
+            return float(value)
+        try:
+            coerced = float(value)  # type: ignore[arg-type]
+            if coerced < 0:
+                raise IRError(f"{label} must be a non-negative number of seconds.", line)
+            return coerced
+        except Exception as exc:
+            raise IRError(f"{label} must be a number of seconds.", line) from exc
+
+    def _coerce_positive_int(expr: ast_nodes.Expr | None, *, label: str, line: int | None) -> int:
+        value = _literal_value(expr)
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            raise IRError(f"{label} must be a positive integer.", line)
+        try:
+            int_val = int(value)
+        except Exception as exc:  # pragma: no cover - defensive
+            raise IRError(f"{label} must be a positive integer.", line) from exc
+        if int_val < 1:
+            raise IRError(f"{label} must be at least 1.", line)
+        return int_val
+
+    def _coerce_bool(expr: ast_nodes.Expr | None, *, label: str, line: int | None) -> bool:
+        value = _literal_value(expr)
+        if isinstance(value, bool):
+            return value
+        raise IRError(f"{label} must be true or false.", line)
+
+    def _coerce_status_list(expr: ast_nodes.Expr | None, *, label: str, line: int | None) -> list[int]:
+        if expr is None:
+            return []
+        items: list[int] = []
+        raw_values: list[object] = []
+        if isinstance(expr, ast_nodes.ListLiteral):
+            raw_values = [ _literal_value(item) for item in expr.items ]
+        else:
+            value = _literal_value(expr)
+            if isinstance(value, list):
+                raw_values = list(value)
+            else:
+                raw_values = [value]
+        for raw in raw_values:
+            try:
+                items.append(int(raw))  # type: ignore[arg-type]
+            except Exception as exc:
+                raise IRError(f"{label} must be a list of status codes (integers).", line) from exc
+        return items
+
+    def _coerce_exception_list(expr: ast_nodes.Expr | None, *, line: int | None) -> list[str]:
+        if expr is None:
+            return list(default_exception_names)
+        value = _literal_value(expr)
+        if isinstance(value, bool):
+            return list(default_exception_names) if value else []
+        raw_values: list[object] = []
+        if isinstance(expr, ast_nodes.ListLiteral):
+            raw_values = [_literal_value(item) for item in expr.items]
+        elif isinstance(value, list):
+            raw_values = list(value)
+        else:
+            raw_values = [value]
+        names: list[str] = []
+        for raw in raw_values:
+            if raw is None:
+                continue
+            if isinstance(raw, str):
+                names.append(raw)
+            elif isinstance(raw, ast_nodes.Literal) and isinstance(raw.value, str):
+                names.append(raw.value)
+            else:
+                names.append(str(raw))
+        return names
+
+    def _coerce_bool_expr(expr: ast_nodes.Expr | None, *, label: str, line: int | None) -> bool:
+        value = _literal_value(expr)
+        if isinstance(value, bool):
+            return value
+        raise IRError(f"{label} must be true or false.", line)
+
+    def _coerce_query_encoding(value: str | None, *, tool_name: str, line: int | None) -> str | None:
+        if not value:
+            return None
+        mode = (value or "").strip().lower()
+        allowed = {"repeat", "brackets", "csv"}
+        if mode not in allowed:
+            raise IRError(
+                f"Tool '{tool_name}' query_encoding must be one of repeat, brackets, or csv.",
+                line,
+            )
+        return mode
+
+    def _lower_rate_limit(cfg: ast_nodes.ToolRateLimitConfig | None, *, tool_name: str, line: int | None) -> ToolRateLimitConfig | None:
+        if cfg is None:
+            return None
+        max_per_minute = cfg.max_calls_per_minute
+        max_per_second = cfg.max_calls_per_second
+        burst_expr = cfg.burst
+        max_minute_val = (
+            _coerce_positive_int(max_per_minute, label=f"Tool '{tool_name}' max_calls_per_minute", line=line)
+            if max_per_minute is not None
+            else None
+        )
+        max_second_val = (
+            _coerce_positive_int(max_per_second, label=f"Tool '{tool_name}' max_calls_per_second", line=line)
+            if max_per_second is not None
+            else None
+        )
+        burst_val = (
+            _coerce_positive_int(burst_expr, label=f"Tool '{tool_name}' rate_limit burst", line=line)
+            if burst_expr is not None
+            else None
+        )
+        if max_minute_val is None and max_second_val is None:
+            raise IRError(
+                f"Tool '{tool_name}' rate_limit must set max_calls_per_minute or max_calls_per_second.",
+                line,
+            )
+        return ToolRateLimitConfig(
+            max_calls_per_minute=max_minute_val,
+            max_calls_per_second=max_second_val,
+            burst=burst_val,
+        )
+
+    def _lower_response_schema(
+        schema: ast_nodes.ResponseSchema | None, *, tool_name: str, line: int | None
+    ) -> ToolResponseSchema | None:
+        if schema is None:
+            return None
+        schema_type = (schema.type or "").strip().lower()
+        if not schema_type:
+            raise IRError(
+                f"Tool '{tool_name}' response_schema must set a type (object, array, string, number, boolean).",
+                line,
+            )
+        supported_types = {"object", "array", "string", "number", "boolean"}
+        if schema_type not in supported_types:
+            raise IRError(
+                f"Tool '{tool_name}' response_schema type '{schema_type}' is not supported. Use one of: object, array, string, number, boolean.",
+                line,
+            )
+        required_fields = list(schema.required or [])
+        if schema_type != "object" and required_fields:
+            raise IRError(
+                f"Tool '{tool_name}' response_schema can only use required [...] when type is object.",
+                line,
+            )
+        properties: dict[str, str] = {}
+        if schema.properties:
+            if schema_type != "object":
+                raise IRError(
+                    f"Tool '{tool_name}' response_schema properties are only supported for object type.",
+                    line,
+                )
+            for prop_name, prop_schema in schema.properties.items():
+                if not prop_name:
+                    raise IRError(
+                        f"Tool '{tool_name}' response_schema has a property with no name.",
+                        line,
+                    )
+                prop_type = (getattr(prop_schema, "type", None) or "").strip().lower()
+                if not prop_type:
+                    raise IRError(
+                        f"Tool '{tool_name}' response_schema property '{prop_name}' must set type.",
+                        line,
+                    )
+                if prop_type not in supported_types:
+                    raise IRError(
+                        f"Tool '{tool_name}' response_schema property '{prop_name}' uses unsupported type '{prop_type}'.",
+                        line,
+                    )
+                properties[prop_name] = prop_type
+        return ToolResponseSchema(type=schema_type, required=required_fields, properties=properties)
+
     program = IRProgram()
     program.version = IR_VERSION
     page_names = {decl.name for decl in module.declarations if isinstance(decl, ast_nodes.PageDecl)}
@@ -1846,6 +2051,9 @@ def ast_to_ir(module: ast_nodes.Module) -> IRProgram:
                     )
                 flat_body.append(item)
             return IRTransactionBlock(name=tx_name, body=flat_body, span_line=step.span.line if step.span else None)
+        timeout_tx = None
+        if getattr(step, "timeout", None) is not None:
+            timeout_tx, _ = transform_expr(step.timeout)
         if step.statements:
             ir_statements = [lower_statement(stmt) for stmt in step.statements]
             params_tx = transform_params(getattr(step, "params", {}) or {})
@@ -1858,6 +2066,7 @@ def ast_to_ir(module: ast_nodes.Module) -> IRProgram:
                 params=params_tx,
                 statements=ir_statements,
                 when_expr=getattr(step, "when_expr", None),
+                timeout=timeout_tx,
                 streaming=getattr(step, "streaming", False),
                 stream_channel=getattr(step, "stream_channel", None),
                 stream_role=getattr(step, "stream_role", None),
@@ -1876,6 +2085,7 @@ def ast_to_ir(module: ast_nodes.Module) -> IRProgram:
                 conditional_branches=branches,
                 params=params_tx,
                 when_expr=getattr(step, "when_expr", None),
+                timeout=timeout_tx,
                 streaming=getattr(step, "streaming", False),
                 stream_channel=getattr(step, "stream_channel", None),
                 stream_role=getattr(step, "stream_role", None),
@@ -1974,6 +2184,7 @@ def ast_to_ir(module: ast_nodes.Module) -> IRProgram:
                 message=getattr(step, "message", None),
                 params=params_tx,
                 when_expr=getattr(step, "when_expr", None),
+                timeout=timeout_tx,
                 streaming=getattr(step, "streaming", False),
                 stream_channel=getattr(step, "stream_channel", None),
                 stream_role=getattr(step, "stream_role", None),
@@ -2019,6 +2230,7 @@ def ast_to_ir(module: ast_nodes.Module) -> IRProgram:
             message=getattr(step, "message", None),
             params=params_tx,
             when_expr=getattr(step, "when_expr", None),
+            timeout=timeout_tx,
             streaming=getattr(step, "streaming", False),
             stream_channel=getattr(step, "stream_channel", None),
             stream_role=getattr(step, "stream_role", None),
@@ -3313,6 +3525,169 @@ def ast_to_ir(module: ast_nodes.Module) -> IRProgram:
             kind_value = decl.kind
             if is_http_tool and decl.kind and decl.kind.lower() == "http_json":
                 kind_value = "http"
+            timeout_seconds = _coerce_seconds(
+                getattr(decl, "timeout", None),
+                label=f"Tool '{decl.name}' timeout",
+                line=decl.span and decl.span.line,
+            )
+            if timeout_seconds is None:
+                timeout_seconds = DEFAULT_TOOL_TIMEOUT_SECONDS
+            retry_cfg_decl = getattr(decl, "retry", None)
+            retry_cfg_ir: ToolRetryConfig | None = None
+            if retry_cfg_decl:
+                attempts = (
+                    _coerce_positive_int(
+                        retry_cfg_decl.max_attempts,
+                        label=f"Tool '{decl.name}' retry max_attempts",
+                        line=decl.span and decl.span.line,
+                    )
+                    if getattr(retry_cfg_decl, "max_attempts", None) is not None
+                    else 3
+                )
+                backoff_mode = (
+                    retry_cfg_decl.backoff.strip().lower()
+                    if getattr(retry_cfg_decl, "backoff", None)
+                    else "exponential"
+                )
+                if backoff_mode not in {"none", "constant", "exponential"}:
+                    raise IRError(
+                        f"Tool '{decl.name}' retry backoff must be one of none, constant, or exponential.",
+                        decl.span and decl.span.line,
+                    )
+                initial_delay = _coerce_seconds(
+                    getattr(retry_cfg_decl, "initial_delay", None),
+                    label=f"Tool '{decl.name}' retry initial_delay",
+                    line=decl.span and decl.span.line,
+                )
+                if initial_delay is None:
+                    initial_delay = 0.5
+                max_delay = _coerce_seconds(
+                    getattr(retry_cfg_decl, "max_delay", None),
+                    label=f"Tool '{decl.name}' retry max_delay",
+                    line=decl.span and decl.span.line,
+                )
+                jitter = (
+                    _coerce_bool(
+                        retry_cfg_decl.jitter,
+                        label=f"Tool '{decl.name}' retry jitter",
+                        line=decl.span and decl.span.line,
+                    )
+                    if getattr(retry_cfg_decl, "jitter", None) is not None
+                    else False
+                )
+                retry_status = _coerce_status_list(
+                    getattr(retry_cfg_decl, "retry_on_status", None),
+                    label=f"Tool '{decl.name}' retry_on_status",
+                    line=decl.span and decl.span.line,
+                )
+                retry_exceptions = _coerce_exception_list(
+                    getattr(retry_cfg_decl, "retry_on_exceptions", None),
+                    line=decl.span and decl.span.line,
+                )
+                allow_unsafe = (
+                    _coerce_bool(
+                        retry_cfg_decl.allow_unsafe,
+                        label=f"Tool '{decl.name}' retry allow_unsafe",
+                        line=decl.span and decl.span.line,
+                    )
+                    if getattr(retry_cfg_decl, "allow_unsafe", None) is not None
+                    else False
+                )
+                retry_cfg_ir = ToolRetryConfig(
+                    max_attempts=attempts,
+                    backoff=backoff_mode,
+                    initial_delay=initial_delay,
+                    max_delay=max_delay,
+                    jitter=jitter,
+                    retry_on_status=retry_status,
+                    retry_on_exceptions=retry_exceptions,
+                    allow_unsafe=allow_unsafe,
+                )
+            auth_cfg_ir: ToolAuthConfig | None = None
+            auth_decl = getattr(decl, "auth", None)
+            if auth_decl:
+                auth_kind = (auth_decl.kind or "").strip().lower()
+                if not auth_kind:
+                    raise IRError(
+                        f"Tool '{decl.name}' auth config must set kind.",
+                        decl.span and decl.span.line,
+                    )
+                if auth_kind == "bearer":
+                    if getattr(auth_decl, "token", None) is None:
+                        raise IRError(
+                            f'Tool "{decl.name}" auth config is incomplete (missing token).',
+                            decl.span and decl.span.line,
+                        )
+                    auth_cfg_ir = ToolAuthConfig(kind="bearer", token=auth_decl.token)
+                elif auth_kind == "basic":
+                    if getattr(auth_decl, "username", None) is None or getattr(auth_decl, "password", None) is None:
+                        raise IRError(
+                            f'Tool "{decl.name}" auth config is incomplete (missing username/password).',
+                            decl.span and decl.span.line,
+                        )
+                    auth_cfg_ir = ToolAuthConfig(
+                        kind="basic",
+                        username=auth_decl.username,
+                        password=auth_decl.password,
+                    )
+                elif auth_kind in {"api_key", "api-key", "apikey"}:
+                    location = (auth_decl.location or "").strip().lower()
+                    if location not in {"header", "query"}:
+                        raise IRError(
+                            f'Tool "{decl.name}" auth config must set location to "header" or "query" for api_key.',
+                            decl.span and decl.span.line,
+                        )
+                    if not getattr(auth_decl, "name", None):
+                        raise IRError(
+                            f'Tool "{decl.name}" auth config is incomplete (missing name for api_key).',
+                            decl.span and decl.span.line,
+                        )
+                    if getattr(auth_decl, "value", None) is None:
+                        raise IRError(
+                            f'Tool "{decl.name}" auth config is incomplete (missing value for api_key).',
+                            decl.span and decl.span.line,
+                        )
+                    auth_cfg_ir = ToolAuthConfig(
+                        kind="api_key",
+                        location=location,
+                        name=auth_decl.name,
+                        value=auth_decl.value,
+                    )
+                else:
+                    raise IRError(
+                        f"Tool '{decl.name}' auth kind '{auth_kind}' is not supported.",
+                        decl.span and decl.span.line,
+                    )
+            rate_limit_ir = _lower_rate_limit(
+                getattr(decl, "rate_limit", None),
+                tool_name=decl.name,
+                line=decl.span and decl.span.line,
+            )
+            multipart_flag = False
+            if getattr(decl, "multipart", None) is not None:
+                multipart_flag = _coerce_bool_expr(
+                    getattr(decl, "multipart", None),
+                    label=f"Tool '{decl.name}' multipart",
+                    line=decl.span and decl.span.line,
+                )
+            query_encoding_mode = _coerce_query_encoding(
+                getattr(decl, "query_encoding", None),
+                tool_name=decl.name,
+                line=decl.span and decl.span.line,
+            )
+            response_schema_ir = _lower_response_schema(
+                getattr(decl, "response_schema", None),
+                tool_name=decl.name,
+                line=decl.span and decl.span.line,
+            )
+            logging_level = (getattr(decl, "logging", None) or "").strip().lower()
+            if logging_level and logging_level not in {"debug", "info", "quiet"}:
+                raise IRError(
+                    f"Tool '{decl.name}' logging must be one of debug, info, or quiet.",
+                    decl.span and decl.span.line,
+                )
+            if not logging_level:
+                logging_level = DEFAULT_TOOL_LOGGING_LEVEL
             program.tools[decl.name] = IRTool(
                 name=decl.name,
                 kind=kind_value,
@@ -3324,6 +3699,14 @@ def ast_to_ir(module: ast_nodes.Module) -> IRProgram:
                 body_fields=decl.body_fields or {},
                 body_template=decl.body_template,
                 input_fields=sorted(input_refs),
+                timeout_seconds=timeout_seconds,
+                retry=retry_cfg_ir,
+                auth=auth_cfg_ir,
+                response_schema=response_schema_ir,
+                logging=logging_level,
+                rate_limit=rate_limit_ir,
+                multipart=multipart_flag,
+                query_encoding=query_encoding_mode,
             )
         elif isinstance(decl, ast_nodes.FlowDecl):
             if decl.name in program.flows:

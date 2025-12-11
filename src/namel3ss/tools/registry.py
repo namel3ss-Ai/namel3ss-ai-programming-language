@@ -10,6 +10,48 @@ from typing import Any, Dict, List, Optional, Sequence
 
 from ..errors import Namel3ssError
 
+
+DEFAULT_TOOL_TIMEOUT_SECONDS = 15.0
+DEFAULT_TOOL_LOGGING_LEVEL = "info"
+
+
+@dataclass
+class ToolRetryConfig:
+    max_attempts: int = 1
+    backoff: str = "none"
+    initial_delay: float = 0.0
+    max_delay: float | None = None
+    jitter: bool = False
+    retry_on_status: list[int] = field(default_factory=list)
+    retry_on_exceptions: list[str] | None = None
+    allow_unsafe: bool = False
+
+
+@dataclass
+class ToolAuthConfig:
+    kind: str | None = None
+    token: Any | None = None
+    username: Any | None = None
+    password: Any | None = None
+    location: str | None = None
+    name: str | None = None
+    value: Any | None = None
+
+
+@dataclass
+class ToolRateLimitConfig:
+    max_calls_per_minute: int | None = None
+    max_calls_per_second: int | None = None
+    burst: int | None = None
+
+
+@dataclass
+class ToolResponseSchema:
+    type: str
+    required: list[str] = field(default_factory=list)
+    properties: dict[str, str] = field(default_factory=dict)
+
+
 @dataclass
 class ToolConfig:
     name: str
@@ -22,6 +64,14 @@ class ToolConfig:
     body_fields: dict = field(default_factory=dict)
     body_template: object | None = None
     input_fields: list[str] = field(default_factory=list)
+    timeout_seconds: float | None = None
+    retry: ToolRetryConfig | None = None
+    auth: ToolAuthConfig | None = None
+    response_schema: ToolResponseSchema | None = None
+    logging: str | None = None
+    rate_limit: ToolRateLimitConfig | None = None
+    multipart: bool = False
+    query_encoding: str | None = None
 
 
 @dataclass

@@ -126,6 +126,7 @@ def flow_ir_to_graph(flow: IRFlow) -> FlowGraph:
             "params": getattr(step, "params", {}) or {},
             "statements": getattr(step, "statements", None),
             "when": getattr(step, "when_expr", None),
+            "timeout": getattr(step, "timeout", None),
             "stream": {
                 "streaming": getattr(step, "streaming", False),
                 "stream_channel": getattr(step, "stream_channel", None),
