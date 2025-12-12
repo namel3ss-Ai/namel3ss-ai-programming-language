@@ -14,7 +14,7 @@ def test_legacy_model_header_rejected():
     with pytest.raises(ParseError) as excinfo:
         parse_module(
             '''
-model "dummy":
+model is "dummy":
   provider "openai_default"
 '''
         )
@@ -25,9 +25,8 @@ def test_frame_is_syntax_parses():
     mod = parse_module(
         '''
 frame is "documents":
-  source:
-    backend is "default_db"
-    table is "docs"
+  backend is "default_db"
+  table is "docs"
 '''
     )
     frame = mod.declarations[0]
@@ -40,9 +39,8 @@ def test_vector_store_both_syntaxes():
     mod = parse_module(
         '''
 frame is "documents":
-  source:
-    backend is "memory"
-    table is "docs"
+  backend is "memory"
+  table is "docs"
 
 vector_store is "kb":
   backend is "default_vector"
@@ -71,9 +69,8 @@ def test_vector_store_missing_backend_errors():
     mod = parse_module(
         '''
 frame is "docs":
-  source:
-    backend is "memory"
-    table is "docs"
+  backend is "memory"
+  table is "docs"
 
 vector_store is "kb":
   frame is "docs"

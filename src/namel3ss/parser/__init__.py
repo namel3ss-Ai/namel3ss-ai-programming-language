@@ -29,8 +29,9 @@ else:
 
 parse_source = getattr(_legacy, "parse_source", None)
 parse = getattr(_legacy, "parse", None) or parse_source
+Parser = getattr(_legacy, "Parser", None)
 
-if parse is None or parse_source is None:  # pragma: no cover - defensive
+if parse is None or parse_source is None or Parser is None:  # pragma: no cover - defensive
     raise AttributeError("Legacy parser missing required entrypoints")
 
-__all__ = ["parse", "parse_source", "ParseError"]
+__all__ = ["parse", "parse_source", "ParseError", "Parser"]

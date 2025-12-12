@@ -48,7 +48,7 @@ def test_macro_plan_expansion_emits_core_components():
 
 def test_macro_decl_version_parses():
     code = (
-        'macro "helper" using ai "codegen":\n'
+        'macro is "helper" using ai "codegen":\n'
         '  description "macro with version"\n'
         '  version is "2.0"\n'
     )

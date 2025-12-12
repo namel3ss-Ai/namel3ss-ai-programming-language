@@ -71,9 +71,8 @@ def test_vector_index_flow_indexes_rows():
     module = parser.parse_source(
         '''
 frame is "docs":
-  source:
-    backend is "memory"
-    table is "docs"
+  backend is "memory"
+  table is "docs"
 
 vector_store is "kb":
   backend "memory"
@@ -140,9 +139,8 @@ def test_vector_index_unknown_store_errors():
     module = parser.parse_source(
         '''
 frame is "docs":
-  source:
-    backend is "memory"
-    table is "docs"
+  backend is "memory"
+  table is "docs"
 
 flow is "index_docs":
   step is "index":

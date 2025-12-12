@@ -36,6 +36,7 @@ def _parse_step_body(
     goto_action: ast_nodes.FlowAction | None = None
     when_expr: ast_nodes.Expr | None = None
     timeout_expr: ast_nodes.Expr | None = None
+    record_query: ast_nodes.RecordQuery | None = None
     allowed_fields: Set[str] = {
         "kind",
         "target",
@@ -70,12 +71,108 @@ def _parse_step_body(
     while not self.check("DEDENT"):
         if self.match("NEWLINE"):
             continue
+        next_tok = self.peek()
+        if next_tok.value == "find":
+            find_tok = self.consume_any({"KEYWORD", "IDENT"})
+            alias_tok = self.consume_any({"IDENT", "KEYWORD", "STRING"})
+            alias = alias_tok.value or ""
+            if not self.match_value("KEYWORD", "where"):
+                raise self.error("Expected 'where' after find <alias>", self.peek())
+            where_cond = self._parse_where_conditions()
+            record_query = ast_nodes.RecordQuery(
+                alias=alias,
+                record_name=None,
+                where_condition=where_cond,
+                order_by=[],
+                relationships=[],
+                span=self._span(find_tok),
+            )
+            if kind is None:
+                kind = "find"
+            if target is None:
+                target = alias
+            continue
+        if next_tok.value == "order":
+            order_tok = self.consume_any({"KEYWORD", "IDENT"})
+            alias_tok = self.consume_any({"IDENT", "KEYWORD", "STRING"})
+            alias = alias_tok.value or ""
+            self.consume("KEYWORD", "by")
+            order_items: list[ast_nodes.RecordOrderBy] = []
+            while True:
+                field_tok = self.consume_any({"IDENT", "KEYWORD", "STRING"})
+                direction = "asc"
+                if self.peek().type == "KEYWORD" and self.peek().value in {"ascending", "descending", "asc", "desc"}:
+                    dir_tok = self.consume("KEYWORD")
+                    direction = "asc" if dir_tok.value in {"ascending", "asc"} else "desc"
+                order_items.append(
+                    ast_nodes.RecordOrderBy(field_name=field_tok.value or "", direction=direction, span=self._span(field_tok))
+                )
+                if self.match("COMMA"):
+                    continue
+                break
+            if record_query is None:
+                record_query = ast_nodes.RecordQuery(
+                    alias=alias, record_name=None, where_condition=None, order_by=[], relationships=[], span=self._span(order_tok)
+                )
+            if record_query.order_by is None:
+                record_query.order_by = []
+            record_query.order_by.extend(order_items)
+            self.optional_newline()
+            continue
+        if next_tok.value == "limit":
+            limit_tok = self.consume_any({"KEYWORD", "IDENT"})
+            alias_tok = self.consume_any({"IDENT", "KEYWORD", "STRING"})
+            self.consume("KEYWORD", "to")
+            expr = self.parse_expression()
+            if record_query is None:
+                record_query = ast_nodes.RecordQuery(
+                    alias=alias_tok.value or "", record_name=None, where_condition=None, relationships=[], span=self._span(limit_tok)
+                )
+            record_query.limit_expr = expr
+            self.optional_newline()
+            continue
+        if next_tok.value == "offset":
+            offset_tok = self.consume_any({"KEYWORD", "IDENT"})
+            alias_tok = self.consume_any({"IDENT", "KEYWORD", "STRING"})
+            self.consume("KEYWORD", "by")
+            expr = self.parse_expression()
+            if record_query is None:
+                record_query = ast_nodes.RecordQuery(
+                    alias=alias_tok.value or "", record_name=None, where_condition=None, relationships=[], span=self._span(offset_tok)
+                )
+            record_query.offset_expr = expr
+            self.optional_newline()
+            continue
+        if next_tok.value == "by":
+            by_tok = self.consume_any({"KEYWORD", "IDENT"})
+            key_tok = self.consume_any({"IDENT", "KEYWORD", "STRING"})
+            self.consume("COLON")
+            self.consume("NEWLINE")
+            self.consume("INDENT")
+            by_values: dict[str, ast_nodes.Expr] = {}
+            while not self.check("DEDENT"):
+                if self.match("NEWLINE"):
+                    continue
+                field_tok = self.consume_any({"IDENT", "KEYWORD"})
+                self.consume("COLON")
+                val_expr = self.parse_expression()
+                by_values[field_tok.value or ""] = val_expr
+                self.optional_newline()
+            self.consume("DEDENT")
+            if key_tok.value == "id":
+                extra_params["by_id"] = by_values
+            else:
+                extra_params[f"by_{(key_tok.value or '').replace(' ', '_')}"] = by_values
+            self.optional_newline()
+            continue
+        if (next_tok.value or "") not in allowed_fields:
+            statements.append(self.parse_statement_or_action())
+            continue
         field_tok = self.consume_any({"KEYWORD", "IDENT"})
         field_name = field_tok.value or ""
-        if field_name not in allowed_fields:
-            raise self.error(f"Unexpected field '{field_name}' in step", field_tok)
         if field_name == "kind":
-            self.consume("COLON")
+            if not self.match_value("KEYWORD", "is"):
+                self.consume("COLON")
             next_tok = self.peek()
             if next_tok.type == "STRING":
                 kind_tok = self.consume("STRING")
@@ -86,7 +183,8 @@ def _parse_step_body(
             self.optional_newline()
             continue
         if field_name in {"target", "tool", "frame", "record", "vector_store"}:
-            self.consume("COLON")
+            if not self.match_value("KEYWORD", "is"):
+                self.consume("COLON")
             target_tok = self.consume("STRING")
             if field_name == "target":
                 target = target_tok.value
@@ -142,6 +240,21 @@ def _parse_step_body(
         if field_name in {"values", "query_text", "question", "query"}:
             self.consume("COLON")
             if field_name == "values":
+                if self.match("NEWLINE"):
+                    self.consume("INDENT")
+                    values_dict: dict[str, ast_nodes.Expr] = {}
+                    while not self.check("DEDENT"):
+                        if self.match("NEWLINE"):
+                            continue
+                        key_tok = self.consume_any({"IDENT", "KEYWORD"})
+                        self.consume("COLON")
+                        val_expr = self.parse_expression()
+                        values_dict[key_tok.value or ""] = val_expr
+                        self.optional_newline()
+                    self.consume("DEDENT")
+                    extra_params["values"] = values_dict
+                    self.optional_newline()
+                    continue
                 expr = self.parse_expression()
                 extra_params["values"] = expr
             elif field_name == "query_text":
@@ -189,8 +302,17 @@ def _parse_step_body(
             self.consume("COLON")
             self.consume("NEWLINE")
             self.consume("INDENT")
-            extra_params["set"] = self.parse_statement_block()
+            set_values: dict[str, ast_nodes.Expr] = {}
+            while not self.check("DEDENT"):
+                if self.match("NEWLINE"):
+                    continue
+                set_key_tok = self.consume_any({"IDENT", "KEYWORD"})
+                self.consume("COLON")
+                set_val_expr = self.parse_expression()
+                set_values[set_key_tok.value or ""] = set_val_expr
+                self.optional_newline()
             self.consume("DEDENT")
+            extra_params["set"] = set_values
             self.optional_newline()
             continue
         if field_name in {"top_k", "timeout"}:
@@ -265,6 +387,9 @@ def _parse_step_body(
             self.optional_newline()
             continue
         raise self.error(f"Unexpected field '{field_name}' in step", field_tok)
+
+    if record_query is not None:
+        extra_params["query"] = record_query
 
     return (
         kind,
@@ -422,7 +547,16 @@ def parse_flow_step(self, step_name_token) -> ast_nodes.FlowStepDecl:
 
 def parse_flow_decl(self) -> ast_nodes.FlowDecl:
     start = self.consume("KEYWORD", "flow")
-    name_tok = self.consume("STRING")
+    if self.match_value("KEYWORD", "is"):
+        name_tok = self.consume("STRING")
+    else:
+        tok = self.peek()
+        if tok.type == "STRING":
+            raise self.error(
+                f'flow "{tok.value}": is not supported. Use flow is "{tok.value}": instead.',
+                tok,
+            )
+        raise self.error("Expected 'is' after 'flow'", tok)
     description = None
     if self.peek().value == "description":
         self.consume("KEYWORD", "description")
@@ -437,7 +571,19 @@ def parse_flow_decl(self) -> ast_nodes.FlowDecl:
     while not self.check("DEDENT"):
         if self.match("NEWLINE"):
             continue
-        step_name_token = self.consume_any({"IDENT", "KEYWORD", "STRING"})
+        header_tok = self.consume_any({"IDENT", "KEYWORD", "STRING"})
+        step_name_token = header_tok
+        if header_tok.value == "step":
+            if self.match_value("KEYWORD", "is"):
+                step_name_token = self.consume_any({"STRING", "IDENT", "KEYWORD"})
+            else:
+                tok = self.peek()
+                if tok.type in {"STRING", "IDENT", "KEYWORD"}:
+                    raise self.error(
+                        f'step "{tok.value}": is not supported. Use step is "{tok.value}": instead.',
+                        tok,
+                    )
+                raise self.error("Expected 'is' after 'step'", tok)
         steps.append(self.parse_flow_step(step_name_token))
     self.consume("DEDENT")
     self.optional_newline()

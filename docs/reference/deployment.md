@@ -55,7 +55,7 @@ trigger "import_new_files":
   kind "file"
   path "uploads/"
   pattern "*.csv"
-  flow "process_csv_file"
+  flow is "process_csv_file"
 ```
 
 Notes:

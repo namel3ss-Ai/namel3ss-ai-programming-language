@@ -311,9 +311,8 @@ Cross-reference: parser memory rules `src/namel3ss/parser.py`; runtime memory st
 Example (ingest + answer):
 ```ai
 frame is "docs":
-  source:
-    backend is "memory"
-    table is "docs"
+  backend is "memory"
+  table is "docs"
 
 vector_store is "kb":
   backend is "memory"

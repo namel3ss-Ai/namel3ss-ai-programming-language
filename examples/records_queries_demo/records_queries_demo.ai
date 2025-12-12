@@ -3,11 +3,10 @@ app is "records_queries_demo":
   description "Demo app for English find queries with ordering and pagination."
 
 frame is "users":
-  source:
-    backend is "memory"
-    table is "users"
+  backend is "memory"
+  table is "users"
 
-record "User":
+record is "User":
   frame is "users"
   fields:
     id:
@@ -29,7 +28,7 @@ flow is "seed_sample_data":
   description "Insert a handful of sample users."
   step is "alice":
     kind is "db_create"
-    record "User"
+    record is "User"
     values:
       id: "u1"
       name: "Alice"
@@ -38,7 +37,7 @@ flow is "seed_sample_data":
       created_at: 3
   step is "bob":
     kind is "db_create"
-    record "User"
+    record is "User"
     values:
       id: "u2"
       name: "Bob"
@@ -47,7 +46,7 @@ flow is "seed_sample_data":
       created_at: 2
   step is "carol":
     kind is "db_create"
-    record "User"
+    record is "User"
     values:
       id: "u3"
       name: "Carol"
@@ -56,7 +55,7 @@ flow is "seed_sample_data":
       created_at: 5
   step is "dave":
     kind is "db_create"
-    record "User"
+    record is "User"
     values:
       id: "u4"
       name: "Dave"

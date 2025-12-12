@@ -3,21 +3,18 @@ app is "transactions_demo":
   description "Demonstrates transaction: blocks for record writes."
 
 frame is "users":
-  source:
-    backend is "memory"
-    table is "users"
+  backend is "memory"
+  table is "users"
 
 frame is "orders":
-  source:
-    backend is "memory"
-    table is "orders"
+  backend is "memory"
+  table is "orders"
 
 frame is "audit_logs":
-  source:
-    backend is "memory"
-    table is "audit_logs"
+  backend is "memory"
+  table is "audit_logs"
 
-record "User":
+record is "User":
   frame is "users"
   fields:
     id:
@@ -29,7 +26,7 @@ record "User":
     name:
       type "string"
 
-record "Order":
+record is "Order":
   frame is "orders"
   fields:
     id:
@@ -41,7 +38,7 @@ record "Order":
     total:
       type "number"
 
-record "AuditLog":
+record is "AuditLog":
   frame is "audit_logs"
   fields:
     id:
@@ -54,7 +51,7 @@ flow is "seed_existing_user":
   description "Inserts a baseline user to demonstrate duplicate transactions."
   step is "existing_user":
     kind is "db_create"
-    record "User"
+    record is "User"
     values:
       id: "existing-user"
       email: "duplicate@example.com"
@@ -65,14 +62,14 @@ flow is "signup_new_customer":
   transaction:
     step is "create_user":
       kind is "db_create"
-      record "User"
+      record is "User"
       values:
         id: "user-200"
         email: "customer@example.com"
         name: "Casey Customer"
     step is "welcome_order":
       kind is "db_create"
-      record "Order"
+      record is "Order"
       values:
         id: "order-200"
         user_id: "user-200"
@@ -80,7 +77,7 @@ flow is "signup_new_customer":
   on error:
     step is "log_failure":
       kind is "db_create"
-      record "AuditLog"
+      record is "AuditLog"
       values:
         id: "log-success-flow"
         message: "Unexpected failure while signing up a customer."
@@ -90,14 +87,14 @@ flow is "signup_invalid_order":
   transaction:
     step is "create_user":
       kind is "db_create"
-      record "User"
+      record is "User"
       values:
         id: "user-bad-order"
         email: "fk@example.com"
         name: "Frank ForeignKey"
     step is "broken_order":
       kind is "db_create"
-      record "Order"
+      record is "Order"
       values:
         id: "order-bad"
         user_id: "missing-user"
@@ -105,7 +102,7 @@ flow is "signup_invalid_order":
   on error:
     step is "record_fk_error":
       kind is "db_create"
-      record "AuditLog"
+      record is "AuditLog"
       values:
         id: "log-fk"
         message: "Rolled back signup_invalid_order because the welcome order referenced a missing user."
@@ -115,14 +112,14 @@ flow is "signup_duplicate_email":
   transaction:
     step is "create_unique_user":
       kind is "db_create"
-      record "User"
+      record is "User"
       values:
         id: "user-dup-sequence"
         email: "temp-dup@example.com"
         name: "Delilah Duplicate"
     step is "conflicting_clone":
       kind is "db_create"
-      record "User"
+      record is "User"
       values:
         id: "user-dup-sequence-2"
         email: "temp-dup@example.com"
@@ -130,7 +127,7 @@ flow is "signup_duplicate_email":
   on error:
     step is "record_duplicate_error":
       kind is "db_create"
-      record "AuditLog"
+      record is "AuditLog"
       values:
         id: "log-duplicate"
         message: "signup_duplicate_email rolled back because two steps shared the same email address."

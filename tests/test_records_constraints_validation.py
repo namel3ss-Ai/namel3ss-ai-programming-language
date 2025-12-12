@@ -49,9 +49,8 @@ def _parse_program(source: str):
 BASE_DEFS = dedent(
     """
     frame is "products":
-      source:
-        backend is "memory"
-        table is "products"
+      backend is "memory"
+      table is "products"
 
     record is "Product":
       frame is "products"
@@ -96,7 +95,7 @@ def test_create_with_valid_data_passes():
         flow is "create_valid":
           step is "create":
             kind is "db_create"
-            record "Product"
+            record is "Product"
             values:
               id: "prod-1"
               name: "Valid Product"
@@ -125,7 +124,7 @@ def test_price_below_min_fails():
         flow is "price_too_low":
           step is "create":
             kind is "db_create"
-            record "Product"
+            record is "Product"
             values:
               id: "prod-low"
               name: "Too Cheap"
@@ -149,7 +148,7 @@ def test_price_above_max_update_fails():
         flow is "seed_high":
           step is "create":
             kind is "db_create"
-            record "Product"
+            record is "Product"
             values:
               id: "prod-high"
               name: "High Price"
@@ -161,7 +160,7 @@ def test_price_above_max_update_fails():
         flow is "raise_price":
           step is "update":
             kind is "db_update"
-            record "Product"
+            record is "Product"
             by id:
               id: "prod-high"
             set:
@@ -186,7 +185,7 @@ def test_name_length_violations():
         flow is "short_name":
           step is "create":
             kind is "db_create"
-            record "Product"
+            record is "Product"
             values:
               id: "prod-short"
               name: "ab"
@@ -198,7 +197,7 @@ def test_name_length_violations():
         flow is "long_name":
           step is "create":
             kind is "db_create"
-            record "Product"
+            record is "Product"
             values:
               id: "prod-long"
               name: "{long_name_value}"
@@ -225,7 +224,7 @@ def test_status_enum_violation():
         flow is "bad_status":
           step is "create":
             kind is "db_create"
-            record "Product"
+            record is "Product"
             values:
               id: "prod-status"
               name: "Invalid Status"
@@ -248,7 +247,7 @@ def test_slug_pattern_violation():
         flow is "bad_slug":
           step is "create":
             kind is "db_create"
-            record "Product"
+            record is "Product"
             values:
               id: "prod-slug"
               name: "Bad Slug"
@@ -271,7 +270,7 @@ def test_tags_length_constraint():
         flow is "too_many_tags":
           step is "create":
             kind is "db_create"
-            record "Product"
+            record is "Product"
             values:
               id: "prod-tags"
               name: "Too Many Tags"
@@ -296,7 +295,7 @@ def test_optional_field_skips_validation_when_missing():
         flow is "missing_subtitle":
           step is "create":
             kind is "db_create"
-            record "Product"
+            record is "Product"
             values:
               id: "prod-sub"
               name: "No Subtitle"
@@ -308,7 +307,7 @@ def test_optional_field_skips_validation_when_missing():
         flow is "long_subtitle":
           step is "db_update":
             kind is "db_update"
-            record "Product"
+            record is "Product"
             by id:
               id: "prod-sub"
             set:
@@ -352,7 +351,7 @@ def test_transaction_rolls_back_on_validation_error():
           transaction:
             step is "create_one":
               kind is "db_create"
-              record "Product"
+              record is "Product"
               values:
                 id: "prod-tx-1"
                 name: "First"
@@ -362,7 +361,7 @@ def test_transaction_rolls_back_on_validation_error():
                 slug: "first"
             step is "create_two":
               kind is "db_create"
-              record "Product"
+              record is "Product"
               values:
                 id: "prod-tx-2"
                 name: "Second"
@@ -385,7 +384,7 @@ def test_decimal_constraints_enforced():
         flow is "seed_discount":
           step is "create":
             kind is "db_create"
-            record "Product"
+            record is "Product"
             values:
               id: "prod-disc"
               name: "Discounted"
@@ -397,7 +396,7 @@ def test_decimal_constraints_enforced():
         flow is "bad_discount":
           step is "db_update":
             kind is "db_update"
-            record "Product"
+            record is "Product"
             by id:
               id: "prod-disc"
             set:
@@ -435,9 +434,8 @@ def test_ir_rejects_length_on_int_field():
     bad_source = dedent(
         """
         frame is "numbers":
-          source:
-            backend is "memory"
-            table is "numbers"
+          backend is "memory"
+          table is "numbers"
 
         record is "Value":
           frame is "numbers"
@@ -460,9 +458,8 @@ def test_ir_rejects_empty_enum_list():
     bad_source = dedent(
         """
         frame is "statuses":
-          source:
-            backend is "memory"
-            table is "statuses"
+          backend is "memory"
+          table is "statuses"
 
         record is "Status":
           frame is "statuses"
@@ -485,9 +482,8 @@ def test_ir_rejects_pattern_on_non_string():
     bad_source = dedent(
         """
         frame is "data":
-          source:
-            backend is "memory"
-            table is "data"
+          backend is "memory"
+          table is "data"
 
         record is "Sample":
           frame is "data"

@@ -8,7 +8,7 @@ from namel3ss.macros import MacroExpander
 def test_app_scaffold_expands_full_stack():
     source = dedent(
         """
-        use macro "app_scaffold" with:
+        use macro is "app_scaffold" with:
           entity is "Product"
           fields:
             field is "name":

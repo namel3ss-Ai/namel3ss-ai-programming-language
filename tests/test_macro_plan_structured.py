@@ -41,10 +41,10 @@ def test_structured_macro_plan_expands_to_ast():
     module = parser.parse_source(
         dedent(
             """
-            macro "plan_codegen" using ai "stub":
+            macro is "plan_codegen" using ai "stub":
               description "Structured plan macro"
 
-            use macro "plan_codegen"
+            use macro is "plan_codegen"
             """
         )
     )
@@ -64,10 +64,10 @@ def test_invalid_macro_plan_raises():
     module = parser.parse_source(
         dedent(
             """
-            macro "plan_codegen" using ai "stub":
+            macro is "plan_codegen" using ai "stub":
               description "Structured plan macro"
 
-            use macro "plan_codegen"
+            use macro is "plan_codegen"
             """
         )
     )
@@ -82,10 +82,10 @@ def test_non_plan_json_falls_back_to_string_parse():
     module = parser.parse_source(
         dedent(
             """
-            macro "plan_codegen" using ai "stub":
+            macro is "plan_codegen" using ai "stub":
               description "Structured plan macro"
 
-            use macro "plan_codegen"
+            use macro is "plan_codegen"
             """
         )
     )

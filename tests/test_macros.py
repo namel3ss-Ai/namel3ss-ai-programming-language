@@ -8,7 +8,7 @@ from namel3ss.parser import parse_source
 
 def test_macro_decl_parsing():
   src = (
-      'macro "greet" using ai "codegen":\n'
+      'macro is "greet" using ai "codegen":\n'
       '  description "Generate greeting flow"\n'
       '  sample "Example sample"\n'
       "  parameters name\n"
@@ -24,7 +24,7 @@ def test_macro_decl_parsing():
 
 def test_macro_use_parsing_with_args():
   src = (
-      'use macro "crud" with:\n'
+      'use macro is "crud" with:\n'
       '  entity is "Product"\n'
       "  fields are [\"name\", \"price\"]\n"
   )
@@ -42,10 +42,10 @@ def _expand(src: str, ai_callback):
 
 def test_macro_expansion_generates_flow():
   src = (
-      'macro "greet" using ai "codegen":\n'
+      'macro is "greet" using ai "codegen":\n'
       '  description "Generate greeting flow"\n'
       '\n'
-      'use macro "greet"\n'
+      'use macro is "greet"\n'
   )
 
   def ai_cb(macro, args):
@@ -63,11 +63,11 @@ def test_macro_expansion_generates_flow():
 
 def test_macro_expansion_with_parameters():
   src = (
-      'macro "crud" using ai "codegen":\n'
+      'macro is "crud" using ai "codegen":\n'
       '  description "Generate CRUD"\n'
       "  parameters entity, fields\n"
       '\n'
-      'use macro "crud" with:\n'
+      'use macro is "crud" with:\n'
       '  entity is "Product"\n'
       "  fields are [\"name\", \"price\"]\n"
   )
@@ -86,7 +86,7 @@ def test_macro_expansion_with_parameters():
 
 
 def test_macro_missing_macro_raises():
-  src = 'use macro "missing"\n'
+  src = 'use macro is "missing"\n'
   module = parse_source(src)
   with pytest.raises(Namel3ssError):
       expand_macros(module, lambda m, a: "")
@@ -94,7 +94,7 @@ def test_macro_missing_macro_raises():
 
 def test_macro_use_requires_is_in_args():
   src = (
-      'use macro "crud" with:\n'
+      'use macro is "crud" with:\n'
       '  entity "Product"\n'
   )
   with pytest.raises(Exception) as excinfo:
@@ -104,10 +104,10 @@ def test_macro_use_requires_is_in_args():
 
 def test_macro_output_parse_error():
   src = (
-      'macro "bad" using ai "codegen":\n'
+      'macro is "bad" using ai "codegen":\n'
       '  description "bad output"\n'
       '\n'
-      'use macro "bad"\n'
+      'use macro is "bad"\n'
   )
 
   def ai_cb(macro, args):
@@ -123,10 +123,10 @@ def test_macro_output_parse_error():
 
 def test_macro_name_conflict():
   src = (
-      'macro "m" using ai "codegen":\n'
+      'macro is "m" using ai "codegen":\n'
       '  description "dup"\n'
       '\n'
-      'use macro "m"\n'
+      'use macro is "m"\n'
       '\n'
       'flow is "greet":\n'
       '  step is "s":\n'
@@ -146,10 +146,10 @@ def test_macro_name_conflict():
 
 def test_macro_expansion_too_large():
   src = (
-      'macro "big" using ai "codegen":\n'
+      'macro is "big" using ai "codegen":\n'
       '  description "big"\n'
       '\n'
-      'use macro "big"\n'
+      'use macro is "big"\n'
   )
 
   def ai_cb(macro, args):
@@ -163,10 +163,10 @@ def test_macro_expansion_too_large():
 
 def test_macro_respects_configurable_limit(monkeypatch):
   src = (
-      'macro "big" using ai "codegen":\n'
+      'macro is "big" using ai "codegen":\n'
       '  description "big"\n'
       '\n'
-      'use macro "big"\n'
+      'use macro is "big"\n'
   )
   monkeypatch.setenv("NAMEL3SS_MAX_MACRO_OUTPUT", "60")
 
@@ -182,10 +182,10 @@ def test_macro_respects_configurable_limit(monkeypatch):
 
 def test_macro_under_limit_passes(monkeypatch):
   src = (
-      'macro "small" using ai "codegen":\n'
+      'macro is "small" using ai "codegen":\n'
       '  description "small"\n'
       '\n'
-      'use macro "small"\n'
+      'use macro is "small"\n'
   )
   monkeypatch.setenv("NAMEL3SS_MAX_MACRO_OUTPUT", "200")
 
@@ -199,14 +199,14 @@ def test_macro_under_limit_passes(monkeypatch):
 
 def test_macro_recursion_detected():
   src = (
-      'macro "loop" using ai "codegen":\n'
+      'macro is "loop" using ai "codegen":\n'
       '  description "recurse"\n'
       '\n'
-      'use macro "loop"\n'
+      'use macro is "loop"\n'
   )
 
   def ai_cb(macro, args):
-      return 'use macro "loop"\n'
+      return 'use macro is "loop"\n'
 
   with pytest.raises(MacroExpansionError):
       _expand(src, ai_cb)
@@ -214,15 +214,15 @@ def test_macro_recursion_detected():
 
 def test_nested_macro_expansion():
   src = (
-      'macro "inner" using ai "codegen":\n'
+      'macro is "inner" using ai "codegen":\n'
       '  description "inner macro"\n'
       '  sample "flow is \\"inner_flow\\":\\n  step is \\"s\\":\\n    log info \\"inner\\""\n'
       '\n'
-      'macro "outer" using ai "codegen":\n'
+      'macro is "outer" using ai "codegen":\n'
       '  description "outer macro"\n'
-      '  sample "use macro \\"inner\\"\\nflow is \\"outer_flow\\":\\n  step is \\"s\\":\\n    log info \\"outer\\""\n'
+      '  sample "use macro is \\"inner\\"\\nflow is \\"outer_flow\\":\\n  step is \\"s\\":\\n    log info \\"outer\\""\n'
       '\n'
-      'use macro "outer"\n'
+      'use macro is "outer"\n'
   )
   module = parse_source(src)
   expanded = MacroExpander(None).expand_module(module)
@@ -232,15 +232,15 @@ def test_nested_macro_expansion():
 
 def test_macro_cycle_reports_chain():
   src = (
-      'macro "A" using ai "codegen":\n'
+      'macro is "A" using ai "codegen":\n'
       '  description "calls B"\n'
-      '  sample "use macro \\"B\\""\n'
+      '  sample "use macro is \\"B\\""\n'
       '\n'
-      'macro "B" using ai "codegen":\n'
+      'macro is "B" using ai "codegen":\n'
       '  description "calls A"\n'
-      '  sample "use macro \\"A\\""\n'
+      '  sample "use macro is \\"A\\""\n'
       '\n'
-      'use macro "A"\n'
+      'use macro is "A"\n'
   )
   module = parse_source(src)
   with pytest.raises(MacroExpansionError) as excinfo:
@@ -253,10 +253,10 @@ def test_macro_cycle_reports_chain():
 
 def test_macro_backtick_error_message():
   src = (
-      'macro "ticks" using ai "codegen":\n'
+      'macro is "ticks" using ai "codegen":\n'
       '  description "bad ticks"\n'
       '\n'
-      'use macro "ticks"\n'
+      'use macro is "ticks"\n'
   )
 
   def ai_cb(macro, args):
@@ -271,11 +271,11 @@ def test_macro_backtick_error_message():
 
 def test_template_macro_expands_without_ai():
   src = (
-      'macro "tmpl" using ai "codegen":\n'
+      'macro is "tmpl" using ai "codegen":\n'
       '  description "Template flow"\n'
       '  sample "flow is \\"{FlowName}\\":\\n  step is \\"start\\":\\n    log info \\"Hello, {name}\\""\n'
       '\n'
-      'use macro "tmpl" with:\n'
+      'use macro is "tmpl" with:\n'
       '  FlowName is "welcome"\n'
       '  name is "Disan"\n'
   )
@@ -291,11 +291,11 @@ def test_template_macro_expands_without_ai():
 
 def test_template_fallback_when_ai_missing():
   src = (
-      'macro "tmpl" using ai "codegen":\n'
+      'macro is "tmpl" using ai "codegen":\n'
       '  description "Template flow"\n'
       '  sample "flow is \\"fallback\\":\\n  step is \\"s\\":\\n    log info \\"ok\\""\n'
       '\n'
-      'use macro "tmpl"\n'
+      'use macro is "tmpl"\n'
   )
   expander = MacroExpander(None)
   expanded = _expand(src, lambda m, a: (_ for _ in ()).throw(MacroExpansionError("no ai")) )
@@ -305,11 +305,11 @@ def test_template_fallback_when_ai_missing():
 
 def test_macro_arg_expression_errors():
   src = (
-      'macro "tmpl" using ai "codegen":\n'
+      'macro is "tmpl" using ai "codegen":\n'
       '  description "Template flow"\n'
       '  sample "flow is \\"f\\":\\n  step is \\"s\\":\\n    log info \\"ok\\""\n'
       '\n'
-      'use macro "tmpl" with:\n'
+      'use macro is "tmpl" with:\n'
       '  name is other_var\n'
   )
   module = parse_source(src)
@@ -323,7 +323,7 @@ def test_macro_arg_expression_errors():
 
 def test_crud_ui_accepts_field_blocks():
   src = (
-      'use macro "crud_ui" with:\n'
+      'use macro is "crud_ui" with:\n'
       '  entity is "Product"\n'
       "  fields:\n"
       '    field is "name":\n'
@@ -349,7 +349,7 @@ def test_crud_ui_accepts_field_blocks():
 
 def test_crud_ui_generates_records_and_db_steps():
   src = (
-      'use macro "crud_ui" with:\n'
+      'use macro is "crud_ui" with:\n'
       '  entity is "Product"\n'
       "  fields:\n"
       '    field is "name":\n'

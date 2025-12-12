@@ -290,9 +290,8 @@ Declare a named frame that maps to real storage (memory/sqlite/postgres) and use
 
 ```ai
 frame is "conversations":
-  source:
-    backend is "memory"
-    table is "conversations"
+  backend is "memory"
+  table is "conversations"
 
 flow is "store_and_load":
   step is "insert":
@@ -340,9 +339,8 @@ Build typed models on top of frames and use first-class CRUD steps:
 
 ```ai
 frame is "documents":
-  source:
-    backend is "memory"
-    table is "documents"
+  backend is "memory"
+  table is "documents"
 
 record is "Document":
   frame is "documents"
@@ -402,9 +400,8 @@ Vector stores index a frame for retrieval:
 
 ```ai
 frame is "documents":
-  source:
-    backend is "memory"
-    table is "documents"
+  backend is "memory"
+  table is "documents"
   table:
     primary_key is "id"
     display_columns are ["title", "category"]
@@ -787,7 +784,7 @@ Frames load lazily from CSV files or backend sources, optionally apply `where` f
 Define high-level instructions that an AI expands into Namel3ss code:
 
 ```ai
-macro "greet_user" using ai is "codegen":
+macro is "greet_user" using ai is "codegen":
   description "Generate a greeting flow."
 
 use macro "greet_user"
@@ -796,7 +793,7 @@ use macro "greet_user"
 Parameterized macros accept arguments:
 
 ```ai
-macro "crud_for_entity" using ai is "codegen":
+macro is "crud_for_entity" using ai is "codegen":
   description "Generate CRUD flows for an entity."
   parameters entity, fields
 

@@ -88,7 +88,7 @@ Constraints & Relationships v1 extends records with English declarations for uni
 ### Uniqueness
 
 ```
-record "User":
+record is "User":
   field "id" as id:
     type is uuid
     primary key
@@ -108,7 +108,7 @@ record "User":
 ### Foreign keys & relationships
 
 ```
-record "Order":
+record is "Order":
   field "user_id" as user_id:
     type is uuid
     references "User"

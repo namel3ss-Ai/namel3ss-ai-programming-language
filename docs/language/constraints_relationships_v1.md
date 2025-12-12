@@ -16,7 +16,7 @@ Constraints & Relationships v1 defines how record definitions express English-fi
 Uniqueness is declared per field inside a record definition:
 
 ```
-record "User":
+record is "User":
   field "id" as id:
     type is uuid
     primary key
@@ -52,7 +52,7 @@ record "User":
 Foreign keys declare that a field references another record's primary key:
 
 ```
-record "Order":
+record is "Order":
   field "id" as id:
     type is uuid
     primary key
@@ -123,7 +123,7 @@ The validations run before uniqueness and foreign keys, and they participate in 
 Relationships are logical helpers that describe how to traverse from one record to another:
 
 ```
-record "Order":
+record is "Order":
   field "user_id" as user_id:
     type is uuid
     references "User"

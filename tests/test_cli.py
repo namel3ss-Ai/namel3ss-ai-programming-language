@@ -110,11 +110,11 @@ def test_cli_lint_command(tmp_path, capsys):
 
 def test_cli_macro_expand_outputs_expansion(tmp_path, capsys):
     src = (
-        'macro "hello" using ai "codegen":\n'
+        'macro is "hello" using ai "codegen":\n'
         '  description "hello macro"\n'
         '  sample "flow is \\"hello_flow\\":\\n  step is \\"s\\":\\n    log info \\"hi\\""\n'
         "\n"
-        'use macro "hello"\n'
+        'use macro is "hello"\n'
     )
     path = tmp_path / "macro.ai"
     path.write_text(src, encoding="utf-8")
@@ -125,11 +125,11 @@ def test_cli_macro_expand_outputs_expansion(tmp_path, capsys):
 
 def test_cli_macro_expand_failure(tmp_path, capsys):
     src = (
-        'macro "bad" using ai "codegen":\n'
+        'macro is "bad" using ai "codegen":\n'
         '  description "bad macro"\n'
         '  sample "flow \\"legacy\\":\\n  step is \\"s\\":\\n    log info \\"hi\\""\n'
         "\n"
-        'use macro "bad"\n'
+        'use macro is "bad"\n'
     )
     path = tmp_path / "macro_bad.ai"
     path.write_text(src, encoding="utf-8")
@@ -141,16 +141,16 @@ def test_cli_macro_expand_failure(tmp_path, capsys):
 
 def test_cli_macro_test_pass_and_fail(tmp_path, capsys):
     src = (
-        'macro "rec" using ai "codegen":\n'
+        'macro is "rec" using ai "codegen":\n'
         '  description "record macro"\n'
-        '  sample "\\nframe is \\"things_frame\\":\\n  source:\\n    backend is \\"memory\\"\\n    table is \\"things\\"\\n\\nrecord is \\"Thing\\":\\n  frame is \\"things_frame\\"\\n  fields:\\n    thing_id:\\n      type is \\"uuid\\"\\n      primary_key is true\\n      required is true\\n"\n'
+        '  sample "\\nframe is \\"things_frame\\":\\n  backend is \\"memory\\"\\n  table is \\"things\\"\\n\\nrecord is \\"Thing\\":\\n  frame is \\"things_frame\\"\\n  fields:\\n    thing_id:\\n      type is \\"uuid\\"\\n      primary_key is true\\n      required is true\\n"\n'
         "\n"
         'macro test is "record_ok":\n'
-        "  use macro \"rec\"\n"
+        "  use macro is \"rec\"\n"
         '  expect record "Thing"\n'
         "\n"
         'macro test is "record_missing_flow":\n'
-        "  use macro \"rec\"\n"
+        "  use macro is \"rec\"\n"
         '  expect flow "missing"\n'
     )
     path = tmp_path / "macro_tests.ai"
@@ -161,12 +161,12 @@ def test_cli_macro_test_pass_and_fail(tmp_path, capsys):
     assert "record_missing_flow" in output or "missing" in output
     # run again with only passing test filtered by name flag via trimmed file
     passing = (
-        'macro "rec" using ai "codegen":\n'
+        'macro is "rec" using ai "codegen":\n'
         '  description "record macro"\n'
-        '  sample "\\nframe is \\"things_frame\\":\\n  source:\\n    backend is \\"memory\\"\\n    table is \\"things\\"\\n\\nrecord is \\"Thing\\":\\n  frame is \\"things_frame\\"\\n  fields:\\n    thing_id:\\n      type is \\"uuid\\"\\n      primary_key is true\\n      required is true\\n"\n'
+        '  sample "\\nframe is \\"things_frame\\":\\n  backend is \\"memory\\"\\n  table is \\"things\\"\\n\\nrecord is \\"Thing\\":\\n  frame is \\"things_frame\\"\\n  fields:\\n    thing_id:\\n      type is \\"uuid\\"\\n      primary_key is true\\n      required is true\\n"\n'
         "\n"
         'macro test is "record_ok":\n'
-        "  use macro \"rec\"\n"
+        "  use macro is \"rec\"\n"
         '  expect record "Thing"\n'
     )
     path_ok = tmp_path / "macro_tests_ok.ai"

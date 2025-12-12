@@ -83,7 +83,7 @@ def test_parse_tool_with_headers_and_body_block():
 def test_legacy_tool_header_rejected():
     code = dedent(
         '''
-        tool "legacy":
+        tool is "legacy":
           kind is "http_json"
           method is "GET"
           url is "https://api.example.com/weather"

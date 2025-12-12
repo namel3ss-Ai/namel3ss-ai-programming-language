@@ -8,9 +8,8 @@ ai is "compose_answer":
   model is "retriever"
 
 frame is "documents":
-  source:
-    backend is "memory"
-    table is "documents"
+  backend is "memory"
+  table is "documents"
 
 frame is "eval_questions":
   source:

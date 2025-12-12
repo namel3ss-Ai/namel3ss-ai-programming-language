@@ -117,7 +117,16 @@ def parse_helper(self) -> ast_nodes.HelperDecl:
 
 def parse_macro(self) -> ast_nodes.MacroDecl:
     start = self.consume("KEYWORD", "macro")
-    name_tok = self.consume("STRING")
+    if self.match_value("KEYWORD", "is"):
+        name_tok = self.consume("STRING")
+    else:
+        tok = self.peek()
+        if tok.type == "STRING":
+            raise self.error(
+                f'macro "{tok.value}": is not supported. Use macro is "{tok.value}": instead.',
+                tok,
+            )
+        raise self.error("Expected 'is' after 'macro'", tok)
     self.consume("KEYWORD", "using")
     self.consume("KEYWORD", "ai")
     model_tok = self.consume("STRING")
@@ -229,7 +238,16 @@ def parse_macro_test(self) -> ast_nodes.MacroTestDecl:
 
 def parse_macro_use(self, start_tok) -> ast_nodes.MacroUse:
     self.consume("KEYWORD", "macro")
-    name_tok = self.consume("STRING")
+    if self.match_value("KEYWORD", "is"):
+        name_tok = self.consume("STRING")
+    else:
+        tok = self.peek()
+        if tok.type == "STRING":
+            raise self.error(
+                f'use macro "{tok.value}": is not supported. Use use macro is "{tok.value}" instead.',
+                tok,
+            )
+        raise self.error("Expected 'is' after 'macro' in use statement", tok)
     args: dict[str, ast_nodes.Expr | Any] = {}
     if self.peek().value == "with":
         self.consume("KEYWORD", "with")

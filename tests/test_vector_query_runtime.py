@@ -14,9 +14,8 @@ from namel3ss.errors import Namel3ssError
 def test_vector_query_runtime_builds_context(monkeypatch):
     source = '''
 frame is "docs":
-  source:
-    backend is "memory"
-    table is "docs"
+  backend is "memory"
+  table is "docs"
 
 vector_store is "kb":
   backend "memory"
@@ -68,9 +67,8 @@ flow is "index_and_query":
 def test_vector_query_rejects_bad_top_k(monkeypatch):
     source = '''
 frame is "docs":
-  source:
-    backend is "memory"
-    table is "docs"
+  backend is "memory"
+  table is "docs"
 
 vector_store is "kb":
   backend "memory"

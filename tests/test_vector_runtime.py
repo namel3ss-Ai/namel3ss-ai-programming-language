@@ -16,9 +16,8 @@ def build_registry():
     mod = parser.parse_source(
         '''
 frame is "docs":
-  source:
-    backend is "memory"
-    table is "docs"
+  backend is "memory"
+  table is "docs"
 
 vector_store is "kb":
   backend "memory"

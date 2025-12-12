@@ -2,7 +2,7 @@
 Flows subsystem for Namel3ss.
 """
 
-from .engine import FlowEngine
+from .engine.public import FlowEngine
 from .graph import FlowError, FlowGraph, FlowNode, FlowRuntimeContext, FlowState, flow_ir_to_graph
 from .triggers import FlowTrigger, TriggerManager
 from .models import FlowRunResult, FlowStepResult

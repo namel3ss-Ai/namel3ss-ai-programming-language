@@ -11,9 +11,8 @@
 Example (ingest + answer):
 ```ai
 frame is "docs":
-  source:
-    backend is "memory"
-    table is "docs"
+  backend is "memory"
+  table is "docs"
 
 vector_store is "kb":
   backend is "memory"
@@ -87,9 +86,8 @@ Add table metadata to frames and mix table/multimodal stages into a pipeline:
 
 ```ai
 frame is "products":
-  source:
-    backend is "memory"
-    table is "products"
+  backend is "memory"
+  table is "products"
   table:
     primary_key is "product_id"
     display_columns are ["name", "category"]

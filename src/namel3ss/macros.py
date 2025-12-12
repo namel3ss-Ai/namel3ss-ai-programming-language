@@ -642,9 +642,8 @@ class MacroExpander:
 
         # Frame declaration
         lines.append(f'frame is "{frame_name}":')
-        lines.append("  source:")
-        lines.append('    backend is "memory"')
-        lines.append(f'    table is "{plural}"')
+        lines.append('  backend is "memory"')
+        lines.append(f'  table is "{plural}"')
         lines.append("")
 
         # Record declaration
@@ -653,7 +652,7 @@ class MacroExpander:
         lines.append("  fields:")
         lines.append(f"    {id_field}:")
         lines.append('      type is "uuid"')
-        lines.append("      primary_key is true")
+        lines.append("      primary_key")
         lines.append("      required is true")
         for spec in field_specs:
             field_id = _sanitize_identifier(spec.name)
@@ -662,10 +661,6 @@ class MacroExpander:
             lines.append(f"      required is {'true' if spec.required else 'false'}")
             if spec.default_expr is not None:
                 lines.append(f"      default is {_render_expr(spec.default_expr)}")
-            if spec.min_expr is not None:
-                lines.append(f"      must be at least {_render_expr(spec.min_expr)}")
-            if spec.max_expr is not None:
-                lines.append(f"      must be at most {_render_expr(spec.max_expr)}")
         lines.append("")
 
         # Flows
@@ -842,15 +837,11 @@ class MacroExpander:
                 ftype = field.type or "string"
                 record_lines.append(f'      type is "{ftype}"')
                 if is_pk:
-                    record_lines.append("      primary_key is true")
+                    record_lines.append("      primary_key")
                 if field.required is not None:
                     record_lines.append(f'      required is {"true" if field.required else "false"}')
                 if field.default is not None:
                     _field_line("default", field.default, indent=3, dest=record_lines)
-                if field.numeric_min is not None:
-                    _field_line("must be at least", field.numeric_min, indent=3, dest=record_lines)
-                if field.numeric_max is not None:
-                    _field_line("must be at most", field.numeric_max, indent=3, dest=record_lines)
                 record_fields[rec.name]["fields"].append({"id": fid, "is_pk": is_pk})
                 if is_pk:
                     record_fields[rec.name]["primary_key"] = fid
@@ -859,7 +850,7 @@ class MacroExpander:
                 default_pk = f"{_sanitize_identifier(rec.name)}_id"
                 record_lines.append(f"    {default_pk}:")
                 record_lines.append('      type is "uuid"')
-                record_lines.append("      primary_key is true")
+                record_lines.append("      primary_key")
                 record_lines.append("      required is true")
                 record_fields[rec.name]["fields"].insert(0, {"id": default_pk, "is_pk": True})
                 record_fields[rec.name]["primary_key"] = default_pk
@@ -1109,11 +1100,8 @@ class MacroExpander:
 
         rag_lines: list[str] = []
         rag_lines.append(f'frame is "{docs_frame}":')
-        rag_lines.append("  source:")
-        rag_lines.append('    backend is "memory"')
-        rag_lines.append(f'    table is "{docs_frame}"')
-        rag_lines.append("  select:")
-        rag_lines.append(f'    columns are ["{id_field}", "{text_field}"]')
+        rag_lines.append('  backend is "memory"')
+        rag_lines.append(f'  table is "{docs_frame}"')
         rag_lines.append("")
 
         rag_lines.append(f'vector_store is "{vector_store}":')
@@ -1145,11 +1133,8 @@ class MacroExpander:
         rag_lines.append("")
 
         rag_lines.append(f'frame is "{eval_frame}":')
-        rag_lines.append("  source:")
-        rag_lines.append('    backend is "memory"')
-        rag_lines.append(f'    table is "{eval_frame}"')
-        rag_lines.append("  select:")
-        rag_lines.append('    columns are ["question", "expected_answer"]')
+        rag_lines.append('  backend is "memory"')
+        rag_lines.append(f'  table is "{eval_frame}"')
         rag_lines.append("")
 
         rag_lines.append(f'rag evaluation is "{eval_name}":')
@@ -1410,13 +1395,14 @@ def render_module_source(module: ast_nodes.Module) -> str:
     for decl in module.declarations:
         if isinstance(decl, ast_nodes.FrameDecl):
             lines.append(f'frame is "{decl.name}":')
-            lines.append("  source:")
+            if decl.source_path:
+                lines.append(f'  source is "{decl.source_path}"')
             if decl.backend:
-                lines.append(f'    backend is "{decl.backend}"')
+                lines.append(f'  backend is "{decl.backend}"')
             if decl.table:
-                lines.append(f'    table is "{decl.table}"')
+                lines.append(f'  table is "{decl.table}"')
             if decl.url:
-                lines.append(f"    url is {_render_expr(decl.url)}")
+                lines.append(f"  url is {_render_expr(decl.url)}")
         elif isinstance(decl, ast_nodes.RecordDecl):
             lines.append(f'record is "{decl.name}":')
             lines.append(f'  frame is "{decl.frame}"')
@@ -1424,14 +1410,11 @@ def render_module_source(module: ast_nodes.Module) -> str:
             for field in decl.fields:
                 lines.append(f"    {field.name}:")
                 lines.append(f'      type is "{field.type}"')
-                lines.append(f"      primary_key is {'true' if field.primary_key else 'false'}")
+                if field.primary_key:
+                    lines.append("      primary_key")
                 lines.append(f"      required is {'true' if field.required else 'false'}")
                 if field.default_expr is not None:
                     lines.append(f"      default is {_render_expr(field.default_expr)}")
-                if field.numeric_min_expr is not None:
-                    lines.append(f"      must be at least {_render_expr(field.numeric_min_expr)}")
-                if field.numeric_max_expr is not None:
-                    lines.append(f"      must be at most {_render_expr(field.numeric_max_expr)}")
         elif isinstance(decl, ast_nodes.FlowDecl):
             lines.append(f'flow is "{decl.name}":')
             for step in decl.steps:

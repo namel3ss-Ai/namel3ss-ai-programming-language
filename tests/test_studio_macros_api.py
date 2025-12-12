@@ -22,7 +22,7 @@ def _client(tmp_path: Path) -> TestClient:
 def test_studio_macro_inspector(tmp_path: Path):
     macro_source = textwrap.dedent(
         '''
-        use macro "crud_ui" with:
+        use macro is "crud_ui" with:
           entity is "Task"
           fields:
             field is "name":

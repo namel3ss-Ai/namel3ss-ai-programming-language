@@ -110,7 +110,7 @@ def parse_record(self) -> ast_nodes.RecordDecl:
 
     return ast_nodes.RecordDecl(
         name=name_tok.value or "",
-        frame_name=frame_name,
+        frame=frame_name or "",
         fields=field_decls,
         span=self._span(start),
     )

@@ -276,12 +276,11 @@ def parse_frame(self) -> ast_nodes.FrameDecl:
     self.optional_newline()
     return ast_nodes.FrameDecl(
         name=name.value or "",
-        source=source,
+        source_path=source,
         backend=backend,
         table=table,
         primary_key=primary_key,
         delimiter=delimiter,
         has_headers=has_headers,
-        fields=fields,
         span=self._span(start),
     )

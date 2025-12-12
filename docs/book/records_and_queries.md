@@ -6,11 +6,10 @@ Records give names, types, defaults, and required flags to tabular rows. The Eng
 
 ```
 frame is "users":
-  source:
-    backend is "memory"
-    table is "users"
+  backend is "memory"
+  table is "users"
 
-record "User":
+record is "User":
   frame is "users"
   fields:
     id:
@@ -36,7 +35,7 @@ Create:
 ```
 step is "create_user":
   kind is "db_create"
-  record "User"
+  record is "User"
   values:
     id: user.id
     name: user.name
@@ -48,7 +47,7 @@ Update:
 ```
 step is "rename":
   kind is "db_update"
-  record "User"
+  record is "User"
   by id:
     id: user.id
   set:
@@ -60,7 +59,7 @@ Delete:
 ```
 step is "remove":
   kind is "db_delete"
-  record "User"
+  record is "User"
   by id:
     id: user.id
 ```
@@ -125,7 +124,7 @@ Constraints & Relationships v1 now layers uniqueness, scoped uniqueness, foreign
 Define tenant-owned users with scoped uniqueness on email and orders that reference those users:
 
 ```
-record "Tenant":
+record is "Tenant":
   field "id" as id:
     type is uuid
     primary key
@@ -133,7 +132,7 @@ record "Tenant":
     type is string
     must be unique
 
-record "User":
+record is "User":
   field "id" as id:
     type is uuid
     primary key
@@ -148,7 +147,7 @@ record "User":
     type is string
     required is true
 
-record "Order":
+record is "Order":
   field "id" as id:
     type is uuid
     primary key
@@ -191,7 +190,7 @@ See `docs/language/constraints_relationships_v1.md` for the authoritative wordin
 Field-level validations let you capture business rules directly in the record schema. For example, a catalog might add price bounds, enum statuses, pattern checks, and array limits in one place:
 
 ```
-record "Product":
+record is "Product":
   field "id" as id:
     type is uuid
     primary key
@@ -225,7 +224,7 @@ Any `db_create`, `db_update`, or bulk helper that violates these rules fails wit
 flow is "seed_invalid_discount":
   step is "create":
     kind is "db_create"
-    record "Product"
+    record is "Product"
     values:
       id: "prod-006"
       price: 25
@@ -257,7 +256,7 @@ flow is "signup_user":
   transaction:
     step is "create_user":
       kind is "db_create"
-      record "User"
+      record is "User"
       values:
         id: state.user_id
         tenant_id: state.tenant_id
@@ -265,7 +264,7 @@ flow is "signup_user":
         name: state.name
     step is "welcome_order":
       kind is "db_create"
-      record "Order"
+      record is "Order"
       values:
         id: state.order_id
         tenant_id: state.tenant_id
@@ -274,7 +273,7 @@ flow is "signup_user":
   on error:
     step is "log_failure":
       kind is "db_create"
-      record "AuditLog"
+      record is "AuditLog"
       values:
         id: state.audit_id
         message: "Signup failed for " + state.email

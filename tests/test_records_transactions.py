@@ -49,19 +49,16 @@ def _parse_program(source: str):
 BASE_DEFS = dedent(
     """
     frame is "users":
-      source:
-        backend is "memory"
-        table is "users"
+      backend is "memory"
+      table is "users"
 
     frame is "orders":
-      source:
-        backend is "memory"
-        table is "orders"
+      backend is "memory"
+      table is "orders"
 
     frame is "logs":
-      source:
-        backend is "memory"
-        table is "logs"
+      backend is "memory"
+      table is "logs"
 
     record is "User":
       frame is "users"
@@ -106,13 +103,13 @@ def test_transaction_commits_all_steps():
           transaction:
             step is "create_user":
               kind is "db_create"
-              record "User"
+              record is "User"
               values:
                 id: "user-1"
                 email: "success@example.com"
             step is "create_order":
               kind is "db_create"
-              record "Order"
+              record is "Order"
               values:
                 id: "order-1"
                 user_id: "user-1"
@@ -138,13 +135,13 @@ def test_transaction_uniqueness_failure_rolls_back_all_rows():
           transaction:
             step is "first_user":
               kind is "db_create"
-              record "User"
+              record is "User"
               values:
                 id: "user-1"
                 email: "duplicate@example.com"
             step is "second_user":
               kind is "db_create"
-              record "User"
+              record is "User"
               values:
                 id: "user-2"
                 email: "duplicate@example.com"
@@ -167,13 +164,13 @@ def test_transaction_foreign_key_failure_restores_previous_inserts():
           transaction:
             step is "create_user":
               kind is "db_create"
-              record "User"
+              record is "User"
               values:
                 id: "user-rollback"
                 email: "fk@example.com"
             step is "create_invalid_order":
               kind is "db_create"
-              record "Order"
+              record is "Order"
               values:
                 id: "order-missing"
                 user_id: "missing-user"
@@ -219,27 +216,27 @@ def test_transaction_rollback_restores_previous_updates():
         flow is "transaction_update_rollback":
           step is "seed_one":
             kind is "db_create"
-            record "User"
+            record is "User"
             values:
               id: "user-a"
               email: "alpha@example.com"
           step is "seed_two":
             kind is "db_create"
-            record "User"
+            record is "User"
             values:
               id: "user-b"
               email: "bravo@example.com"
           transaction:
             step is "update_first":
               kind is "db_update"
-              record "User"
+              record is "User"
               by id:
                 id: "user-a"
               set:
                 email: "shared@example.com"
             step is "update_second":
               kind is "db_update"
-              record "User"
+              record is "User"
               by id:
                 id: "user-b"
               set:
@@ -263,20 +260,20 @@ def test_transaction_on_error_runs_after_rollback():
           transaction:
             step is "create_user":
               kind is "db_create"
-              record "User"
+              record is "User"
               values:
                 id: "user-log"
                 email: "log@example.com"
             step is "force_duplicate":
               kind is "db_create"
-              record "User"
+              record is "User"
               values:
                 id: "user-log-2"
                 email: "log@example.com"
           on error:
             step is "log_failure":
               kind is "db_create"
-              record "Log"
+              record is "Log"
               values:
                 id: "log-entry"
                 reason: "duplicate email"
@@ -301,7 +298,7 @@ def test_parser_rejects_nested_transactions():
             transaction:
               step is "broken":
                 kind is "db_create"
-                record "User"
+                record is "User"
                 values:
                   id: "broken"
                   email: "broken@example.com"

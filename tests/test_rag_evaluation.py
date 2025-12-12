@@ -91,9 +91,8 @@ rag evaluation is "bad":
     question_column is "question"
 
 frame is "eval_questions":
-  source:
-    backend is "memory"
-    table is "eval"
+  backend is "memory"
+  table is "eval"
 '''
     mod = parser.parse_source(source)
     with pytest.raises(IRError) as excinfo:
@@ -123,9 +122,8 @@ rag evaluation is "bad":
 def test_invalid_question_or_answer_column_errors():
     source = '''
 frame is "eval":
-  source:
-    backend is "memory"
-    table is "eval"
+  backend is "memory"
+  table is "eval"
   select:
     columns are ["prompt", "expected_answer", "id"]
 
@@ -169,9 +167,8 @@ rag pipeline is "kb_qa":
     ai is "echo_ai"
 
 frame is "eval_questions":
-  source:
-    backend is "memory"
-    table is "eval_questions"
+  backend is "memory"
+  table is "eval_questions"
 
 rag evaluation is "support_eval":
   pipeline is "kb_qa"

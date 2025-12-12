@@ -87,9 +87,8 @@ These primitives are the foundation for future RAG pipelines. Examples have been
 - **Mini example** tying it together:
   ```ai
   frame is "documents":
-    source:
-      backend is "memory"
-      table is "documents"
+    backend is "memory"
+    table is "documents"
 
   vector_store is "kb":
     backend is "memory"
