@@ -17,20 +17,22 @@ from .parser.stmt.decl_ai import core as decl_ai_core
 from .parser.stmt.decl_ai import memory as decl_ai_memory
 from .parser.stmt.decl_ai import memory_kinds as decl_ai_memory_kinds
 from .parser.stmt.decl_ai import memory_pipeline as decl_ai_memory_pipeline
-from .parser.stmt import decl_agent
-from .parser.stmt import decl_app
-from .parser.stmt import decl_flow
-from .parser.stmt import decl_model
-from .parser.stmt import decl_page
-from .parser.stmt import decl_memory
-from .parser.stmt import decl_tool
-from .parser.stmt import decl_rag
-from .parser.stmt import decl_storage
-from .parser.stmt import decl_graph
-from .parser.stmt import decl_record
-from .parser.stmt import decl_ui
-from .parser.stmt import decl_macro
-from .parser.stmt import decl_misc
+from .parser.stmt.declarations import (
+    agent as decl_agent,
+    app as decl_app,
+    common as decl_common,
+    flow as decl_flow,
+    graph as decl_graph,
+    macro as decl_macro,
+    memory as decl_memory,
+    model as decl_model,
+    page as decl_page,
+    rag as decl_rag,
+    record as decl_record,
+    storage as decl_storage,
+    tool as decl_tool,
+    ui as decl_ui,
+)
 from .parser.stmt.conditions import conditions as stmt_conditions
 from .parser.stmt.conditions import patterns as stmt_patterns
 from .parser import validator as stmt_validation
@@ -169,14 +171,14 @@ class Parser:
     parse_macro_test = decl_macro.parse_macro_test
     parse_macro_use = decl_macro.parse_macro_use
     _parse_macro_fields_block = decl_macro._parse_macro_fields_block
-    parse_use = decl_misc.parse_use
-    parse_from_import = decl_misc.parse_from_import
-    parse_english_memory = decl_misc.parse_english_memory
-    parse_english_model = decl_misc.parse_english_model
-    parse_auth = decl_misc.parse_auth
-    parse_plugin = decl_misc.parse_plugin
-    parse_settings = decl_misc.parse_settings
-    _parse_string_list_literal = decl_misc._parse_string_list_literal
+    parse_use = decl_common.parse_use
+    parse_from_import = decl_common.parse_from_import
+    parse_english_memory = decl_common.parse_english_memory
+    parse_english_model = decl_common.parse_english_model
+    parse_auth = decl_common.parse_auth
+    parse_plugin = decl_common.parse_plugin
+    parse_settings = decl_common.parse_settings
+    _parse_string_list_literal = decl_common._parse_string_list_literal
     parse_app = decl_app.parse_app
     parse_page = decl_page.parse_page
     parse_model = decl_model.parse_model
