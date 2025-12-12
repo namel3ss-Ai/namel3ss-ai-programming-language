@@ -7,13 +7,14 @@ from __future__ import annotations
 import os
 import asyncio
 import json
+import importlib.resources as resources
 from dataclasses import asdict
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 import time
 import uuid
 
-from fastapi import Depends, FastAPI, HTTPException, UploadFile, File, Form, Query
+from fastapi import Depends, FastAPI, HTTPException, UploadFile, File, Form, Query, Request
 from fastapi.responses import HTMLResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field, ConfigDict
@@ -21,7 +22,7 @@ from pydantic import BaseModel, Field, ConfigDict
 from . import ir, lexer, parser
 from .ai.registry import ModelRegistry
 from .config import N3Config, ProvidersConfig, load_config
-from .errors import ParseError
+from .errors import ParseError, Namel3ssError
 from .lang.formatter import format_source
 from .flows.triggers import FlowTrigger, TriggerManager
 from .runtime.engine import Engine
@@ -54,6 +55,15 @@ from .distributed.scheduler import JobScheduler
 from .distributed.workers import Worker
 from .metrics.tracker import MetricsTracker
 from .studio.engine import StudioEngine
+from .studio.logs import LogBuffer, log_event
+from .studio.canvas import build_canvas_manifest
+from .studio.inspectors import inspect_entity
+from .studio.flows import list_flows as studio_list_flows, run_flow_once
+from .studio.ask import ask_studio
+from .studio.ai_calls import describe_ai_call_context
+from .studio.rag import list_rag_pipelines as studio_list_rag_pipelines, describe_rag_pipeline as studio_describe_rag_pipeline
+from .studio.warnings import collect_warnings
+from .studio.daemon import StudioDaemon
 from .macros import MacroExpander, MacroExpansionRecord, default_macro_ai_callback
 from .diagnostics.runner import collect_diagnostics, collect_lint, iter_ai_files
 from . import linting
@@ -72,7 +82,28 @@ from .migration.naming import migrate_source_to_naming_standard
 from .memory.inspection import describe_memory_plan, describe_memory_state
 
 BASE_DIR = Path(__file__).resolve().parents[2]
-STUDIO_STATIC_DIR = BASE_DIR / "studio" / "static"
+
+
+def _resolve_studio_static_dir() -> Path | None:
+    """
+    Prefer packaged studio assets (namel3ss/studio_static) and fall back to the
+    repository copy under studio/static for editable installs.
+    """
+    try:
+        candidate = resources.files("namel3ss") / "studio_static"
+        if candidate.is_dir():
+            return Path(candidate)
+    except Exception:
+        # Fall back to workspace copy below.
+        pass
+    legacy = BASE_DIR / "studio" / "static"
+    if legacy.exists():
+        return legacy
+    return None
+
+
+STUDIO_STATIC_DIR = _resolve_studio_static_dir()
+_STUDIO_CONFIG_FILES = ("namel3ss.config.json", "namel3ss.toml", "namel3ss.config.toml")
 
 
 def _serialize_stream_event(evt: StreamEvent) -> dict[str, Any]:
@@ -306,17 +337,19 @@ def _parse_source_to_ir(source: str) -> ir.IRProgram:
     return ir.ast_to_ir(module)
 
 
-def create_app() -> FastAPI:
+def create_app(project_root: Path | None = None, daemon_state: Any | None = None) -> FastAPI:
     """Create the FastAPI app."""
 
-    project_root = Path.cwd().resolve()
+    project_root = (project_root or Path.cwd()).resolve()
     app = FastAPI(title="Namel3ss V3", version="0.1.0")
-    if STUDIO_STATIC_DIR.exists():
+    log_buffer: LogBuffer = getattr(daemon_state, "logs", LogBuffer())
+    if STUDIO_STATIC_DIR and STUDIO_STATIC_DIR.exists():
         app.mount(
             "/studio-static",
             StaticFiles(directory=str(STUDIO_STATIC_DIR)),
             name="studio-static",
         )
+        log_event(log_buffer, "static_serving_info", level="info", path=str(STUDIO_STATIC_DIR))
     last_trace: Optional[Dict[str, Any]] = None
     recent_traces: List[Dict[str, Any]] = []
     recent_agent_traces: List[Dict[str, Any]] = []
@@ -364,6 +397,24 @@ def create_app() -> FastAPI:
 
     app.state.broadcast_state_event = _broadcast_state_event
     app.state.register_state_subscriber = _register_state_subscriber
+    app.state.project_root = project_root
+
+    def _get_cached_program() -> ir.IRProgram | None:
+        if daemon_state is None:
+            return None
+        return getattr(daemon_state, "program", None)
+
+    def _set_cached_program(program: ir.IRProgram | None) -> None:
+        if daemon_state is None:
+            return
+        try:
+            setattr(daemon_state, "program", program)
+        except Exception:
+            # Avoid blocking server startup if a custom daemon state cannot be updated.
+            pass
+
+    def _invalidate_program_cache() -> None:
+        _set_cached_program(None)
 
     def _project_root() -> Path:
         return project_root
@@ -453,6 +504,68 @@ def create_app() -> FastAPI:
                 files.append(Path(root) / fname)
         return files
 
+    def _studio_status_payload() -> Dict[str, Any]:
+        base = _project_root()
+        ai_files = _iter_ai_files(base)
+        ai_paths = [str(p.relative_to(base)).replace("\\", "/") for p in ai_files]
+        studio_static_available = bool(STUDIO_STATIC_DIR and (STUDIO_STATIC_DIR / "index.html").exists())
+        config_file_found = any((base / name).exists() for name in _STUDIO_CONFIG_FILES)
+        payload: Dict[str, Any] = {
+            "project_root": str(base),
+            "ai_files": len(ai_files),
+            "ai_file_paths": ai_paths,
+            "watcher_active": False,
+            "watcher_supported": True,
+            "ir_status": "unknown",
+            "ir_error": None,
+            "studio_static_available": studio_static_available,
+            "config_file_found": config_file_found,
+        }
+        if daemon_state is not None:
+            payload["watcher_active"] = bool(getattr(daemon_state, "_observer", None))
+            payload["watcher_supported"] = getattr(daemon_state, "watcher_supported", True)
+            cached_program = _get_cached_program()
+            last_error = getattr(daemon_state, "last_error", None)
+            last_error_detail = getattr(daemon_state, "last_error_detail", None)
+            if cached_program:
+                payload["ir_status"] = "valid"
+            elif last_error:
+                payload["ir_status"] = "error"
+                payload["ir_error"] = last_error_detail or {"message": last_error}
+            elif not ai_files:
+                payload["ir_status"] = "error"
+                payload["ir_error"] = {"message": "No .ai files found"}
+        else:
+            # Best-effort validation when running without a Studio daemon.
+            payload["watcher_active"] = False
+            payload["watcher_supported"] = True
+            if not ai_files:
+                payload["ir_status"] = "error"
+                payload["ir_error"] = {"message": "No .ai files found"}
+            else:
+                try:
+                    combined = "\n\n".join(p.read_text(encoding="utf-8") for p in ai_files)
+                    Engine._load_program(combined, filename=str(base / "project.ai"))
+                    payload["ir_status"] = "valid"
+                except Namel3ssError as exc:
+                    payload["ir_status"] = "error"
+                    payload["ir_error"] = {
+                        k: v
+                        for k, v in {
+                            "message": getattr(exc, "message", str(exc)),
+                            "file": getattr(exc, "filename", None) or getattr(exc, "file", None),
+                            "line": getattr(exc, "line", None),
+                            "column": getattr(exc, "column", None),
+                        }.items()
+                        if v is not None
+                    }
+                except Exception as exc:
+                    payload["ir_status"] = "error"
+                    payload["ir_error"] = {"message": str(exc)}
+                else:
+                    log_event(log_buffer, "ir_reloaded", level="info", files=len(ai_files))
+        return payload
+
     def _project_ui_manifest() -> Dict[str, Any]:
         pages: list[dict[str, Any]] = []
         components: list[dict[str, Any]] = []
@@ -493,6 +606,9 @@ def create_app() -> FastAPI:
         }
 
     def _project_program() -> ir.IRProgram:
+        cached_program = _get_cached_program()
+        if cached_program is not None:
+            return cached_program
         base = _project_root()
         sources: list[str] = []
         for path in _iter_ai_files(base):
@@ -500,7 +616,14 @@ def create_app() -> FastAPI:
         if not sources:
             raise HTTPException(status_code=400, detail="No .ai files found")
         combined = "\n\n".join(sources)
-        return Engine._load_program(combined, filename=str(base / "project.ai"))
+        try:
+            program = Engine._load_program(combined, filename=str(base / "project.ai"))
+            _set_cached_program(program)
+            log_event(log_buffer, "ir_reloaded", level="info", files=len(sources))
+            return program
+        except Exception as exc:
+            log_event(log_buffer, "ir_reload_error", level="error", message=str(exc))
+            raise
 
     def _build_project_engine(program: ir.IRProgram | None = None) -> Engine:
         prog = program or _project_program()
@@ -642,7 +765,275 @@ def create_app() -> FastAPI:
 
     @app.get("/health")
     def health() -> Dict[str, str]:
+        log_event(log_buffer, "health_ping", level="info")
         return {"status": "ok"}
+
+    @app.get("/api/studio/status")
+    def api_studio_status() -> Dict[str, Any]:
+        try:
+            payload = _studio_status_payload()
+            log_event(log_buffer, "status_requested", level="info")
+            return payload
+        except Exception as exc:  # pragma: no cover - should never raise
+            base = _project_root()
+            log_event(log_buffer, "status_error", level="error", message=str(exc))
+            return {
+                "project_root": str(base),
+                "ai_files": 0,
+                "ai_file_paths": [],
+                "watcher_active": False,
+                "watcher_supported": False,
+                "ir_status": "error",
+                "ir_error": {"message": str(exc)},
+                "studio_static_available": bool(STUDIO_STATIC_DIR and (STUDIO_STATIC_DIR / "index.html").exists()),
+                "config_file_found": any((base / name).exists() for name in _STUDIO_CONFIG_FILES),
+            }
+
+    @app.get("/api/studio/logs/stream")
+    def api_studio_logs_stream(request: Request, once: bool = False):
+        # Minimal SSE-like stream using NDJSON for compatibility.
+        async def event_generator():
+            last_id = 0
+            history = log_buffer.history()
+            for entry in history:
+                last_id = entry.get("id", last_id)
+                yield json.dumps(entry) + "\n"
+            if once:
+                return
+            while True:
+                if await request.is_disconnected():
+                    break
+                events, last_id = log_buffer.snapshot_after(last_id)
+                if events:
+                    for entry in events:
+                        yield json.dumps(entry) + "\n"
+                await asyncio.sleep(0.5)
+
+        return StreamingResponse(event_generator(), media_type="text/plain")
+
+    @app.get("/api/studio/canvas")
+    def api_studio_canvas() -> Dict[str, Any]:
+        try:
+            program = _get_cached_program()
+            if program is None:
+                program = _project_program()
+            manifest = build_canvas_manifest(program)
+            return manifest
+        except Exception as exc:  # pragma: no cover - defensive
+            log_event(log_buffer, "canvas_error", level="error", message=str(exc))
+            return {"nodes": [], "edges": [], "status": "error", "error": str(exc)}
+
+    @app.post("/api/studio/log-note")
+    def api_studio_log_note(payload: Dict[str, Any]) -> Dict[str, Any]:
+        event = payload.get("event") or "note"
+        level = payload.get("level") or "info"
+        details = payload.get("details") or {}
+        log_event(log_buffer, event, level=level, **details)
+        return {"ok": True}
+
+    @app.get("/api/studio/inspect")
+    def api_studio_inspect(kind: str, name: str) -> Dict[str, Any]:
+        try:
+            program = _get_cached_program() or _project_program()
+            entity = inspect_entity(program, kind, name)
+            log_event(log_buffer, "inspector_opened", level="info", kind=kind, name=name)
+            return entity
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail=str(exc))
+        except Exception as exc:  # pragma: no cover - defensive
+            log_event(log_buffer, "inspector_error", level="error", kind=kind, name=name, message=str(exc))
+            raise HTTPException(status_code=400, detail=str(exc))
+
+    @app.post("/api/studio/ask")
+    def api_studio_ask(payload: Dict[str, Any]) -> Dict[str, Any]:
+        question = (payload.get("question") or "").strip()
+        if not question:
+            raise HTTPException(status_code=400, detail="Question is required")
+        mode = (payload.get("mode") or "explain").strip() or "explain"
+        context_payload = payload.get("context") or {}
+        status_payload = _studio_status_payload()
+        entity_payload = None
+        try:
+            kind = context_payload.get("kind")
+            name = context_payload.get("name")
+            if kind and name:
+                program = _get_cached_program() or _project_program()
+                entity_payload = inspect_entity(program, kind, name)
+        except Exception:
+            entity_payload = None
+        memory_payload = None
+        memory_state_payload = None
+        ai_id = context_payload.get("ai_id")
+        session_id = context_payload.get("session_id")
+        if ai_id:
+            try:
+                program = _project_program()
+                ai_calls = getattr(program, "ai_calls", {}) or {}
+                if ai_id in ai_calls:
+                    memory_payload = describe_memory_plan(ai_calls[ai_id])
+                    if session_id:
+                        engine = _build_project_engine(program)
+                        memory_state_payload = describe_memory_state(engine, ai_calls[ai_id], session_id=session_id, limit=25)
+            except Exception:
+                memory_payload = memory_payload or {"ai": ai_id, "error": "Unable to load memory."}
+        try:
+            result = ask_studio(
+                question,
+                status=status_payload,
+                entity=entity_payload,
+                logs=log_buffer.history()[-15:],
+                flow_run=context_payload.get("flow_run"),
+                memory=memory_payload,
+                memory_state=memory_state_payload,
+                mode=mode,
+            )
+            log_event(
+                log_buffer,
+                "ask_studio",
+                level="info",
+                question=question[:80],
+                mode=mode,
+                has_snippets=bool(result.get("suggested_snippets")),
+            )
+            return result
+        except Namel3ssError as exc:
+            log_event(log_buffer, "ask_studio_error", level="error", message=str(exc))
+            raise HTTPException(status_code=503, detail="Ask Studio is unavailable. Check your AI provider configuration.")
+        except Exception as exc:  # pragma: no cover - defensive
+            log_event(log_buffer, "ask_studio_error", level="error", message=str(exc))
+            raise HTTPException(status_code=503, detail="Ask Studio is unavailable. Check your AI provider configuration.")
+
+    @app.get("/api/studio/flows")
+    def api_studio_flows() -> Dict[str, Any]:
+        try:
+            program = _get_cached_program()
+            if program is None and daemon_state is not None and getattr(daemon_state, "last_error_detail", None):
+                raise HTTPException(status_code=503, detail=getattr(daemon_state, "last_error_detail"))
+            program = program or _project_program()
+            return {"flows": studio_list_flows(program)}
+        except HTTPException:
+            raise
+        except Exception as exc:  # pragma: no cover - defensive
+            log_event(log_buffer, "flows_list_error", level="error", message=str(exc))
+            raise HTTPException(status_code=400, detail=str(exc))
+
+    @app.post("/api/studio/run-flow")
+    def api_studio_run_flow(payload: Dict[str, Any]) -> Dict[str, Any]:
+        flow_name = (payload.get("flow") or "").strip()
+        if not flow_name:
+            raise HTTPException(status_code=400, detail="Missing flow name")
+        state = payload.get("input") or payload.get("state") or {}
+        metadata = payload.get("metadata") or {}
+        try:
+            program = _get_cached_program()
+            if program is None and daemon_state is not None and getattr(daemon_state, "last_error_detail", None):
+                raise HTTPException(status_code=503, detail=getattr(daemon_state, "last_error_detail"))
+            program = program or _project_program()
+            log_event(log_buffer, "flow_run_started", level="info", flow=flow_name)
+            result = run_flow_once(program, flow_name, state=state, metadata=metadata)
+            log_event(log_buffer, "flow_run_finished", level="info", flow=flow_name, success=result.get("success", True))
+            return result
+        except HTTPException:
+            raise
+        except KeyError:
+            raise HTTPException(status_code=404, detail=f"flow '{flow_name}' not found")
+        except Namel3ssError as exc:
+            log_event(log_buffer, "flow_run_error", level="error", flow=flow_name, message=str(exc))
+            raise HTTPException(status_code=400, detail=str(exc))
+        except Exception as exc:  # pragma: no cover - defensive
+            log_event(log_buffer, "flow_run_error", level="error", flow=flow_name, message=str(exc))
+            raise HTTPException(status_code=400, detail=str(exc))
+
+    @app.get("/api/studio/ai-call")
+    def api_studio_ai_call(ai_id: str = Query(..., alias="ai"), session_id: str = Query(..., alias="session")) -> Dict[str, Any]:
+        ai_id = (ai_id or "").strip()
+        session_id = (session_id or "").strip()
+        if not ai_id or not session_id:
+            raise HTTPException(status_code=400, detail="ai and session are required")
+        try:
+            program = _get_cached_program() or _project_program()
+            engine = _build_project_engine(program)
+            payload = describe_ai_call_context(program, ai_id, session_id, engine)
+            log_event(log_buffer, "ai_call_visualized", level="info", ai=ai_id, session=session_id)
+            return payload
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail=str(exc))
+        except Exception as exc:  # pragma: no cover - defensive
+            log_event(log_buffer, "ai_call_visualizer_error", level="error", ai=ai_id, session=session_id, message=str(exc))
+            raise HTTPException(status_code=400, detail=str(exc))
+
+    @app.get("/api/studio/rag/list")
+    def api_studio_rag_list() -> Dict[str, Any]:
+        try:
+            program = _get_cached_program() or _project_program()
+            pipelines = studio_list_rag_pipelines(program)
+            return {"pipelines": pipelines}
+        except KeyError:
+            raise HTTPException(status_code=404, detail="No rag pipelines found")
+        except Exception as exc:  # pragma: no cover - defensive
+            log_event(log_buffer, "rag_list_error", level="error", message=str(exc))
+            raise HTTPException(status_code=400, detail=str(exc))
+
+    @app.get("/api/studio/rag/pipeline")
+    def api_studio_rag_pipeline(name: str) -> Dict[str, Any]:
+        name = (name or "").strip()
+        if not name:
+            raise HTTPException(status_code=400, detail="Missing pipeline name")
+        try:
+            program = _get_cached_program() or _project_program()
+            manifest = studio_describe_rag_pipeline(program, name)
+            log_event(log_buffer, "rag_pipeline_viewed", level="info", pipeline=name)
+            return manifest
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail=str(exc))
+        except Exception as exc:  # pragma: no cover - defensive
+            log_event(log_buffer, "rag_pipeline_error", level="error", pipeline=name, message=str(exc))
+            raise HTTPException(status_code=400, detail=str(exc))
+
+    @app.get("/api/studio/warnings")
+    def api_studio_warnings() -> Dict[str, Any]:
+        try:
+            program = _get_cached_program()
+            if program is None and daemon_state is not None and getattr(daemon_state, "last_error_detail", None):
+                return {"warnings": []}
+            program = program or _project_program()
+            warnings = collect_warnings(program)
+            log_event(log_buffer, "warnings_collected", level="info", count=len(warnings))
+            return {"warnings": warnings}
+        except HTTPException:
+            raise
+        except Exception as exc:  # pragma: no cover - defensive
+            log_event(log_buffer, "warnings_error", level="error", message=str(exc))
+            raise HTTPException(status_code=400, detail=str(exc))
+
+    @app.post("/api/studio/reparse")
+    def api_studio_reparse() -> Dict[str, Any]:
+        timestamp = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+        errors: list[dict[str, Any]] = []
+        success = False
+        try:
+            if isinstance(daemon_state, StudioDaemon):
+                program = daemon_state.ensure_program(raise_on_error=False)
+                _set_cached_program(program)
+                if daemon_state.last_error_detail:
+                    detail = daemon_state.last_error_detail or {}
+                    if isinstance(detail, dict):
+                        errors.append(detail)
+                success = program is not None and not errors
+            else:
+                _invalidate_program_cache()
+                try:
+                    program = _project_program()
+                    success = program is not None
+                except Exception as exc:
+                    detail = {"message": str(exc)}
+                    errors.append(detail)
+                    success = False
+        except Exception as exc:  # pragma: no cover - defensive
+            errors.append({"message": str(exc)})
+            success = False
+        log_event(log_buffer, "ir_reparse", level="info", success=success, error_count=len(errors), timestamp=timestamp)
+        return {"success": success, "timestamp": timestamp, "errors": errors}
 
     @app.post("/api/parse")
     def api_parse(payload: ParseRequest) -> Dict[str, Any]:
@@ -712,6 +1103,7 @@ def create_app() -> FastAPI:
         if not target.exists():
             raise HTTPException(status_code=404, detail="File not found")
         target.write_text(payload.content, encoding="utf-8")
+        _invalidate_program_cache()
         return StudioFileResponse(path=payload.path, content=payload.content)
 
     def _store_trace(flow_name: Optional[str], trace_payload: Dict[str, Any], status: str, started_at: float, duration: float) -> Dict[str, Any]:
@@ -816,12 +1208,20 @@ def create_app() -> FastAPI:
 
     @app.get("/studio", response_class=HTMLResponse)
     def studio() -> HTMLResponse:
+        if not STUDIO_STATIC_DIR:
+            log_event(log_buffer, "asset_missing_warning", level="warn", detail="studio_static_dir_missing")
+            return HTMLResponse(
+                "<html><body><h1>Studio assets not found (no static directory).</h1></body></html>",
+                status_code=500,
+            )
         index_path = STUDIO_STATIC_DIR / "index.html"
         if not index_path.exists():
+            log_event(log_buffer, "asset_missing_warning", level="warn", detail="index_html_missing")
             return HTMLResponse(
                 "<html><body><h1>Studio assets not found.</h1></body></html>",
                 status_code=500,
             )
+        log_event(log_buffer, "static_serving_info", level="info", path=str(index_path))
         return HTMLResponse(index_path.read_text(encoding="utf-8"))
 
     @app.get("/api/last-trace")
@@ -1270,6 +1670,18 @@ def create_app() -> FastAPI:
         clear_recall_snapshot(ai_id, session_id)
         return {"success": True}
 
+    @app.get("/api/memory/ais")
+    def api_memory_ai_list(principal: Principal = Depends(get_principal)) -> Dict[str, Any]:
+        if not can_view_pages(principal.role):
+            raise HTTPException(status_code=403, detail="Forbidden")
+        program = _project_program()
+        ai_calls = getattr(program, "ai_calls", {}) or {}
+        ais: list[dict[str, Any]] = []
+        for name, ai_call in ai_calls.items():
+            if getattr(ai_call, "memory", None) or getattr(ai_call, "memory_name", None):
+                ais.append({"id": name, "name": name, "has_memory": True})
+        return {"ais": ais}
+
     def _find_element_by_id(pages: list[dict[str, Any]], element_id: str) -> dict[str, Any] | None:
         for page in pages:
             stack = list(page.get("layout", []))
@@ -1426,6 +1838,7 @@ def create_app() -> FastAPI:
             else:
                 raise HTTPException(status_code=400, detail="Unsupported operation")
             target.write_text(content, encoding="utf-8")
+            _invalidate_program_cache()
             manifest = _project_ui_manifest()
             return {"success": True, "manifest": manifest, "new_element_id": new_element_id}
         except HTTPException:
@@ -1474,6 +1887,7 @@ def create_app() -> FastAPI:
             lines[insert_idx:insert_idx] = snippet
             content_out = "\n".join(lines) + ("\n" if content.endswith("\n") else "")
             target.write_text(content_out, encoding="utf-8")
+            _invalidate_program_cache()
             manifest = _project_ui_manifest()
             return {"success": True, "manifest": manifest}
         except HTTPException:

@@ -41,6 +41,9 @@ dependencies = [
   "fastapi>=0.110.0",
   "uvicorn>=0.29.0",
   "python-multipart>=0.0.9",
+  "pydantic>=2.7.0",
+  "orjson>=3.9.15",
+  "watchdog>=4.0.0",
 ]
 
 [project.urls]
@@ -94,3 +97,22 @@ markers = [
   "slow: stress/load tests",
   "e2e: end-to-end tests",
 ]
+
+[tool.hatch.build]
+artifacts = ["src/namel3ss/studio_static"]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/namel3ss"]
+
+[tool.hatch.build.targets.sdist]
+include = [
+  "src",
+  "studio",
+  "hatch_build.py",
+  "pyproject.toml",
+  "README.md",
+  "LICENSE",
+]
+
+[tool.hatch.build.hooks.custom]
+path = "hatch_build.py"

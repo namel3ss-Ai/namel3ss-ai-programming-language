@@ -156,8 +156,14 @@ Prefer the single-file edition? See `docs/book/learn-namel3ss.md`.
 
 Start Studio:
 ```bash
-n3 studio
+n3 studio            # packaged static build
+n3 studio dev        # dev mode (daemon + Vite dev server)
 ```
+
+- Auto-discovers your project root (or use `--project <path>`).
+- Default ports: backend `8000`, Studio UI `3333` (`--backend-port`, `--port`).
+- Add `--no-open` to skip auto-opening your browser.
+- First time in an empty folder? We’ll offer to scaffold a starter `.ai` file.
 
 ---
 

@@ -184,9 +184,13 @@ class AgentRunner:
             agent = self.program.agents[agent_name]
             bound_ai = self._bind_ai_for_agent(agent)
             if not bound_ai and not page_ai_fallback:
-                raise Namel3ssError(
-                    f"Agent '{agent.name}' has no bound AI. Declare 'ai is \"{agent.name}\":' or provide a fallback."
-                )
+                default_ai = next(iter(self.program.ai_calls.keys()), None)
+                if default_ai:
+                    page_ai_fallback = default_ai
+                else:
+                    raise Namel3ssError(
+                        f"Agent '{agent.name}' has no bound AI. Declare 'ai is \"{agent.name}\":' or provide a fallback."
+                    )
             plan = self.build_plan(agent, page_ai_fallback=page_ai_fallback or (bound_ai.name if bound_ai else None))
             results: list[AgentStepResult] = []
             reflection_cfg = self.config.reflection if self.config else None

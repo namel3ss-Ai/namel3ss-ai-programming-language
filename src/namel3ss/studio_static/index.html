@@ -1,0 +1,344 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Namel3ss Studio</title>
+  <link rel="stylesheet" href="/studio-static/studio.css">
+</head>
+<body>
+  <header class="studio-header">
+    <div class="header-left">
+      <h1>Namel3ss Studio</h1>
+      <p class="subtitle">Calm, read-only workspace</p>
+    </div>
+    <div class="header-right">
+      <button id="warnings-toggle" class="ghost-button warning-indicator" title="Open warnings panel">Warnings <span id="warnings-count" class="warning-count">0</span></button>
+      <div class="theme-toggle" aria-label="Toggle theme">
+        <button class="theme-btn active" data-theme="light">Light</button>
+        <button class="theme-btn" data-theme="dark">Dark</button>
+      </div>
+      <button id="presentation-toggle" class="ghost-button">Presentation</button>
+      <button class="reload" data-action="reparse-now">Re-Parse Now</button>
+      <div class="provider-pill" id="provider-status">Provider: checking…</div>
+      <div class="api-key">
+        <label for="api-key-input">API Key</label>
+        <input id="api-key-input" type="text" placeholder="X-API-Key value (e.g., viewer-key)">
+      </div>
+    </div>
+  </header>
+  <div id="status-banner" class="banner" role="status"></div>
+  <div id="warnings-panel" class="warnings-panel hidden" role="region" aria-label="Warnings list"></div>
+
+  <div class="studio-shell">
+    <aside class="studio-sidebar">
+      <nav class="studio-tabs">
+        <button class="studio-tab active" data-panel="overview">Overview</button>
+        <button class="studio-tab" data-panel="run">Run</button>
+        <button class="studio-tab" data-panel="traces">Traces</button>
+        <button class="studio-tab" data-panel="memory">Memory</button>
+        <button class="studio-tab" data-panel="rag">RAG</button>
+        <button class="studio-tab" data-panel="logs">Logs</button>
+        <button class="studio-tab" data-panel="canvas">Canvas</button>
+        <button class="studio-tab" data-panel="inspector">Inspector</button>
+        <button class="studio-tab" data-panel="ai-call">AI Call</button>
+        <button class="studio-tab" data-panel="ask">Ask Studio</button>
+        <button class="studio-tab" data-panel="diagnostics">Diagnostics</button>
+      </nav>
+    </aside>
+
+    <main class="studio-main">
+    <section id="panel-overview" class="panel active">
+      <div class="panel-head panel-header">
+        <div>
+          <h2>Overview</h2>
+          <p>Summarizes the current runtime, plugins, and metrics.</p>
+        </div>
+        <button class="reload" data-action="overview-reload">Reload</button>
+      </div>
+      <div id="overview-content" class="panel-body monospace"></div>
+    </section>
+
+    <section id="panel-ask" class="panel">
+      <div class="panel-head panel-header">
+        <div>
+          <h2>Ask Studio</h2>
+          <p>Ask questions about your program, errors, flows, or memory.</p>
+        </div>
+        <div class="logs-actions">
+          <button class="reload" data-action="ask-run">Ask</button>
+        </div>
+      </div>
+      <div class="ask-layout">
+        <div class="ask-left">
+          <div class="ask-modes" role="group" aria-label="Ask Studio mode">
+            <button class="ask-mode-btn active" data-mode="explain">Explain</button>
+            <button class="ask-mode-btn" data-mode="generate_flow">Flow</button>
+            <button class="ask-mode-btn" data-mode="generate_page">Page</button>
+            <button class="ask-mode-btn" data-mode="generate_tool">Tool</button>
+            <button class="ask-mode-btn" data-mode="generate_agent">Agent</button>
+            <button class="ask-mode-btn" data-mode="generate_rag">RAG</button>
+          </div>
+          <div id="ask-mode-hint" class="ask-mode-hint">Ask Studio to explain or debug.</div>
+          <label>Your question
+            <textarea id="ask-question" rows="5" placeholder="Why is my flow failing?"></textarea>
+          </label>
+          <div id="ask-context" class="ask-context monospace"></div>
+        </div>
+        <div class="ask-right">
+          <div id="ask-answer" class="ask-answer monospace">Ask a question to see the answer here.</div>
+          <div id="ask-snippets" class="ask-snippets"></div>
+        </div>
+      </div>
+    </section>
+
+    <section id="panel-canvas" class="panel">
+      <div class="panel-head panel-header">
+        <div>
+          <h2>System Map</h2>
+          <p>Read-only canvas of apps, pages, flows, AI, tools, memory, and RAG.</p>
+        </div>
+        <div class="logs-actions">
+          <button class="reload" data-action="canvas-reload">Reload</button>
+          <button class="reload" data-action="reparse-now">Re-Parse Now</button>
+        </div>
+      </div>
+      <div id="canvas-content" class="panel-body">
+        <div id="canvas-viewport" class="canvas-viewport">
+          <div id="canvas-groups" class="canvas-groups"></div>
+        </div>
+        <div id="canvas-details" class="canvas-details monospace">Select a node to view details.</div>
+      </div>
+    </section>
+
+    <section id="panel-inspector" class="panel">
+      <div class="panel-head panel-header">
+        <div>
+          <h2>Inspector</h2>
+          <p>Read-only details for pages, flows, AI, agents, tools, memory, RAG.</p>
+        </div>
+        <div class="logs-actions">
+          <select id="inspector-kind">
+            <option value="">Select kind</option>
+            <option value="app">App</option>
+            <option value="page">Page</option>
+            <option value="flow">Flow</option>
+            <option value="ai">AI</option>
+            <option value="agent">Agent</option>
+            <option value="tool">Tool</option>
+            <option value="memory">Memory</option>
+            <option value="rag">RAG Pipeline</option>
+            <option value="rag_eval">RAG Eval</option>
+            <option value="tool_eval">Tool Eval</option>
+            <option value="agent_eval">Agent Eval</option>
+          </select>
+          <select id="inspector-entity"></select>
+          <button class="reload" data-action="inspector-load">Load</button>
+          <button class="reload" data-action="reparse-now">Re-Parse Now</button>
+        </div>
+      </div>
+      <div id="inspector-content" class="panel-body inspector-body monospace">Select a node from Canvas or choose an entity to view details.</div>
+    </section>
+
+    <section id="panel-run" class="panel">
+      <div class="panel-head panel-header">
+        <div>
+          <h2>Run</h2>
+          <p>Execute apps or flows against the runtime APIs.</p>
+        </div>
+      </div>
+
+      <div class="runner">
+        <div class="runner-head">
+          <div>
+            <h3>Flow Execution Viewer</h3>
+            <p>Run a project flow and inspect its steps.</p>
+          </div>
+          <div class="logs-actions">
+            <button class="reload" data-action="flow-runner-refresh">Refresh flows</button>
+          </div>
+        </div>
+        <label>Flow
+          <select id="flow-runner-name"></select>
+        </label>
+        <label>Optional JSON state / metadata
+          <textarea id="flow-runner-input" rows="3" placeholder='{"state": {...}} or {"metadata": {...}}'></textarea>
+        </label>
+        <div class="runner-actions">
+          <button class="reload" data-action="flow-runner-run">Run selected flow</button>
+        </div>
+        <div class="runner-history">
+          <label>Recent runs
+            <select id="flow-run-history"></select>
+          </label>
+        </div>
+        <div id="flow-runner-output" class="runner-output monospace flow-run-output">Select a flow to run.</div>
+      </div>
+
+      <div class="runner">
+        <div class="runner-head">
+          <div>
+            <h3>App Runner</h3>
+            <p>Calls <code>/api/run-app</code>.</p>
+          </div>
+          <button class="reload" data-action="run-app">Run App</button>
+        </div>
+        <label>App name
+          <input id="run-app-name" type="text" placeholder="app name">
+        </label>
+        <label>Program source
+          <textarea id="run-app-source" rows="6" placeholder="Paste DSL source for your app"></textarea>
+        </label>
+        <label>Optional JSON payload
+          <textarea id="run-app-payload" rows="3" placeholder="{} (extra fields are ignored by the API)"></textarea>
+        </label>
+        <div id="run-app-output" class="runner-output monospace"></div>
+      </div>
+
+      <div class="runner">
+        <div class="runner-head">
+          <div>
+            <h3>Flow Runner</h3>
+            <p>Calls <code>/api/run-flow</code>.</p>
+          </div>
+          <button class="reload" data-action="run-flow">Run Flow</button>
+        </div>
+        <label>Flow name
+          <input id="run-flow-name" type="text" placeholder="flow name">
+        </label>
+        <label>Program source
+          <textarea id="run-flow-source" rows="6" placeholder="Paste DSL source containing the flow"></textarea>
+        </label>
+        <label>Optional JSON initial state
+          <textarea id="run-flow-state" rows="3" placeholder="{} (extra fields are ignored by the API)"></textarea>
+        </label>
+        <div id="run-flow-output" class="runner-output monospace"></div>
+      </div>
+    </section>
+
+    <section id="panel-ai-call" class="panel">
+      <div class="panel-head panel-header">
+        <div>
+          <h2>AI Call</h2>
+          <p>View the exact context sent to an AI call.</p>
+        </div>
+      </div>
+      <div class="ai-call-layout">
+        <div class="ai-call-meta" id="ai-call-meta">Select an AI call from Run or Memory panels.</div>
+        <div class="ai-call-sections" id="ai-call-sections"></div>
+      </div>
+    </section>
+
+    <section id="panel-traces" class="panel">
+      <div class="panel-head panel-header">
+        <div>
+          <h2>Traces</h2>
+          <p>Latest execution trace from the runtime.</p>
+        </div>
+        <button class="reload" data-action="traces-reload">Reload</button>
+      </div>
+      <div id="traces-content" class="panel-body monospace"></div>
+    </section>
+
+    <section id="panel-memory" class="panel">
+      <div class="panel-head panel-header">
+        <div>
+          <h2>Memory & Context</h2>
+          <p>Inspect memory plans, sessions, and recall context for AI calls.</p>
+        </div>
+        <div class="logs-actions">
+          <button class="reload" data-action="memory-refresh">Refresh</button>
+        </div>
+      </div>
+      <div class="memory-layout">
+        <div class="memory-left">
+          <label>AI
+            <select id="memory-ai-select"></select>
+          </label>
+          <div id="memory-plan" class="memory-section monospace">Select an AI with memory.</div>
+          <div id="memory-sessions" class="memory-section monospace">Sessions will appear here.</div>
+        </div>
+        <div class="memory-right">
+          <div id="memory-state" class="memory-section monospace">Select a session to view context and recall snapshots.</div>
+        </div>
+      </div>
+    </section>
+
+    <section id="panel-rag" class="panel">
+      <div class="panel-head panel-header">
+        <div>
+          <h2>RAG</h2>
+          <p>Visualize pipelines and query RAG indexes.</p>
+        </div>
+        <button class="reload" data-action="rag-run">Run Query</button>
+      </div>
+      <div class="rag-layout">
+        <div class="rag-sidebar">
+          <h4>Pipelines</h4>
+          <ul id="rag-pipelines-list" class="rag-pipelines-list"></ul>
+        </div>
+        <div class="rag-visualizer">
+          <div id="rag-pipeline-title" class="rag-pipeline-title">Select a pipeline to view its stages.</div>
+          <div id="rag-pipeline-stages" class="rag-pipeline-stages"></div>
+          <div id="rag-pipeline-details" class="rag-pipeline-details monospace"></div>
+        </div>
+      </div>
+      <label>Query
+        <input id="rag-query" type="text" placeholder="What are the top docs?">
+      </label>
+      <label>Indexes (comma-separated)
+        <input id="rag-indexes" type="text" placeholder="default">
+      </label>
+      <label>Program source (optional)
+        <textarea id="rag-source" rows="4" placeholder="Paste DSL source if needed to build the RAG engine"></textarea>
+      </label>
+      <div id="rag-content" class="panel-body monospace"></div>
+    </section>
+
+    <section id="panel-logs" class="panel">
+      <div class="panel-head panel-header">
+        <div>
+          <h2>Logs</h2>
+          <p>Live daemon and runtime events.</p>
+        </div>
+        <div class="logs-actions">
+          <button class="reload" data-action="logs-clear">Clear View</button>
+        </div>
+      </div>
+      <div id="logs-content" class="panel-body logs-body monospace"></div>
+    </section>
+
+    <section id="panel-diagnostics" class="panel">
+      <div class="panel-head panel-header">
+        <div>
+          <h2>Diagnostics</h2>
+          <p>Run diagnostics via <code>/api/diagnostics</code>.</p>
+        </div>
+        <button class="reload" data-action="diagnostics-run">Run Diagnostics</button>
+      </div>
+      <label>Paths (one per line)
+        <textarea id="diagnostics-paths" rows="4" placeholder="/path/to/program.ai"></textarea>
+      </label>
+      <div class="checkboxes">
+        <label><input id="diagnostics-strict" type="checkbox"> Strict mode</label>
+        <label><input id="diagnostics-summary" type="checkbox"> Summary only</label>
+      </div>
+      <div id="diagnostics-content" class="panel-body monospace"></div>
+    </section>
+    </main>
+  </div>
+
+  <footer class="studio-footer">
+    <span id="studio-status">Ready.</span>
+  </footer>
+
+  <div id="command-palette-overlay" class="command-palette-overlay hidden">
+    <div class="command-palette">
+      <input id="command-input" type="text" class="command-palette-input" placeholder="Jump to flow, page, tool, memory, RAG…">
+      <div id="command-results" class="command-results"></div>
+    </div>
+  </div>
+
+  <script src="/studio-static/studio.js" defer></script>
+</body>
+</html>

@@ -1,0 +1,1 @@
+"""Bundled Studio frontend assets."""

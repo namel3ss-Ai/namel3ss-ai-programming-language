@@ -70,7 +70,14 @@ def describe_memory_plan(ai_call: ir.IRAiCall) -> Dict[str, Any]:
     """
 
     mem_cfg = getattr(ai_call, "memory", None)
-    plan: Dict[str, Any] = {"ai": ai_call.name, "kinds": [], "recall": []}
+    memory_name = getattr(ai_call, "memory_name", None)
+    plan: Dict[str, Any] = {
+        "ai": ai_call.name,
+        "kinds": [],
+        "recall": [],
+        "has_memory": bool(mem_cfg or memory_name),
+        "memory_name": memory_name,
+    }
     if not mem_cfg:
         return plan
 

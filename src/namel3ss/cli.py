@@ -10,7 +10,9 @@ import http.server
 import json
 import multiprocessing
 import os
+import shutil
 import socket
+import subprocess
 import sys
 import threading
 import time
@@ -87,6 +89,13 @@ def build_cli_parser() -> argparse.ArgumentParser:
     serve_cmd.add_argument("--host", default="127.0.0.1")
     serve_cmd.add_argument("--port", type=int, default=8000)
     serve_cmd.add_argument("--dry-run", action="store_true", help="Build app but do not start server")
+
+    daemon_cmd = register("daemon", help="Run the Namel3ss background daemon with Studio APIs")
+    daemon_cmd.add_argument("--host", default="127.0.0.1", help="Host interface for daemon (default: 127.0.0.1)")
+    daemon_cmd.add_argument("--port", type=int, default=3030, help="Port for daemon (default: 3030)")
+    daemon_cmd.add_argument("--project", "--project-root", dest="project_root", type=Path, help="Project root (auto-discovered by default)")
+    daemon_cmd.add_argument("--app", dest="app_name", help="App name hint (logged only)")
+    daemon_cmd.add_argument("--no-watch", action="store_true", help="Disable file watching/reload")
 
     run_agent_cmd = register("run-agent", help="Run an agent from an .ai file")
     run_agent_cmd.add_argument("--file", type=Path, required=True, help="Path to .ai file")
@@ -264,10 +273,19 @@ def build_cli_parser() -> argparse.ArgumentParser:
 
     doctor_cmd = register("doctor", help="Run environment and configuration health checks")
 
-    studio_cmd = register("studio", help="Start Namel3ss Studio (Phase 1)")
+    studio_cmd = register("studio", help="Start Namel3ss Studio (packaged static build or dev mode)")
+    studio_cmd.add_argument("mode", nargs="?", choices=["dev"], help="Use dev mode to run the Studio frontend build pipeline.")
     studio_cmd.add_argument("--backend-port", type=int, default=8000, help="Port for backend runtime (default: 8000)")
-    studio_cmd.add_argument("--ui-port", type=int, default=4173, help="Port for Studio UI (default: 4173)")
-    studio_cmd.add_argument("--no-open-browser", action="store_true", help="Do not open a browser automatically")
+    studio_cmd.add_argument("--ui-port", "--port", dest="ui_port", type=int, default=3333, help="Port for Studio UI (default: 3333)")
+    studio_cmd.add_argument("--project", dest="project_root", type=Path, help="Path to project root (auto-discovered by default)")
+    studio_cmd.add_argument("--app", dest="app_name", help="App name hint for Studio (logged only)")
+    studio_cmd.add_argument(
+        "--no-open-browser",
+        "--no-open",
+        dest="no_open_browser",
+        action="store_true",
+        help="Do not open a browser automatically",
+    )
 
     init_cmd = register("init", help="Scaffold a project from a template")
     init_cmd.add_argument("template", help="Template name")
@@ -634,6 +652,49 @@ def main(argv: list[str] | None = None) -> None:
         except ImportError as exc:  # pragma: no cover - runtime check
             raise SystemExit("uvicorn is required to run the server") from exc
         uvicorn.run(app, host=args.host, port=args.port)
+        return
+
+    if args.command == "daemon":
+        project_root = _resolve_project_root(args.project_root, allow_bootstrap=True)
+        ai_files = iter_ai_files([project_root])
+        _check_port_available(args.port, "daemon", flag_hint="n3 daemon --port <port>")
+        daemon_proc: multiprocessing.Process | None = None
+        try:
+            daemon_proc = start_daemon_process(args.port, project_root, host=args.host, watch=not args.no_watch)
+        except Exception as exc:
+            raise SystemExit(f"Failed to start daemon: {exc}") from exc
+
+        ok, err = _wait_for_http(f"http://{args.host}:{args.port}/health")
+        if not ok:
+            _stop_process(daemon_proc, "daemon")
+            raise SystemExit(f"Daemon did not start on port {args.port}. {err or 'Timed out waiting for /health.'}")
+
+        status_payload, status_err = _fetch_studio_status(f"http://{args.host}:{args.port}")
+
+        print("\nNamel3ss daemon is running!\n")
+        print(f"[✓] Project root: {project_root}")
+        if getattr(args, "app_name", None):
+            print(f"[✓] Using app:    \"{args.app_name}\"")
+        if ai_files:
+            print(f"[✓] Watching {len(ai_files)} .ai file(s)")
+        print(f"[✓] Daemon:       http://{args.host}:{args.port}")
+        for msg in _studio_status_messages(status_payload):
+            print(msg)
+        if status_payload is None and status_err:
+            print(f"[!] Could not fetch daemon status: {status_err}")
+        print("Press Ctrl+C to stop the daemon.\n")
+
+        try:
+            while True:
+                time.sleep(1)
+                if daemon_proc and not daemon_proc.is_alive():
+                    print("Daemon exited unexpectedly. Check logs above.")
+                    break
+        except KeyboardInterrupt:
+            print("\nStopping daemon…")
+        finally:
+            _stop_process(daemon_proc, "daemon")
+            print("Done.")
         return
 
     if args.command == "run-agent":
@@ -1226,11 +1287,21 @@ def main(argv: list[str] | None = None) -> None:
             return
 
     if args.command == "studio":
-        run_studio(
-            backend_port=args.backend_port,
-            ui_port=args.ui_port,
-            open_browser=not args.no_open_browser,
-        )
+        if getattr(args, "mode", None) == "dev":
+            run_studio_dev(
+                backend_port=args.backend_port,
+                ui_port=args.ui_port,
+                open_browser=not args.no_open_browser,
+                project_root=getattr(args, "project_root", None),
+                app_name=getattr(args, "app_name", None),
+            )
+        else:
+            run_studio(
+                backend_port=args.backend_port,
+                ui_port=args.ui_port,
+                open_browser=not args.no_open_browser,
+                project_root=getattr(args, "project_root", None),
+            )
         return
 
     if args.command == "test-cov":
@@ -1257,35 +1328,284 @@ def main(argv: list[str] | None = None) -> None:
 
 
 # ----------------------------- Studio helpers ----------------------------- #
-def detect_project_root(start: Path | None = None) -> Path | None:
-    base = start or Path.cwd()
-    if any(base.glob("*.ai")):
-        return base
+_PROJECT_CONFIG_FILES = ("namel3ss.config.json", "namel3ss.toml", "namel3ss.config.toml")
+_PROJECT_SCAN_IGNORES = {".git", ".hg", ".svn", "__pycache__", "node_modules", ".venv", "venv", "dist", "build"}
+
+
+def _has_ai_files(base: Path) -> bool:
+    if base.is_file():
+        return base.suffix == ".ai"
+    for root, dirs, files in os.walk(base):
+        dirs[:] = [d for d in dirs if d not in _PROJECT_SCAN_IGNORES]
+        for name in files:
+            if name.endswith(".ai"):
+                return True
+    return False
+
+
+def discover_project_root(start: Path | None = None) -> Path | None:
+    """
+    Walk up from the starting directory until we find a Namel3ss config or any .ai file.
+    """
+    base = (start or Path.cwd()).resolve()
+    for candidate in [base, *base.parents]:
+        if any((candidate / cfg).exists() for cfg in _PROJECT_CONFIG_FILES):
+            return candidate
+        if _has_ai_files(candidate):
+            return candidate
     return None
 
 
-def _check_port_available(port: int, name: str) -> None:
+def detect_project_root(start: Path | None = None) -> Path | None:
+    # Backwards-compatible wrapper.
+    return discover_project_root(start)
+
+
+def _prompt_yes_no(prompt: str) -> bool:
+    try:
+        reply = input(prompt).strip().lower()
+    except EOFError:
+        return False
+    return reply in {"y", "yes"}
+
+
+def _bootstrap_starter_project(target_dir: Path) -> Path | None:
+    target_dir = target_dir.resolve()
+    if not sys.stdin.isatty():
+        print("No Namel3ss project found and cannot prompt in non-interactive mode. Create an .ai file and re-run.")
+        return None
+    if not target_dir.exists():
+        try:
+            target_dir.mkdir(parents=True, exist_ok=True)
+        except OSError as exc:
+            print(f"Cannot create directory {target_dir}: {exc}")
+            return None
+    if not os.access(target_dir, os.W_OK):
+        print(f"Cannot write to {target_dir}. Please pick a writable directory or run with --project <path>.")
+        return None
+
+    print("I couldn’t find any Namel3ss .ai files here.")
+    if not _prompt_yes_no("Create a starter app and open Studio? (y/N) "):
+        print("No files created. You can run `n3 init app-basic` or add an .ai file manually.")
+        return None
+
+    starter_paths = [target_dir / "app.ai", target_dir / "starter.ai", target_dir / "main.ai"]
+    chosen: Path | None = None
+    for candidate in starter_paths:
+        if not candidate.exists():
+            chosen = candidate
+            break
+    if chosen is None:
+        print("A project already exists here. Remove or rename existing .ai files and try again.")
+        return None
+
+    starter_app = '''app is "starter":
+  page is "home":
+    heading "Welcome to Namel3ss"
+    text "Edit this starter page to get going."
+  flow is "hello":
+    step is "greet":
+      log info "Hello from Namel3ss"
+'''
+    try:
+        chosen.write_text(starter_app, encoding="utf-8")
+    except OSError as exc:
+        print(f"Failed to write starter file {chosen}: {exc}")
+        return None
+
+    print(f"Created starter app at {chosen}. Launching Studio…")
+    try:
+        from namel3ss.studio.logs import log_event, LogBuffer
+    except Exception:
+        pass
+    else:
+        buf = LogBuffer(max_events=10)
+        log_event(buf, "starter_project_created", path=str(chosen))
+    return target_dir
+
+
+def _resolve_project_root(
+    project_arg: Path | None,
+    allow_bootstrap: bool = False,
+    base_path: Path | None = None,
+) -> Path:
+    if project_arg:
+        project_arg = project_arg.expanduser().resolve()
+        if not project_arg.exists() or not project_arg.is_dir():
+            raise SystemExit(f"Project path not found: {project_arg}")
+        if _has_ai_files(project_arg):
+            return project_arg
+        if allow_bootstrap:
+            bootstrapped = _bootstrap_starter_project(project_arg)
+            if bootstrapped:
+                return bootstrapped
+        raise SystemExit(f"No .ai files found under {project_arg}. Add an .ai file or run `n3 init app-basic`.")
+    root = discover_project_root(base_path)
+    if root:
+        if _has_ai_files(root):
+            return root
+        if allow_bootstrap:
+            bootstrapped = _bootstrap_starter_project(root)
+            if bootstrapped:
+                return bootstrapped
+        raise SystemExit(f"No .ai files found under {root}. Add an .ai file or run `n3 init app-basic`.")
+    if allow_bootstrap:
+        bootstrapped = _bootstrap_starter_project(base_path or Path.cwd())
+        if bootstrapped:
+            return bootstrapped
+    raise SystemExit(
+        "No Namel3ss project found. Run in a directory with .ai files, pass --project <path>, or run `n3 init app-basic`."
+    )
+
+
+def _check_port_available(port: int, name: str, flag_hint: str | None = None) -> None:
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
         s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         try:
             s.bind(("127.0.0.1", port))
         except PermissionError:
-            # In restricted environments we may not be allowed to bind just to test availability.
-            # Assume the port is usable and continue.
-            return
+            hint = f" Try {flag_hint}." if flag_hint else ""
+            raise SystemExit(f"Port {port} requires elevated privileges.{hint}")
         except OSError:
-            raise SystemExit(f"Port {port} is in use. Try: n3 studio --{name}-port <other>")
+            hint = f" Try {flag_hint}." if flag_hint else f" Try: n3 studio --{name}-port <other>."
+            raise SystemExit(f"Port {port} is already in use.{hint}")
 
 
-def start_backend_process(port: int) -> multiprocessing.Process:
+def _wait_for_http(url: str, timeout: float = 8.0, interval: float = 0.4) -> tuple[bool, str | None]:
+    deadline = time.time() + timeout
+    last_error: str | None = None
+    while time.time() < deadline:
+        try:
+            req = Request(url, headers={"User-Agent": "namel3ss-cli/1"})
+            with urlopen(req, timeout=interval) as resp:  # nosec - controlled local call
+                if resp.status < 500:
+                    return True, None
+        except Exception as exc:  # pragma: no cover - transient startup errors
+            last_error = str(exc)
+            time.sleep(interval)
+    return False, last_error
+
+
+def _fetch_studio_status(base_url: str, timeout: float = 5.0) -> tuple[dict | None, str | None]:
+    try:
+        req = Request(
+            urljoin(base_url, "/api/studio/status"),
+            headers={"User-Agent": "namel3ss-cli/1", "Accept": "application/json"},
+        )
+        with urlopen(req, timeout=timeout) as resp:  # nosec - local call
+            if resp.status >= 500:
+                return None, f"{resp.status} {resp.reason}"
+            content = resp.read()
+            if not content:
+                return None, "empty response"
+            return json.loads(content.decode("utf-8")), None
+    except Exception as exc:  # pragma: no cover - network failures
+        return None, str(exc)
+
+
+def _stop_process(proc: multiprocessing.Process | None, name: str, timeout: float = 3.0) -> None:
+    if not proc:
+        return
+    try:
+        proc.terminate()
+        proc.join(timeout)
+    except Exception:
+        pass
+
+
+def _stop_subprocess(proc: subprocess.Popen | None, name: str, timeout: float = 3.0) -> None:
+    if not proc:
+        return
+    try:
+        proc.terminate()
+        proc.wait(timeout=timeout)
+    except Exception:
+        pass
+
+
+def _studio_status_messages(status: dict | None) -> list[str]:
+    if not status:
+        return []
+    messages: list[str] = []
+    ir_status = status.get("ir_status")
+    if ir_status == "error":
+        err = status.get("ir_error") or {}
+        loc_parts: list[str] = []
+        if err.get("file"):
+            loc_parts.append(str(err["file"]))
+        if err.get("line") is not None:
+            loc_parts.append(str(err["line"]))
+        if err.get("column") is not None:
+            loc_parts.append(str(err["column"]))
+        location = ":".join(loc_parts)
+        prefix = f"{location}: " if location else ""
+        msg = err.get("message") or "Your Namel3ss program could not be parsed."
+        messages.append("[!] Your .ai files contain errors.\n    See details below:\n    - " + prefix + msg)
+        messages.append("    Fix the error and save the file; the daemon will reload automatically.")
+    elif status.get("ai_files", 0) == 0:
+        messages.append("[!] No .ai files found. Add an .ai file or run `n3 init app-basic`.")
+    else:
+        ai_paths = status.get("ai_file_paths") or []
+        if len(ai_paths) == 1 and ai_paths[0] in {"starter.ai", "app.ai", "main.ai"} and not status.get("config_file_found"):
+            messages.append("Starter project created. Edit starter.ai to begin.")
+    watcher_supported = status.get("watcher_supported", True)
+    watcher_active = status.get("watcher_active", False)
+    if not watcher_supported:
+        messages.append("[!] File system watcher unavailable; IR will not auto-reload.")
+    elif not watcher_active:
+        messages.append("[!] File system watcher inactive; changes will not auto-reload.")
+    if not status.get("studio_static_available", True):
+        messages.append(
+            "[!] Packaged Studio static assets not found.\n"
+            "    Reinstall namel3ss or run: pnpm install && pnpm build (development only)."
+        )
+    return messages
+
+
+def start_backend_process(port: int, project_root: Path | None = None) -> multiprocessing.Process:
     def target() -> None:
         import uvicorn
         from namel3ss.server import create_app
 
-        app = create_app()
+        app = create_app(project_root=project_root)
         uvicorn.run(app, host="127.0.0.1", port=port, log_level="warning")
 
     proc = multiprocessing.Process(target=target, daemon=True)
+    proc.start()
+    return proc
+
+
+def run_daemon_server(host: str, port: int, project_root: Path, watch: bool = True, log_level: str = "info") -> None:
+    from namel3ss.studio.daemon import StudioDaemon
+    from namel3ss.server import create_app
+    import uvicorn
+
+    daemon = StudioDaemon(project_root.resolve())
+    daemon.ensure_program(raise_on_error=False)
+    app = create_app(project_root=project_root.resolve(), daemon_state=daemon)
+    if watch:
+        daemon.start_watcher()
+    try:
+        uvicorn.run(app, host=host, port=port, log_level=log_level)
+    finally:
+        daemon.stop_watcher()
+
+
+def _daemon_process_entry(host: str, port: int, project_root: str, watch: bool) -> None:
+    try:
+        run_daemon_server(host, port, Path(project_root), watch=watch, log_level="warning")
+    except Exception as exc:  # pragma: no cover - best-effort logging
+        print(f"Daemon failed: {exc}", file=sys.stderr)
+
+
+def start_daemon_process(
+    port: int, project_root: Path, host: str = "127.0.0.1", watch: bool = True
+) -> multiprocessing.Process:
+    proc = multiprocessing.Process(
+        target=_daemon_process_entry,
+        args=(host, port, str(project_root), watch),
+        daemon=True,
+    )
     proc.start()
     return proc
 
@@ -2357,28 +2677,129 @@ def start_ui_server(port: int) -> tuple[http.server.ThreadingHTTPServer, threadi
     return server, thread
 
 
+def start_vite_dev_server(port: int) -> subprocess.Popen:
+    studio_dir = Path(__file__).resolve().parents[2] / "studio"
+    runner = shutil.which("pnpm") or shutil.which("npm")
+    if runner is None:
+        raise RuntimeError("npm/pnpm not found; Vite dev server requires Node.js.")
+    if not studio_dir.exists():
+        raise RuntimeError(f"Studio directory not found at {studio_dir}")
+    package_json = studio_dir / "package.json"
+    if not package_json.exists():
+        raise RuntimeError("Studio package.json not found; cannot start dev server.")
+    env = os.environ.copy()
+    env.setdefault("BROWSER", "none")
+    if Path(runner).name == "pnpm":
+        cmd = [runner, "run", "dev", "--", "--host", "--port", str(port)]
+    else:
+        cmd = [runner, "run", "dev", "--", "--host", "--port", str(port)]
+    return subprocess.Popen(cmd, cwd=studio_dir, env=env)
+
+
+def run_studio_dev(
+    backend_port: int = 8000,
+    ui_port: int = 3333,
+    open_browser: bool = True,
+    project_root: Path | None = None,
+    app_name: str | None = None,
+    block: bool = True,
+) -> None:
+    root = _resolve_project_root(project_root, allow_bootstrap=True)
+    _check_port_available(backend_port, "backend", flag_hint="n3 studio dev --backend-port <port>")
+    _check_port_available(ui_port, "ui", flag_hint="n3 studio dev --port <port>")
+
+    backend_proc: multiprocessing.Process | None = None
+    vite_proc: subprocess.Popen | None = None
+    try:
+        backend_proc = start_daemon_process(backend_port, root.resolve(), watch=True)
+    except Exception as exc:  # pragma: no cover - early startup guard
+        raise SystemExit(f"Could not start backend daemon: {exc}") from exc
+
+    ok, err = _wait_for_http(f"http://127.0.0.1:{backend_port}/health")
+    if not ok:
+        _stop_process(backend_proc, "daemon")
+        raise SystemExit(f"Daemon did not start on port {backend_port}. {err or 'Timed out waiting for /health.'}")
+
+    status_payload, status_err = _fetch_studio_status(f"http://127.0.0.1:{backend_port}")
+    status_messages = _studio_status_messages(status_payload)
+
+    active_url = f"http://127.0.0.1:{backend_port}/studio"
+    vite_msg = None
+    try:
+        vite_proc = start_vite_dev_server(ui_port)
+        ready, vite_err = _wait_for_http(f"http://localhost:{ui_port}/")
+        if ready:
+            active_url = f"http://localhost:{ui_port}/studio"
+        else:
+            vite_msg = f"Vite dev server did not become ready on port {ui_port}: {vite_err or 'timeout'}"
+            _stop_subprocess(vite_proc, "vite")
+            vite_proc = None
+    except Exception as exc:
+        vite_msg = f"Studio dev server unavailable: {exc}"
+        vite_proc = None
+
+    ai_files = iter_ai_files([root])
+    print("\nNamel3ss Studio (dev) is running!\n")
+    print(f"[✓] Project root: {root}")
+    if app_name:
+        print(f"[✓] Using app:    \"{app_name}\"")
+    if ai_files:
+        print(f"[✓] Watching {len(ai_files)} .ai file(s)")
+    print(f"[✓] Runtime daemon: http://127.0.0.1:{backend_port}")
+    print(f"[✓] Studio UI:      {active_url}")
+    for msg in status_messages:
+        print(msg)
+    if status_payload is None and status_err:
+        print(f"[!] Could not fetch daemon status: {status_err}")
+    if vite_msg:
+        print(f"[!] {vite_msg}")
+        print("[!] Falling back to packaged Studio assets served by the backend daemon.")
+    print("Press Ctrl+C to stop both the daemon and Studio.\n")
+
+    if open_browser:
+        with contextlib.suppress(Exception):
+            webbrowser.open(active_url)
+
+    if not block:
+        _stop_subprocess(vite_proc, "vite")
+        _stop_process(backend_proc, "daemon")
+        return
+
+    try:
+        while True:
+            time.sleep(1)
+            if backend_proc and not backend_proc.is_alive():
+                print("Daemon exited unexpectedly. Check logs above.")
+                break
+    except KeyboardInterrupt:
+        print("\nShutting down Studio and daemon…")
+    finally:
+        _stop_subprocess(vite_proc, "vite")
+        _stop_process(backend_proc, "daemon")
+        print("Done.")
+
+
 def run_studio(
     backend_port: int = 8000,
-    ui_port: int = 4173,
+    ui_port: int = 3333,
     open_browser: bool = True,
     project_root: Path | None = None,
     block: bool = True,
 ) -> None:
-    root = detect_project_root(project_root)
-    if root is None:
-        raise SystemExit(
-            "No Namel3ss project detected. Run from a folder containing .ai files or use 'n3 init app <name>'."
-        )
+    root = _resolve_project_root(project_root, allow_bootstrap=False)
 
-    _check_port_available(backend_port, "backend")
-    _check_port_available(ui_port, "ui")
+    _check_port_available(backend_port, "backend", flag_hint="n3 studio --backend-port <port>")
+    _check_port_available(ui_port, "ui", flag_hint="n3 studio --ui-port <port>")
 
     backend_proc: multiprocessing.Process | None = None
     ui_server = None
     try:
-        backend_proc = start_backend_process(backend_port)
+        backend_proc = start_backend_process(backend_port, project_root=root)
     except Exception as exc:  # pragma: no cover - surface early startup issues
         raise SystemExit(f"Could not start backend: {exc}") from exc
+
+    status_payload, status_err = _fetch_studio_status(f"http://127.0.0.1:{backend_port}")
+    status_messages = _studio_status_messages(status_payload)
 
     try:
         ui_server, _ = start_ui_server(ui_port)
@@ -2392,6 +2813,10 @@ def run_studio(
     print("\nNamel3ss Studio is running!\n")
     print(f"  • Primary URL:  {primary_url}")
     print(f"  • Fallback URL: {fallback_url}\n")
+    for msg in status_messages:
+        print(f"  {msg}")
+    if status_payload is None and status_err:
+        print(f"  [!] Could not fetch daemon status: {status_err}")
     print("  Press Ctrl+C to stop.")
     print("  If namel3ss.local does not resolve, add '127.0.0.1 namel3ss.local' to your hosts file.\n")
 
