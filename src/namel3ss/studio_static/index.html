@@ -4,7 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Namel3ss Studio</title>
-  <link rel="stylesheet" href="/studio-static/studio.css">
+  <link rel="stylesheet" href="/studio/studio.css">
 </head>
 <body>
   <header class="studio-header">
@@ -332,13 +332,13 @@
     <span id="studio-status">Ready.</span>
   </footer>
 
-  <div id="command-palette-overlay" class="command-palette-overlay hidden">
+  <div id="command-palette-overlay" class="command-palette-overlay hidden" aria-label="Command Palette">
     <div class="command-palette">
-      <input id="command-input" type="text" class="command-palette-input" placeholder="Jump to flow, page, tool, memory, RAG…">
+      <input id="command-input" type="text" class="command-palette-input" placeholder="Jump to flow, page, tool, memory, RAG…" aria-label="Command Palette search">
       <div id="command-results" class="command-results"></div>
     </div>
   </div>
 
-  <script src="/studio-static/studio.js" defer></script>
+  <script src="/studio/studio.js" defer></script>
 </body>
 </html>

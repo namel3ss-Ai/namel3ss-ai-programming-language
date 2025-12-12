@@ -1081,6 +1081,7 @@ class FlowAction:
     target: str
     message: Optional[str] = None
     args: Dict[str, Any] = field(default_factory=dict)
+    output_target: Optional[str] = None
     span: Optional[Span] = None
 
 

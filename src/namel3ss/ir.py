@@ -607,6 +607,7 @@ class IRUIEventAction:
     target_path: str | None = None
     target_page: str | None = None
     args: dict[str, ast_nodes.Expr] = field(default_factory=dict)
+    output_target: str | None = None
 
 
 @dataclass
@@ -2882,7 +2883,14 @@ def ast_to_ir(module: ast_nodes.Module) -> IRProgram:
             if el.handler:
                 for act in el.handler.actions:
                     if act.kind == "flow":
-                        actions.append(IRUIEventAction(kind="flow", target=act.target, args=act.args))
+                        actions.append(
+                            IRUIEventAction(
+                                kind="flow",
+                                target=act.target,
+                                args=act.args,
+                                output_target=getattr(act, "output_target", None),
+                            )
+                        )
                     elif act.kind == "goto_page":
                         actions.append(IRUIEventAction(kind="goto_page", target=act.target, args=act.args))
                     elif act.kind == "goto_flow":

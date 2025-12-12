@@ -5016,7 +5016,7 @@ class Parser:
                     if self.match("NEWLINE"):
                         continue
                     if self.peek().value == "do":
-                        actions.append(self._parse_do_action())
+                        actions.append(self._parse_do_action(allow_output_target=True))
                         self.optional_newline()
                         continue
                     if self.peek().value == "go":
@@ -7174,7 +7174,7 @@ class Parser:
         self.optional_newline()
         return ast_nodes.ReturnStatement(expr=expr, span=self._span(start_tok))
 
-    def _parse_do_action(self) -> ast_nodes.FlowAction:
+    def _parse_do_action(self, *, allow_output_target: bool = False) -> ast_nodes.FlowAction:
         do_token = self.consume("KEYWORD", "do")
         kind_tok = self.consume_any({"KEYWORD", "IDENT"})
         if kind_tok.value not in {"ai", "agent", "tool", "flow"}:
@@ -7182,6 +7182,7 @@ class Parser:
         target_tok = self.consume("STRING")
         message = None
         args: dict[str, ast_nodes.Expr] = {}
+        output_target: str | None = None
         if kind_tok.value == "flow" and self.peek().value == "with":
             self.consume("KEYWORD", "with")
             while True:
@@ -7193,6 +7194,32 @@ class Parser:
                     self.consume("COMMA")
                     continue
                 break
+        if kind_tok.value == "flow" and self.peek().value == "output":
+            if not allow_output_target:
+                raise self.error(
+                    "N3L-PARSE-OUTPUT: 'output to' is only supported in UI event handlers; use let/set and step.<name>.output elsewhere.",
+                    self.peek(),
+                )
+            out_tok = self.consume_any({"KEYWORD", "IDENT"})
+            if out_tok.value != "output":
+                raise self.error("N3L-PARSE-OUTPUT: expected 'output to' after flow call.", out_tok)
+            to_tok = self.consume_any({"KEYWORD", "IDENT"})
+            if to_tok.value != "to":
+                raise self.error("N3L-PARSE-OUTPUT: expected 'to' after output.", to_tok)
+            target_token = self.consume_any({"IDENT", "KEYWORD"})
+            raw_target = target_token.value or ""
+            parts = raw_target.split(".") if raw_target else [""]
+            while self.peek().type == "DOT":
+                self.consume("DOT")
+                part_tok = self.consume_any({"IDENT", "KEYWORD"})
+                parts.append(part_tok.value or "")
+            if not parts or not parts[0]:
+                raise self.error("N3U-2301: output target is missing.", target_token)
+            if parts[0] != "state":
+                raise self.error("N3U-2302: output target must start with state.<name>.", target_token)
+            if len(parts) < 2 or not parts[1]:
+                raise self.error("N3U-2303: output target must name a state field (state.<name>).", target_token)
+            output_target = ".".join(parts)
         if kind_tok.value == "tool" and self.peek().value == "with":
             self.consume("KEYWORD", "with")
             self.consume("KEYWORD", "message")
@@ -7212,6 +7239,7 @@ class Parser:
             target=target_tok.value or "",
             message=message,
             args=args,
+            output_target=output_target,
             span=self._span(do_token),
         )
 

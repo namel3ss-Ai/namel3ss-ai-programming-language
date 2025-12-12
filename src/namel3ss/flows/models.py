@@ -58,6 +58,7 @@ class FlowRunResult:
     steps: List[FlowStepResult] = field(default_factory=list)
     state: Optional[FlowState] = None
     errors: List[FlowError] = field(default_factory=list)
+    result: Any | None = None
     step_metrics: Dict[str, FlowStepMetrics] = field(default_factory=dict)
     total_cost: float = 0.0
     total_duration_seconds: float = 0.0
@@ -89,6 +90,7 @@ class FlowRunResult:
             "steps": [asdict(step) for step in self.steps],
             "state": _state_to_dict(self.state),
             "errors": [asdict(err) for err in self.errors],
+            "result": self.result,
             "step_metrics": {k: asdict(v) for k, v in self.step_metrics.items()},
             "total_cost": self.total_cost,
             "total_duration_seconds": self.total_duration_seconds,

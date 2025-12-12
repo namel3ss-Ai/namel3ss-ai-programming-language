@@ -1,8 +1,14 @@
 from namel3ss.agent.engine import AgentRunner
-from namel3ss.ir import IRAgent, IRProgram, IRConditionalBranch, IRLet, IRSet, IRAction
+from namel3ss.ir import IRAgent, IRAiCall, IRProgram, IRConditionalBranch, IRLet, IRSet, IRAction
 from namel3ss import ast_nodes
 from namel3ss.runtime.context import ExecutionContext
 from namel3ss.errors import Namel3ssError
+
+
+def _with_agent_ai(program: IRProgram) -> IRProgram:
+    for name in program.agents:
+        program.ai_calls[name] = program.ai_calls.get(name) or IRAiCall(name=name)
+    return program
 
 
 def test_agent_conditional_let_set_and_tool():
@@ -42,7 +48,7 @@ def test_agent_conditional_let_set_and_tool():
         def list_names(self):
             return ["echo"]
 
-    program = IRProgram(agents={"var_agent": agent})
+    program = _with_agent_ai(IRProgram(agents={"var_agent": agent}))
     tool_registry = DummyToolRegistry()
     runner = AgentRunner(program, DummyModelRegistry(), tool_registry, DummyRouter())
     ctx = ExecutionContext(app_name="test", request_id="req-agent")
@@ -72,7 +78,7 @@ def test_agent_variable_errors():
         def list_names(self):
             return []
 
-    program = IRProgram(agents={"dup_agent": agent})
+    program = _with_agent_ai(IRProgram(agents={"dup_agent": agent}))
     runner = AgentRunner(program, DummyModelRegistry(), DummyToolRegistry(), DummyRouter())
     ctx = ExecutionContext(app_name="test", request_id="req-dup-agent")
 
@@ -102,7 +108,7 @@ def test_agent_set_undefined_raises():
         def list_names(self):
             return []
 
-    program = IRProgram(agents={"undef_agent": agent})
+    program = _with_agent_ai(IRProgram(agents={"undef_agent": agent}))
     runner = AgentRunner(program, DummyModelRegistry(), DummyToolRegistry(), DummyRouter())
     ctx = ExecutionContext(app_name="test", request_id="req-undef-agent")
 
@@ -158,7 +164,7 @@ def test_agent_numeric_errors():
             return []
 
     for name, branch in [("mismatch", mismatch_branch), ("divzero", div_zero_branch)]:
-        program = IRProgram(agents={name: IRAgent(name=name, conditional_branches=[branch])})
+        program = _with_agent_ai(IRProgram(agents={name: IRAgent(name=name, conditional_branches=[branch])}))
         runner = AgentRunner(program, DummyModelRegistry(), DummyToolRegistry(), DummyRouter())
         ctx = ExecutionContext(app_name="test", request_id=f"req-{name}")
         try:

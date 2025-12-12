@@ -5,13 +5,33 @@
 - **Memory Inspector:** Shows short/long/profile state and recall snapshots per AI/session.
 - **Provider Status:** Surfaces configured providers and key presence.
 
+## Binding flow output to page state
+
+UI click handlers can pipe a flow’s return value straight into page state:
+
+```
+flow is "support_flow":
+  step is "answer":
+    return "Hello!"
+
+page is "chat" at "/":
+  state answer is ""
+  button "Ask":
+    on click:
+      do flow "support_flow" output to state.answer
+  text state.answer
+```
+
+Clicking **Ask** runs the flow and updates `state.answer`, so the page re-renders immediately.
+
 ## Launching Studio
 
 - Packaged build: `n3 studio`
-- Dev mode (daemon + Vite): `n3 studio dev`
-- Defaults: backend `8000`, Studio UI `3333` (`--backend-port`, `--port`).
+- Dev mode (daemon + watcher): `n3 studio dev`
+- Defaults: backend `8000` (`--backend-port`). The `--port/--ui-port` flag is kept for compatibility but ignored.
+- Studio is served at `/studio` (local); `/studio-static` temporarily redirects for compatibility.
 - Auto-discovers your project; override with `--project <path>`. Use `--no-open` to skip launching the browser.
-- If no `.ai` files are found in an interactive shell, you’ll be offered a starter app to get going.
+- If no `.ai` files are found in an interactive shell, you?ll be offered a starter app to get going.
 
 ## System Map (Canvas)
 - Read-only map of your program derived from IR (apps, pages, flows, AI, agents, tools, memory, RAG, evaluations).

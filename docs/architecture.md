@@ -12,4 +12,4 @@
   - Deployment: builder outputs server/worker entrypoints, Dockerfiles, AWS Lambda zip, Cloudflare worker bundle, desktop/mobile configs.
   - Optimizer: heuristic + optional AI-assisted analyzers over metrics/traces/memory; suggestions persisted; overlays applied at runtime.
 - **Observability & Security**: tracer spans for AI/pages/apps/agents/flows/teams/jobs/RAG/UI, metrics tracker, API key auth + RBAC.
-- **Studio**: React app with panels for pages, runner, traces, metrics, jobs, RAG/memory, diagnostics, flows/automations, plugins, optimizer.
+- **Studio**: Packaged static HTML/CSS/JS UI served by the backend; panels for pages, runner, traces, metrics, jobs, RAG/memory, diagnostics, flows/automations, plugins, optimizer.

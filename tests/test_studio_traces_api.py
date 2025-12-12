@@ -33,7 +33,8 @@ def test_studio_traces_and_runs(tmp_path: Path):
     assert runs.status_code == 200
     run_list = runs.json()["runs"]
     assert run_list
-    run_id = run_list[0]["run_id"]
+    target_run = next((r for r in run_list if r.get("label") == "demo"), run_list[0])
+    run_id = target_run["run_id"]
 
     trace = client.get(f"/api/studio/runs/{run_id}/trace", headers={"X-API-Key": "dev-key"})
     assert trace.status_code == 200

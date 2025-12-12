@@ -2,7 +2,7 @@ import pytest
 
 from namel3ss import ast_nodes
 from namel3ss.parser import parse_source
-from namel3ss.ir import ast_to_ir, IRProgram
+from namel3ss.ir import IRAiCall, ast_to_ir, IRProgram
 from namel3ss.flows.engine import FlowEngine
 from namel3ss.runtime.context import ExecutionContext
 from namel3ss.obs.tracer import Tracer
@@ -39,6 +39,12 @@ def _make_engine(ir_prog: IRProgram) -> FlowEngine:
     )
     engine._agent_runner_stub = runner
     return engine
+
+
+def _ensure_agent_ai(program: IRProgram) -> IRProgram:
+    for name in program.agents:
+        program.ai_calls[name] = program.ai_calls.get(name) or IRAiCall(name=name)
+    return program
 
 
 def test_parse_flow_unless_branch():
@@ -100,7 +106,7 @@ def test_flow_unless_runtime_and_trace():
         '    unless result.priority is "low":\n'
         '      do agent "handle"\n'
     )
-    ir_prog = ast_to_ir(parse_source(source))
+    ir_prog = _ensure_agent_ai(ast_to_ir(parse_source(source)))
     tracer = Tracer()
     engine = _make_engine(ir_prog)
     ctx = ExecutionContext(app_name="app", request_id="r1", tracer=tracer)
@@ -123,7 +129,7 @@ def test_flow_unless_skips_when_condition_true():
         '    unless result.priority is "low":\n'
         '      do agent "handle"\n'
     )
-    ir_prog = ast_to_ir(parse_source(source))
+    ir_prog = _ensure_agent_ai(ast_to_ir(parse_source(source)))
     engine = _make_engine(ir_prog)
     ctx = ExecutionContext(app_name="app", request_id="r3")
     ctx.variables.update({"result": {"priority": "low"}})
@@ -138,7 +144,7 @@ def test_agent_unless_runtime():
         '  unless ticket.status is "closed":\n'
         '    do tool "send_notification"\n'
     )
-    ir_prog = ast_to_ir(parse_source(source))
+    ir_prog = _ensure_agent_ai(ast_to_ir(parse_source(source)))
     tools_called = []
 
     class StubTool:

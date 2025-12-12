@@ -14,6 +14,7 @@ class UIEventHandler:
     handler_kind: str  # "flow" | "agent" | "tool"
     target: str
     config: Dict[str, Any] = field(default_factory=dict)
+    output_target: Optional[str] = None
 
 
 @dataclass

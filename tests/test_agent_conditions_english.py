@@ -1,6 +1,6 @@
 from namel3ss import ast_nodes
 from namel3ss.parser import parse_source
-from namel3ss.ir import ast_to_ir
+from namel3ss.ir import IRAiCall, ast_to_ir
 from namel3ss.agent.engine import AgentRunner
 from namel3ss.runtime.context import ExecutionContext
 from namel3ss.obs.tracer import Tracer
@@ -35,6 +35,9 @@ class DummyRegistry:
 def _make_runner(ir_prog):
     tools = {"lookup_invoice": StubTool("lookup_invoice"), "create_ticket": StubTool("create_ticket")}
     registry = StubToolRegistry(tools)
+    if not ir_prog.ai_calls:
+        for name in ir_prog.agents:
+            ir_prog.ai_calls[name] = IRAiCall(name=name)
     runner = AgentRunner(
         program=ir_prog,
         model_registry=DummyRegistry(),

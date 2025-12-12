@@ -2,7 +2,7 @@ import pytest
 
 from namel3ss import ast_nodes
 from namel3ss.parser import parse_source
-from namel3ss.ir import ast_to_ir
+from namel3ss.ir import IRAiCall, ast_to_ir
 from namel3ss.flows.engine import FlowEngine
 from namel3ss.runtime.context import ExecutionContext
 from namel3ss.obs.tracer import Tracer
@@ -123,6 +123,8 @@ def test_agent_runtime_binding():
         '      "high"\n'
     )
     ir_prog = ast_to_ir(parse_source(source))
+    if not ir_prog.ai_calls:
+        ir_prog.ai_calls["triage_agent"] = IRAiCall(name="triage_agent")
     tools_called = []
 
     class StubTool:

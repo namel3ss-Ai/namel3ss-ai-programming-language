@@ -19,14 +19,27 @@ def test_studio_page_served():
     assert "Namel3ss Studio" in resp.text
 
 
+def test_studio_index_has_apple_markers():
+    client = _client()
+    resp = client.get("/studio/index.html")
+    assert resp.status_code == 200
+    snippet = resp.text[:800]
+    markers = ["Canvas", "Ask Studio", "Command Palette", "Presentation"]
+    for marker in markers:
+        assert marker in resp.text, f"Apple-style Studio marker '{marker}' missing. Snippet: {snippet}"
+    assert "Minimal Developer Console" not in resp.text, f"Legacy console should not be served. Snippet: {snippet}"
+
+
 def test_studio_static_assets_served():
     client = _client()
-    css = client.get("/studio-static/studio.css")
-    js = client.get("/studio-static/studio.js")
+    css = client.get("/studio/studio.css")
+    js = client.get("/studio/studio.js")
     assert css.status_code == 200
     assert "body" in css.text
     assert js.status_code == 200
     assert "studio" in js.text.lower()
+    compat = client.get("/studio-static/studio.css")
+    assert compat.status_code in (200, 307, 308)
 
 
 def _assert_json_response(path: str, method: str = "GET", payload=None, headers=None, ok_status=(200,)):

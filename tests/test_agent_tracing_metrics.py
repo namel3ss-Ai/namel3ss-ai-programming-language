@@ -2,7 +2,7 @@ from namel3ss.agent.engine import AgentRunner
 from namel3ss.agent.plan import AgentExecutionPlan, AgentStep
 from namel3ss.ai.registry import ModelRegistry
 from namel3ss.ai.router import ModelRouter
-from namel3ss.ir import IRAgent, IRModel, IRProgram
+from namel3ss.ir import IRAgent, IRAiCall, IRModel, IRProgram
 from namel3ss.metrics.tracker import MetricsTracker
 from namel3ss.obs.tracer import Tracer
 from namel3ss.runtime.context import ExecutionContext
@@ -13,6 +13,7 @@ def test_tracer_records_agent_evaluation_and_metrics():
     program = IRProgram(
         agents={"helper": IRAgent(name="helper")},
         models={"m": IRModel(name="m", provider=None)},
+        ai_calls={"helper": IRAiCall(name="helper", model_name="m")},
     )
     registry = ModelRegistry()
     registry.register_model("m", None)

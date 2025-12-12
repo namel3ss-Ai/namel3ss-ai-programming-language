@@ -5,7 +5,7 @@ Namel3ss surfaces structured diagnostics with codes so you can quickly understan
 - `N3L-PARSE-NEWLINE` — Top-level declarations (`app`, `page`, `flow`, `agent`, …) must start on their own line. This is raised when a string is immediately followed by another keyword on the same line (often a missing newline).
 - `N3L-PARSE-UNKNOWN-FIELD` — An unexpected field was found inside an `ai` or `agent` block. The diagnostic includes a “Did you mean …?” hint when a close match is detected (for example, `systm` vs `system`).
 - `N3L-PARSE-NAVIGATE` — `navigate` is only supported in UI click handlers. Inside flows use `go to page "<name>"` or `go to flow "<name>"` instead.
-- `N3L-PARSE-OUTPUT` — `output to` is not part of the language. Use `let`/`set` and `step.<name>.output` to pass data between steps.
+- `N3L-PARSE-OUTPUT` — `output to` is only supported inside UI event handlers (e.g., button `on click`). Use `output to state.<name>` there, or `let`/`set` and `step.<name>.output` inside flows.
 
 ### Reading diagnostics
 

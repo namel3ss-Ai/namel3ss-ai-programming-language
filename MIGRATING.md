@@ -22,7 +22,7 @@ This guide highlights key changes from earlier snapshots to the current 3.0.x re
 ## Testing & Tooling
 - Fast suite: `python -m pytest -m "not slow" -q -o addopts=''`
 - Docs: `mkdocs build --strict`
-- Studio: `cd studio && npm install && npm test`
+- Studio: packaged static assets (no npm build required).
 
 ## Legacy syntax to English-style DSL
 - Prefer `let x be y` instead of `let x = y`.

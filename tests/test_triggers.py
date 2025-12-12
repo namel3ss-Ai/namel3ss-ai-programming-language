@@ -5,7 +5,7 @@ from namel3ss.agent.engine import AgentRunner
 from namel3ss.ai.registry import ModelRegistry
 from namel3ss.ai.router import ModelRouter
 from namel3ss.flows.triggers import FlowTrigger, TriggerManager
-from namel3ss.ir import IRAgent, IRModel, IRProgram
+from namel3ss.ir import IRAgent, IRAiCall, IRModel, IRProgram
 from namel3ss.memory.engine import MemoryEngine
 from namel3ss.memory.models import MemorySpaceConfig, MemoryType
 from namel3ss.runtime.context import ExecutionContext
@@ -49,7 +49,11 @@ def test_agent_signal_trigger():
     tm = TriggerManager(queue)
     trigger = FlowTrigger(id="agent", kind="agent-signal", flow_name="followup", config={"agent": "helper"})
     tm.register_trigger(trigger)
-    program = IRProgram(agents={"helper": IRAgent(name="helper")}, models={"default": IRModel(name="default")})
+    program = IRProgram(
+        agents={"helper": IRAgent(name="helper")},
+        models={"default": IRModel(name="default")},
+        ai_calls={"helper": IRAiCall(name="helper", model_name="default")},
+    )
     registry = ModelRegistry()
     registry.register_model("default", provider_name=None)
     tools = ToolRegistry()

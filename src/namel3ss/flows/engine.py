@@ -448,6 +448,11 @@ class FlowEngine:
                 step_result = await self._execute_with_timing(node, current_state, runtime_ctx)
                 if step_result:
                     step_results.append(step_result)
+            except ReturnSignal as rs:
+                if getattr(rs, "step_result", None):
+                    step_results.append(rs.step_result)
+                current_state.set("last_output", getattr(rs, "value", None))
+                raise
             except Exception as exc:  # pragma: no cover - errors handled below
                 duration = self._extract_duration(exc)
                 handled = boundary_for_children is not None
@@ -550,11 +555,20 @@ class FlowEngine:
                 return await run_node(join_id, merged_state, boundary_for_children, None)
             return merged_state
 
+        return_value: Any = None
         try:
             final_state = await run_node(graph.entry_id, state, boundary_id=None, stop_at=None)
+            return_value = state.get("last_output")
+        except ReturnSignal as rs:
+            return_value = getattr(rs, "value", state.get("last_output"))
+            state.set("last_output", return_value)
+            final_state = state
         except Exception as exc:  # pragma: no cover - bubbled errors
             final_state = state
             final_state.errors.append(FlowError(node_id="__root__", error=str(exc), handled=False))
+        if return_value is not None:
+            return_value = self._coerce_return_value(return_value)
+            state.set("last_output", return_value)
         total_duration = time.monotonic() - flow_start
         total_duration = max(total_duration, sum(r.duration_seconds for r in step_results))
         step_metrics = {
@@ -571,6 +585,7 @@ class FlowEngine:
             steps=step_results,
             state=final_state,
             errors=unhandled_errors,
+            result=return_value,
             step_metrics=step_metrics,
             total_cost=total_cost,
             total_duration_seconds=total_duration,
@@ -1905,7 +1920,7 @@ class FlowEngine:
             # Streaming failures should not crash the flow execution path.
             return
 
-    async def _execute_statement(self, stmt: IRStatement, state: FlowState, runtime_ctx: FlowRuntimeContext, prefix: str, allow_return: bool = False) -> Any:
+    async def _execute_statement(self, stmt: IRStatement, state: FlowState, runtime_ctx: FlowRuntimeContext, prefix: str, allow_return: bool = True) -> Any:
         env = state.variables or runtime_ctx.variables or VariableEnvironment()
         evaluator = self._build_evaluator(state, runtime_ctx)
         if isinstance(stmt, IRLet):
@@ -2114,6 +2129,7 @@ class FlowEngine:
             if not allow_return:
                 raise Namel3ssError("N3-6002: return used outside helper")
             value = evaluator.evaluate(stmt.expr) if stmt.expr is not None else None
+            value = self._coerce_return_value(value)
             raise ReturnSignal(value)
         if isinstance(stmt, IRAskUser):
             provided = self._resolve_provided_input(stmt.var_name, runtime_ctx, state)
@@ -2183,10 +2199,10 @@ class FlowEngine:
             return state.get("last_output")
         raise Namel3ssError(f"Unsupported statement '{type(stmt).__name__}' in script")
 
-    async def _execute_script(self, statements: list[IRStatement] | None, state: FlowState, runtime_ctx: FlowRuntimeContext, step_id: str) -> Any:
+    async def _execute_script(self, statements: list[IRStatement] | None, state: FlowState, runtime_ctx: FlowRuntimeContext, step_id: str, allow_return: bool = True) -> Any:
         last_val: Any = None
         for idx, stmt in enumerate(statements or []):
-            last_val = await self._execute_statement(stmt, state, runtime_ctx, f"{step_id}.stmt{idx}")
+            last_val = await self._execute_statement(stmt, state, runtime_ctx, f"{step_id}.stmt{idx}", allow_return=allow_return)
             if state.context.get("__awaiting_input__"):
                 break
         return last_val
@@ -2222,6 +2238,8 @@ class FlowEngine:
         resolved_kind = self._resolve_step_kind(node)
         step_name = node.config.get("step_name", node.id)
         timeout = node.config.get("timeout_seconds")
+        target_label = node.config.get("target") if isinstance(node.config, dict) else None
+        target_label = target_label or node.id
         start = time.monotonic()
         if runtime_ctx.event_logger:
             try:
@@ -2247,6 +2265,37 @@ class FlowEngine:
                 result = await asyncio.wait_for(run_inner(), timeout=timeout)
             else:
                 result = await run_inner()
+        except ReturnSignal as rs:
+            duration = time.monotonic() - start
+            output_val = self._coerce_return_value(getattr(rs, "value", None))
+            state.set("last_output", output_val)
+            step_result = FlowStepResult(
+                step_name=step_name,
+                kind=resolved_kind,
+                target=target_label,
+                success=True,
+                output=output_val,
+                node_id=node.id,
+                duration_seconds=duration if duration > 0 else 1e-6,
+                cost=self._extract_cost(output_val),
+            )
+            default_metrics.record_step(step_result.node_id or step_result.step_name, step_result.duration_seconds, step_result.cost)
+            if runtime_ctx.event_logger:
+                try:
+                    runtime_ctx.event_logger.log(
+                        {
+                            "kind": "step",
+                            "event_type": "end",
+                            "flow_name": state.context.get("flow_name"),
+                            "step_name": step_name,
+                            "status": "success",
+                            "step_kind": resolved_kind,
+                        }
+                    )
+                except Exception:
+                    pass
+            rs.step_result = step_result
+            raise
         except Exception as exc:
             duration = time.monotonic() - start
             if runtime_ctx.event_logger:
@@ -2313,6 +2362,16 @@ class FlowEngine:
             except Exception:
                 return 0.0
         return 0.0
+
+    def _coerce_return_value(self, value: Any) -> Any:
+        try:
+            json.dumps(value)
+            return value
+        except Exception:
+            try:
+                return json.loads(json.dumps(value, default=str))
+            except Exception:
+                return str(value)
 
     async def _run_ai_stage(
         self,

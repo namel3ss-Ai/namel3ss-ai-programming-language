@@ -74,13 +74,29 @@ class UIEventRouter:
             flow = self.flow_engine.program.flows.get(handler.target)
             if not flow:
                 return UIEventResult(success=False, messages=["flow_not_found"])
+            output_target = handler.output_target or handler.config.get("output_target")
             result = await self.flow_engine.run_flow_async(
                 flow,
                 context=context.metadata.get("execution_context"),  # may be None, FlowEngine will build new one
                 initial_state={"ui_event": event.payload},
             )
             flow_payload = result.to_dict() if hasattr(result, "to_dict") else asdict(result)
-            return UIEventResult(success=True, updated_state={"flow": flow_payload})
+            has_errors = bool(getattr(result, "errors", None))
+            updated_state: dict[str, Any] = {"flow": flow_payload}
+            if output_target and not has_errors:
+                if output_target.startswith("state."):
+                    path = output_target[len("state.") :]
+                    if path:
+                        value = getattr(result, "result", None)
+                        if value is None and result.state is not None:
+                            value = result.state.get("last_output")
+                        value = self.flow_engine._coerce_return_value(value) if value is not None else value
+                        updated_state["state"] = {path: value}
+                else:
+                    return UIEventResult(success=False, messages=["invalid_output_target"], updated_state=updated_state)
+            if has_errors:
+                return UIEventResult(success=False, messages=["flow_error"], updated_state=updated_state)
+            return UIEventResult(success=True, updated_state=updated_state)
 
         if handler.handler_kind == "agent":
             if handler.target not in self.agent_runner.program.agents:
@@ -591,6 +607,33 @@ def map_component(comp_id: str, comp_type: str, props: dict, section: str, page:
                     config={},
                 )
             )
+    raw_events = parsed_props.get("events") or []
+    if not raw_events and comp_type == "button":
+        actions = parsed_props.get("actions") or []
+        for action in actions:
+            action_copy = dict(action)
+            action_copy.setdefault("event", "click")
+            raw_events.append(action_copy)
+    for ev in raw_events:
+        if not isinstance(ev, dict):
+            continue
+        kind_val = ev.get("kind")
+        if kind_val != "flow":
+            continue
+        target = ev.get("target")
+        if not target:
+            continue
+        output_target = ev.get("outputTarget") or ev.get("output_target")
+        config = {"args": ev.get("args") or {}}
+        events.append(
+            UIEventHandler(
+                event=ev.get("event") or "click",
+                handler_kind="flow",
+                target=target,
+                config=config,
+                output_target=output_target,
+            )
+        )
     if "binding" in props:
         bindings = props.get("binding", {})
     return UIComponentInstance(

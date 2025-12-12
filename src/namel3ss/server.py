@@ -15,7 +15,7 @@ import time
 import uuid
 
 from fastapi import Depends, FastAPI, HTTPException, UploadFile, File, Form, Query, Request
-from fastapi.responses import HTMLResponse, StreamingResponse
+from fastapi.responses import HTMLResponse, RedirectResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field, ConfigDict
 
@@ -82,23 +82,48 @@ from .migration.naming import migrate_source_to_naming_standard
 from .memory.inspection import describe_memory_plan, describe_memory_state
 
 BASE_DIR = Path(__file__).resolve().parents[2]
+_APPLE_MARKERS = ("Canvas", "Ask Studio", "Command Palette", "Presentation")
+_LEGACY_MARKER = "Minimal Developer Console"
+
+
+def _is_apple_studio_dir(candidate: Path) -> bool:
+    """Return True when the candidate directory contains the Apple-style Studio UI."""
+    index = candidate / "index.html"
+    if not index.exists():
+        return False
+    try:
+        text = index.read_text(encoding="utf-8", errors="ignore")
+    except Exception:
+        return False
+    if _LEGACY_MARKER in text:
+        return False
+    return all(marker in text for marker in _APPLE_MARKERS)
 
 
 def _resolve_studio_static_dir() -> Path | None:
     """
-    Prefer packaged studio assets (namel3ss/studio_static) and fall back to the
-    repository copy under studio/static for editable installs.
+    Prefer the Apple-style Studio assets; bias toward the source tree when present
+    to avoid stale installed copies during development, and fall back to the
+    packaged assets when they look valid.
     """
+    candidates: list[Path] = []
+    source_dir = BASE_DIR / "src" / "namel3ss" / "studio_static"
+    if source_dir.exists():
+        candidates.append(source_dir)
     try:
         candidate = resources.files("namel3ss") / "studio_static"
         if candidate.is_dir():
-            return Path(candidate)
+            pkg_path = Path(candidate)
+            if pkg_path not in candidates:
+                candidates.append(pkg_path)
     except Exception:
         # Fall back to workspace copy below.
         pass
-    legacy = BASE_DIR / "studio" / "static"
-    if legacy.exists():
-        return legacy
+    valid = [candidate for candidate in candidates if _is_apple_studio_dir(candidate)]
+    if valid:
+        return valid[0]
+    # Do not fall back to legacy/minimal consoles; we prefer to leave Studio
+    # unavailable rather than serve the wrong UI.
     return None
 
 
@@ -344,12 +369,43 @@ def create_app(project_root: Path | None = None, daemon_state: Any | None = None
     app = FastAPI(title="Namel3ss V3", version="0.1.0")
     log_buffer: LogBuffer = getattr(daemon_state, "logs", LogBuffer())
     if STUDIO_STATIC_DIR and STUDIO_STATIC_DIR.exists():
+        try:
+            index_marker = (STUDIO_STATIC_DIR / "index.html").read_text(encoding="utf-8")
+            if "Namel3ss Studio" not in index_marker:
+                log_event(
+                    log_buffer,
+                    "studio_static_marker_missing",
+                    level="warn",
+                    detail=f"Resolved studio dir {STUDIO_STATIC_DIR} does not look like Apple-style Studio.",
+                )
+        except Exception:
+            log_event(
+                log_buffer,
+                "studio_static_marker_read_error",
+                level="warn",
+                detail=f"Could not read index.html in {STUDIO_STATIC_DIR}",
+            )
         app.mount(
-            "/studio-static",
-            StaticFiles(directory=str(STUDIO_STATIC_DIR)),
-            name="studio-static",
+            "/studio",
+            StaticFiles(directory=str(STUDIO_STATIC_DIR), html=True),
+            name="studio",
         )
         log_event(log_buffer, "static_serving_info", level="info", path=str(STUDIO_STATIC_DIR))
+        @app.get("/studio-static", include_in_schema=False)
+        def studio_static_redirect_root():
+            return RedirectResponse(url="/studio", status_code=307)
+
+        @app.get("/studio-static/{path:path}", include_in_schema=False)
+        def studio_static_redirect(path: str):
+            suffix = f"/{path}" if path else ""
+            return RedirectResponse(url=f"/studio{suffix}", status_code=307)
+    else:
+        log_event(
+            log_buffer,
+            "studio_static_unavailable",
+            level="error",
+            detail="Apple-style Studio assets not found; UI will not be served.",
+        )
     last_trace: Optional[Dict[str, Any]] = None
     recent_traces: List[Dict[str, Any]] = []
     recent_agent_traces: List[Dict[str, Any]] = []
@@ -1209,7 +1265,7 @@ def create_app(project_root: Path | None = None, daemon_state: Any | None = None
     @app.get("/studio", response_class=HTMLResponse)
     def studio() -> HTMLResponse:
         if not STUDIO_STATIC_DIR:
-            log_event(log_buffer, "asset_missing_warning", level="warn", detail="studio_static_dir_missing")
+            log_event(log_buffer, "asset_missing_warning", level="warn", detail="studio_dir_missing")
             return HTMLResponse(
                 "<html><body><h1>Studio assets not found (no static directory).</h1></body></html>",
                 status_code=500,

@@ -53,7 +53,7 @@ Core endpoints (all require `X-API-Key`, RBAC enforced):
 ## Studio
 
 - `GET /studio` — Serves the minimal Namel3ss Studio HTML UI.
-- `GET /studio-static/...` — Serves Studio CSS and JS assets used by `/studio`.
+- `GET /studio/...` — Serves the packaged Studio assets (CSS/JS). `/studio-static` temporarily redirects here for compatibility.
 
 ## Traces
 

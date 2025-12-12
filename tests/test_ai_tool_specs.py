@@ -1,4 +1,7 @@
+import pytest
+
 from namel3ss import ast_nodes
+from namel3ss.errors import Namel3ssError
 from namel3ss.tools.registry import ToolConfig, ToolRegistry, build_ai_tool_specs
 
 
@@ -26,11 +29,9 @@ def test_build_ai_tool_specs_with_placeholder():
 
 def test_build_ai_tool_specs_unknown_tool():
     registry = ToolRegistry()
-    try:
+    with pytest.raises(Namel3ssError) as exc:
         build_ai_tool_specs(["unknown"], registry)
-        assert False, "Expected ValueError"
-    except ValueError as exc:
-        assert "unknown" in str(exc)
+    assert "unknown" in str(exc.value)
 
 
 def test_build_ai_tool_specs_with_alias_object():

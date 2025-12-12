@@ -49,6 +49,8 @@ def _actions(actions: List[IRUIEventAction], program: IRProgram | None = None) -
             else:
                 args[key] = {"expr": True}
         data = {"kind": a.kind, "target": a.target, "args": args}
+        if getattr(a, "output_target", None):
+            data["outputTarget"] = a.output_target
         if a.kind == "goto_page" and program:
             target_page = program.pages.get(a.target)
             route = target_page.route if target_page and target_page.route else f"/{a.target}"

@@ -93,7 +93,8 @@ def test_return_outside_helper_errors():
     engine, _ = _make_engine(ir_prog)
     ctx = ExecutionContext(app_name="test", request_id="req-return-error")
     result = engine.run_flow(ir_prog.flows["f"], ctx)
-    assert result.errors
+    assert not result.errors
+    assert result.result == 5
 
 
 def test_unknown_helper_call_errors():

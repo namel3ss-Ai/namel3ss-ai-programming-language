@@ -3,10 +3,16 @@ import pytest
 from namel3ss import ast_nodes
 from namel3ss.errors import Namel3ssError
 from namel3ss.parser import parse_source
-from namel3ss.ir import ast_to_ir, IRProgram, IRConditionalBranch, IRLet, IRSet
+from namel3ss.ir import IRAiCall, ast_to_ir, IRProgram, IRConditionalBranch, IRLet, IRSet
 from namel3ss.flows.engine import FlowEngine
 from namel3ss.runtime.context import ExecutionContext
 from namel3ss.agent.engine import AgentRunner
+
+
+def _with_agent_ai(program: IRProgram) -> IRProgram:
+    for name in program.agents:
+        program.ai_calls[name] = program.ai_calls.get(name) or IRAiCall(name=name)
+    return program
 
 
 def _make_flow_engine(ir_prog: IRProgram):
@@ -122,7 +128,7 @@ def test_agent_list_usage():
     from namel3ss.ir import IRAgent  # local import to avoid circular in type hints
 
     agent = IRAgent(name="agent_list", goal=None, personality=None, conditional_branches=[branch])
-    program = IRProgram(agents={"agent_list": agent})
+    program = _with_agent_ai(IRProgram(agents={"agent_list": agent}))
 
     class DummyModelRegistry:
         pass
@@ -195,7 +201,7 @@ def test_agent_slice_error():
     from namel3ss.ir import IRAgent  # local import
 
     agent = IRAgent(name="agent_slice", goal=None, personality=None, conditional_branches=[branch])
-    program = IRProgram(agents={"agent_slice": agent})
+    program = _with_agent_ai(IRProgram(agents={"agent_slice": agent}))
 
     class DummyModelRegistry:
         pass

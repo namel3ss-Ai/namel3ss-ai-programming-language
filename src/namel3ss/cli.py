@@ -6,15 +6,11 @@ from __future__ import annotations
 
 import argparse
 import contextlib
-import http.server
 import json
 import multiprocessing
 import os
-import shutil
 import socket
-import subprocess
 import sys
-import threading
 import time
 import webbrowser
 from urllib.error import HTTPError, URLError
@@ -273,10 +269,17 @@ def build_cli_parser() -> argparse.ArgumentParser:
 
     doctor_cmd = register("doctor", help="Run environment and configuration health checks")
 
-    studio_cmd = register("studio", help="Start Namel3ss Studio (packaged static build or dev mode)")
-    studio_cmd.add_argument("mode", nargs="?", choices=["dev"], help="Use dev mode to run the Studio frontend build pipeline.")
+    studio_cmd = register("studio", help="Start Namel3ss Studio (packaged static build).")
+    studio_cmd.add_argument("mode", nargs="?", choices=["dev"], help="Use dev mode to keep the daemon watcher active.")
     studio_cmd.add_argument("--backend-port", type=int, default=8000, help="Port for backend runtime (default: 8000)")
-    studio_cmd.add_argument("--ui-port", "--port", dest="ui_port", type=int, default=3333, help="Port for Studio UI (default: 3333)")
+    studio_cmd.add_argument(
+        "--ui-port",
+        "--port",
+        dest="ui_port",
+        type=int,
+        default=3333,
+        help="Deprecated: Studio is served by the backend; this flag is ignored.",
+    )
     studio_cmd.add_argument("--project", dest="project_root", type=Path, help="Path to project root (auto-discovered by default)")
     studio_cmd.add_argument("--app", dest="app_name", help="App name hint for Studio (logged only)")
     studio_cmd.add_argument(
@@ -672,12 +675,12 @@ def main(argv: list[str] | None = None) -> None:
         status_payload, status_err = _fetch_studio_status(f"http://{args.host}:{args.port}")
 
         print("\nNamel3ss daemon is running!\n")
-        print(f"[✓] Project root: {project_root}")
+        print(f"[âœ“] Project root: {project_root}")
         if getattr(args, "app_name", None):
-            print(f"[✓] Using app:    \"{args.app_name}\"")
+            print(f"[âœ“] Using app:    \"{args.app_name}\"")
         if ai_files:
-            print(f"[✓] Watching {len(ai_files)} .ai file(s)")
-        print(f"[✓] Daemon:       http://{args.host}:{args.port}")
+            print(f"[âœ“] Watching {len(ai_files)} .ai file(s)")
+        print(f"[âœ“] Daemon:       http://{args.host}:{args.port}")
         for msg in _studio_status_messages(status_payload):
             print(msg)
         if status_payload is None and status_err:
@@ -691,7 +694,7 @@ def main(argv: list[str] | None = None) -> None:
                     print("Daemon exited unexpectedly. Check logs above.")
                     break
         except KeyboardInterrupt:
-            print("\nStopping daemon…")
+            print("\nStopping daemonâ€¦")
         finally:
             _stop_process(daemon_proc, "daemon")
             print("Done.")
@@ -1384,7 +1387,7 @@ def _bootstrap_starter_project(target_dir: Path) -> Path | None:
         print(f"Cannot write to {target_dir}. Please pick a writable directory or run with --project <path>.")
         return None
 
-    print("I couldn’t find any Namel3ss .ai files here.")
+    print("I couldnâ€™t find any Namel3ss .ai files here.")
     if not _prompt_yes_no("Create a starter app and open Studio? (y/N) "):
         print("No files created. You can run `n3 init app-basic` or add an .ai file manually.")
         return None
@@ -1413,7 +1416,7 @@ def _bootstrap_starter_project(target_dir: Path) -> Path | None:
         print(f"Failed to write starter file {chosen}: {exc}")
         return None
 
-    print(f"Created starter app at {chosen}. Launching Studio…")
+    print(f"Created starter app at {chosen}. Launching Studioâ€¦")
     try:
         from namel3ss.studio.logs import log_event, LogBuffer
     except Exception:
@@ -1513,16 +1516,6 @@ def _stop_process(proc: multiprocessing.Process | None, name: str, timeout: floa
         pass
 
 
-def _stop_subprocess(proc: subprocess.Popen | None, name: str, timeout: float = 3.0) -> None:
-    if not proc:
-        return
-    try:
-        proc.terminate()
-        proc.wait(timeout=timeout)
-    except Exception:
-        pass
-
-
 def _studio_status_messages(status: dict | None) -> list[str]:
     if not status:
         return []
@@ -1557,22 +1550,9 @@ def _studio_status_messages(status: dict | None) -> list[str]:
     if not status.get("studio_static_available", True):
         messages.append(
             "[!] Packaged Studio static assets not found.\n"
-            "    Reinstall namel3ss or run: pnpm install && pnpm build (development only)."
+            "    Reinstall namel3ss to restore bundled Studio assets."
         )
     return messages
-
-
-def start_backend_process(port: int, project_root: Path | None = None) -> multiprocessing.Process:
-    def target() -> None:
-        import uvicorn
-        from namel3ss.server import create_app
-
-        app = create_app(project_root=project_root)
-        uvicorn.run(app, host="127.0.0.1", port=port, log_level="warning")
-
-    proc = multiprocessing.Process(target=target, daemon=True)
-    proc.start()
-    return proc
 
 
 def run_daemon_server(host: str, port: int, project_root: Path, watch: bool = True, log_level: str = "info") -> None:
@@ -1610,1091 +1590,6 @@ def start_daemon_process(
     return proc
 
 
-class _StudioHandler(http.server.BaseHTTPRequestHandler):
-    html = r"""<!doctype html>
-<html>
-  <head>
-    <meta charset="utf-8" />
-    <title>Namel3ss Studio</title>
-    <style>
-      :root {
-        color-scheme: dark;
-        --bg: #0f172a;
-        --bg-panel: #111827;
-        --bg-muted: #0b1220;
-        --border: #1f2937;
-        --text: #e5e7eb;
-        --muted: #9ca3af;
-        --accent: #38bdf8;
-        --accent-2: #8b5cf6;
-        --danger: #f87171;
-      }
-      * { box-sizing: border-box; }
-      body, html { margin: 0; padding: 0; width: 100%; height: 100%; background: var(--bg); color: var(--text); font-family: "Inter", "SF Pro Text", system-ui, -apple-system, sans-serif; }
-      .studio-root { display: flex; flex-direction: column; height: 100vh; }
-      .studio-topbar { display: flex; align-items: center; justify-content: space-between; padding: 10px 14px; background: var(--bg-panel); border-bottom: 1px solid var(--border); }
-      .logo { font-weight: 700; letter-spacing: 0.3px; }
-      .nav-tabs { display: flex; gap: 12px; }
-      .nav-tab { padding: 8px 12px; border-radius: 8px; color: var(--muted); cursor: pointer; transition: background 120ms ease, color 120ms ease; }
-      .nav-tab.active { background: rgba(56,189,248,0.12); color: var(--text); border: 1px solid rgba(56,189,248,0.35); }
-      .top-actions { display: flex; align-items: center; gap: 8px; }
-      .btn { padding: 8px 12px; border-radius: 8px; border: 1px solid var(--border); background: var(--bg-muted); color: var(--text); cursor: pointer; }
-      .btn.primary { background: var(--accent); color: #0b1220; border-color: transparent; }
-      .btn.ai { background: var(--accent-2); color: #f8fafc; border-color: transparent; }
-      .studio-body { display: grid; grid-template-columns: 240px 1fr 260px; grid-template-rows: 1fr; flex: 1; min-height: 0; }
-      .sidebar { background: var(--bg-panel); border-right: 1px solid var(--border); padding: 14px; overflow: auto; }
-      .sidebar h3 { margin: 0 0 10px; font-size: 13px; letter-spacing: 0.6px; text-transform: uppercase; color: var(--muted); display:flex; align-items:center; justify-content: space-between; gap:8px; }
-      .refresh-btn { background: var(--bg-muted); color: var(--text); border: 1px solid var(--border); border-radius: 6px; padding: 4px 6px; cursor: pointer; font-size: 12px; }
-      .tree { font-family: "JetBrains Mono", "SFMono-Regular", Menlo, monospace; font-size: 13px; line-height: 1.6; color: var(--muted); }
-      .tree .node { cursor: pointer; padding: 2px 4px; border-radius: 6px; display:flex; align-items:center; gap:6px; }
-      .tree .node.active { background: rgba(56,189,248,0.12); color: var(--text); }
-      .tree .folder { font-weight: 600; color: var(--text); }
-      .tree .indent { display:inline-block; width: 14px; }
-      .caret { width: 0; height: 0; border-top: 4px solid transparent; border-bottom: 4px solid transparent; border-left: 6px solid var(--muted); transition: transform 120ms ease; }
-      .caret.open { transform: rotate(90deg); }
-      .main { display: flex; flex-direction: column; background: var(--bg); }
-      .main-tabs { display: flex; border-bottom: 1px solid var(--border); padding: 0 12px; background: var(--bg-panel); }
-      .main-tab { padding: 10px 14px; cursor: pointer; color: var(--muted); border-bottom: 2px solid transparent; }
-      .main-tab.active { color: var(--text); border-bottom-color: var(--accent); }
-      .main-content { flex: 1; padding: 16px; overflow: auto; }
-      .panel { background: var(--bg-panel); border: 1px solid var(--border); border-radius: 10px; padding: 16px; min-height: 200px; }
-      .panel h4 { margin-top: 0; }
-      .editor-header { display:flex; justify-content: space-between; align-items:center; gap:12px; margin-bottom: 10px; }
-      .file-label { font-family: "JetBrains Mono", "SFMono-Regular", Menlo, monospace; }
-      .status-pill { padding: 6px 10px; border-radius: 999px; background: var(--bg-muted); border: 1px solid var(--border); font-size: 12px; color: var(--muted); }
-      .monospace { font-family: "JetBrains Mono", "SFMono-Regular", Menlo, monospace; background: var(--bg-muted); padding: 12px; border-radius: 8px; border: 1px solid var(--border); }
-      #code-editor { width: 100%; height: 60vh; resize: vertical; font-family: "JetBrains Mono", "SFMono-Regular", Menlo, monospace; font-size: 13px; line-height: 1.5; color: var(--text); background: var(--bg-muted); border: 1px solid var(--border); border-radius: 8px; padding: 12px; }
-      .rightbar { background: var(--bg-panel); border-left: 1px solid var(--border); padding: 14px; overflow: auto; }
-      .rightbar h3 { margin: 0 0 10px; font-size: 13px; letter-spacing: 0.6px; text-transform: uppercase; color: var(--muted); }
-      .section { margin-bottom: 14px; }
-      .statusbar { display: flex; justify-content: space-between; align-items: center; padding: 8px 12px; background: var(--bg-panel); border-top: 1px solid var(--border); font-size: 13px; color: var(--muted); }
-      .status-items { display: flex; gap: 18px; align-items: center; }
-      .tag { display: inline-flex; align-items: center; gap: 6px; padding: 4px 8px; border-radius: 6px; border: 1px solid var(--border); }
-      .ui-controls { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 12px; }
-      .device-toggle { display: inline-flex; gap: 6px; }
-      .device-btn { padding: 6px 10px; border: 1px solid var(--border); background: var(--bg-muted); color: var(--muted); border-radius: 8px; cursor: pointer; }
-      .device-btn.active { color: var(--text); border-color: var(--accent); background: rgba(255,255,255,0.04); }
-      #ui-preview-wrapper { display: flex; justify-content: center; padding: 16px; background: var(--bg-muted); border: 1px dashed var(--border); border-radius: 12px; min-height: 240px; }
-      #ui-preview-frame { background: var(--bg-panel); border: 1px solid var(--border); border-radius: 12px; padding: 18px; width: 100%; max-width: 1200px; box-shadow: 0 10px 30px rgba(0,0,0,0.2); }
-      .ui-section { display: flex; flex-direction: column; gap: 12px; margin-bottom: 10px; }
-      .ui-heading { font-size: 22px; margin: 0; color: var(--text); }
-      .ui-text { margin: 0; color: var(--muted); }
-      .ui-input { display: flex; flex-direction: column; gap: 6px; }
-      .ui-input input { padding: 10px; border-radius: 8px; border: 1px solid var(--border); background: var(--bg-muted); color: var(--text); }
-      .ui-button { padding: 10px 14px; border-radius: 8px; border: 1px solid var(--border); background: var(--accent); color: #fff; cursor: pointer; }
-      .ui-img { max-width: 100%; border-radius: 10px; border: 1px solid var(--border); }
-      .ui-hover { outline: 1px dashed transparent; }
-      .ui-hover:hover { outline-color: var(--accent); }
-      .ui-selected { outline: 2px solid var(--accent-2) !important; outline-offset: 2px; }
-      .mode-toggle { display: inline-flex; gap: 8px; }
-      .mode-btn { padding: 6px 10px; border-radius: 8px; border: 1px solid var(--border); background: var(--bg-muted); color: var(--muted); cursor: pointer; }
-      .mode-btn.active { color: var(--text); border-color: var(--accent); background: rgba(255,255,255,0.04); }
-      .inspector-section { margin-bottom: 14px; }
-      .inspector-section h4 { margin: 0 0 6px; font-size: 13px; color: var(--muted); letter-spacing: 0.5px; text-transform: uppercase; }
-      .inspector-item { margin: 2px 0; font-size: 13px; }
-      .route-display { font-size: 13px; color: var(--muted); }
-    </style>
-  </head>
-  <body>
-    <div class="studio-root">
-      <header class="studio-topbar">
-        <div class="logo">Namel3ss Studio</div>
-        <div class="nav-tabs" id="nav-tabs">
-          <div class="nav-tab active" data-nav="Pages">Pages</div>
-          <div class="nav-tab" data-nav="Flows">Flows</div>
-          <div class="nav-tab" data-nav="Agents">Agents</div>
-          <div class="nav-tab" data-nav="UI">UI</div>
-          <div class="nav-tab" data-nav="Data">Data</div>
-        </div>
-        <div class="top-actions">
-          <button class="btn primary">Run</button>
-          <button class="btn ai">✨ AI</button>
-          <button class="btn">Settings</button>
-        </div>
-      </header>
-
-      <div class="studio-body">
-        <aside class="sidebar">
-          <h3>Project <button class="refresh-btn" id="project-refresh">↻</button></h3>
-          <div class="tree" id="project-tree"></div>
-          <div id="tree-empty" style="color: var(--muted); font-size: 13px; display:none;">No .ai files found.</div>
-        </aside>
-
-        <main class="main">
-          <div class="main-tabs" id="main-tabs">
-            <div class="main-tab active" data-tab="code">Code</div>
-            <div class="main-tab" data-tab="ui">UI</div>
-            <div class="main-tab" data-tab="graph">Flow Graph</div>
-          </div>
-          <div class="main-content">
-            <div class="panel" id="content-code">
-              <div class="editor-header">
-                <div class="file-label" id="editing-label">No file selected</div>
-                <div class="status-pill" id="save-status">Idle</div>
-              </div>
-              <textarea id="code-editor" spellcheck="false" placeholder="Select a file in the Project sidebar to start editing."></textarea>
-            </div>
-            <div class="panel" id="content-ui" style="display:none;">
-              <div class="ui-controls">
-                <div class="device-toggle">
-                  <button class="device-btn active" data-device="desktop" id="device-desktop">Desktop</button>
-                  <button class="device-btn" data-device="tablet" id="device-tablet">Tablet</button>
-                  <button class="device-btn" data-device="phone" id="device-phone">Phone</button>
-                </div>
-                <div class="mode-toggle">
-                  <button class="mode-btn active" data-mode="preview" id="mode-preview">Preview Mode</button>
-                  <button class="mode-btn" data-mode="inspect" id="mode-inspect">Inspector Mode</button>
-                </div>
-                <div style="display:flex; gap:8px; align-items:center;">
-                  <button class="btn" id="ui-back">◀ Back</button>
-                  <button class="btn" id="ui-forward">▶ Forward</button>
-                  <span class="route-display" id="route-label">Route: /</span>
-                  <span id="ui-preview-status" style="color: var(--muted); font-size: 13px;">Loading preview…</span>
-                  <button class="btn" id="ui-refresh">↻ Refresh preview</button>
-                </div>
-              </div>
-              <div id="ui-preview-wrapper">
-                <div id="ui-preview-frame">
-                  <div id="ui-preview">Loading UI preview…</div>
-                </div>
-              </div>
-              <div class="monospace" id="ui-console" style="margin-top:12px; white-space:pre-wrap;">No actions run yet.</div>
-            </div>
-            <div class="panel" id="content-graph" style="display:none;">
-              <h4>Flow Graph</h4>
-              <p>Flow graph will appear here in Studio Phase 5.</p>
-            </div>
-          </div>
-        </main>
-
-      <aside class="rightbar">
-        <h3>Inspector</h3>
-          <div id="palette" class="section" style="margin-bottom:12px;">
-            <strong>Palette</strong>
-            <div style="display:flex; flex-wrap:wrap; gap:6px; margin-top:6px;">
-              <button class="btn" data-new="heading" onclick="insertFromPalette('heading')">Heading</button>
-              <button class="btn" data-new="text" onclick="insertFromPalette('text')">Text</button>
-              <button class="btn" data-new="button" onclick="insertFromPalette('button')">Button</button>
-              <button class="btn" data-new="input" onclick="insertFromPalette('input')">Input</button>
-              <button class="btn" data-new="section" onclick="insertFromPalette('section')">Section</button>
-              <button class="btn" id="ai-generate-btn" onclick="openAIModal()">⚡ AI Generate UI</button>
-            </div>
-          </div>
-          <div id="ai-modal" style="display:none; position:fixed; inset:0; background:rgba(0,0,0,0.6); z-index:9999; align-items:center; justify-content:center;">
-            <div style="background:#111; color:#f5f5f5; padding:16px; width:480px; max-width:90%; border:1px solid #333; border-radius:8px;">
-              <h3 style="margin-top:0;">Generate UI with AI</h3>
-              <p style="font-size:13px; color:#ccc;">Describe the layout you want. The AI will insert UI code into the current page.</p>
-              <textarea id="ai-prompt" style="width:100%; min-height:120px; background:#0c0c0c; color:#fff; border:1px solid #333; padding:8px; border-radius:4px;"></textarea>
-              <div style="margin-top:8px; display:flex; gap:8px; flex-wrap:wrap;">
-                <button class="btn" onclick="fillPrompt('Create a login form with email and password, centered, with a primary button.')">Login form</button>
-                <button class="btn" onclick="fillPrompt('Two column hero with heading on left and signup form on right.')">Hero + form</button>
-              </div>
-              <div style="margin-top:12px; display:flex; justify-content:flex-end; gap:8px;">
-                <button class="btn" onclick="closeAIModal()">Cancel</button>
-                <button class="btn" onclick="submitAIGenerate()">Generate</button>
-              </div>
-            </div>
-          </div>
-          <div id="inspector-body"></div>
-      </aside>
-      </div>
-
-      <footer class="statusbar">
-        <div class="status-items">
-          <span class="tag">Backend: Connected</span>
-          <span class="tag">Last run: N/A</span>
-          <span class="tag">Diagnostics: Errors 0 · Warnings 0</span>
-        </div>
-        <div class="status-items">
-          <span class="tag">Theme: Dark</span>
-        </div>
-      </footer>
-    </div>
-
-    <script>
-      const API_KEY = "dev-key";
-      let treeData = null;
-      let currentFile = null;
-      let dirty = false;
-      let saveTimer = null;
-      let uiManifest = null;
-      let deviceMode = "desktop";
-      let previewLoading = false;
-      let previewState = {};
-      let lastAction = null;
-      let flowRunning = false;
-      let elementIndex = {};
-      let selectedElementId = null;
-      let previewMode = "preview";
-      let routeHistory = [];
-      let forwardStack = [];
-      let currentRoute = null;
-      let pageRegistry = {};
-
-      const editorEl = document.getElementById('code-editor');
-      const fileLabel = document.getElementById('editing-label');
-      const saveStatus = document.getElementById('save-status');
-      const treeContainer = document.getElementById('project-tree');
-      const treeEmpty = document.getElementById('tree-empty');
-      const refreshBtn = document.getElementById('project-refresh');
-      const uiPreview = document.getElementById('ui-preview');
-      const uiPreviewStatus = document.getElementById('ui-preview-status');
-      const uiPreviewFrame = document.getElementById('ui-preview-frame');
-      const uiRefreshBtn = document.getElementById('ui-refresh');
-      const deviceButtons = Array.from(document.querySelectorAll('.device-btn'));
-      const modeButtons = Array.from(document.querySelectorAll('.mode-btn'));
-      const backBtn = document.getElementById('ui-back');
-      const fwdBtn = document.getElementById('ui-forward');
-      const routeLabel = document.getElementById('route-label');
-      const aiModal = document.getElementById('ai-modal');
-      const aiPrompt = document.getElementById('ai-prompt');
-
-      function setStatus(text, tone="muted") {
-        saveStatus.textContent = text;
-        if (tone === "ok") {
-          saveStatus.style.color = "#34d399";
-        } else if (tone === "error") {
-          saveStatus.style.color = "#f87171";
-        } else if (tone === "busy") {
-          saveStatus.style.color = "#fbbf24";
-        } else {
-          saveStatus.style.color = "var(--muted)";
-        }
-      }
-
-      function setPreviewStatus(text) {
-        if (uiPreviewStatus) uiPreviewStatus.textContent = text;
-      }
-
-      function resolveColor(value, theme) {
-        if (!value) return undefined;
-        if (theme && theme[value]) return theme[value];
-        return value;
-      }
-
-      function applyStyles(el, styles, theme) {
-        const map = {};
-        (styles || []).forEach((s) => { map[s.kind] = s.value; });
-        if (map.color) el.style.color = resolveColor(map.color, theme);
-        if (map.bg_color || map.background_color) el.style.backgroundColor = resolveColor(map.bg_color || map.background_color, theme);
-        if (map.align) el.style.textAlign = map.align;
-        if (map.align_h) el.style.textAlign = map.align_h;
-        const spacing = { small: 8, medium: 16, large: 24 };
-        if (map.padding && spacing[map.padding]) el.style.padding = `${spacing[map.padding]}px`;
-        if (map.margin && spacing[map.margin]) el.style.margin = `${spacing[map.margin]}px`;
-        if (map.gap && spacing[map.gap]) el.style.gap = `${spacing[map.gap]}px`;
-        if (map.layout) {
-          if (map.layout === "row") {
-            el.style.display = "flex";
-            el.style.flexDirection = "row";
-            el.style.gap = el.style.gap || "12px";
-          } else if (map.layout === "column") {
-            el.style.display = "flex";
-            el.style.flexDirection = "column";
-            el.style.gap = el.style.gap || "12px";
-          } else if (map.layout === "two_columns") {
-            el.style.display = "grid";
-            el.style.gridTemplateColumns = "repeat(2, minmax(0, 1fr))";
-            el.style.gap = el.style.gap || "12px";
-          } else if (map.layout === "three_columns") {
-            el.style.display = "grid";
-            el.style.gridTemplateColumns = "repeat(3, minmax(0, 1fr))";
-            el.style.gap = el.style.gap || "12px";
-          }
-        }
-        if (map.valign || map.align_v) {
-          el.style.display = el.style.display || "flex";
-          const val = map.valign || map.align_v;
-          el.style.alignItems = val === "middle" ? "center" : val;
-        }
-      }
-
-      function renderLayout(node, theme, pageName) {
-        if (!node) return document.createElement('div');
-        const type = node.type;
-        if (type === "section") {
-          const el = document.createElement('div');
-          el.className = "ui-section";
-          applyStyles(el, node.styles, theme);
-          (node.layout || []).forEach(child => el.appendChild(renderLayout(child, theme, pageName)));
-          return wrapInspectable(node, el, pageName);
-        }
-        if (type === "heading") {
-          const el = document.createElement('h2');
-          el.className = "ui-heading";
-          el.textContent = node.text || "";
-          applyStyles(el, node.styles, theme);
-          return wrapInspectable(node, el, pageName);
-        }
-        if (type === "text") {
-          const el = document.createElement('p');
-          el.className = "ui-text";
-          el.textContent = node.text || "";
-          applyStyles(el, node.styles, theme);
-          return wrapInspectable(node, el, pageName);
-        }
-        if (type === "image") {
-          const el = document.createElement('img');
-          el.className = "ui-img";
-          el.src = node.url || "";
-          applyStyles(el, node.styles, theme);
-          return el;
-        }
-        if (type === "card") {
-          const wrap = document.createElement('div');
-          wrap.className = "ui-card";
-          wrap.style.border = "1px solid #e5e7eb";
-          wrap.style.borderRadius = "12px";
-          wrap.style.padding = "16px";
-          wrap.style.background = "#fff";
-          wrap.style.boxShadow = "0 4px 14px rgba(0,0,0,0.04)";
-          if (node.title) {
-            const title = document.createElement('div');
-            title.style.fontWeight = "600";
-            title.style.marginBottom = "8px";
-            title.textContent = node.title;
-            wrap.appendChild(title);
-          }
-          applyStyles(wrap, node.styles, theme);
-          (node.layout || []).forEach(child => wrap.appendChild(renderLayout(child, theme, pageName)));
-          return wrapInspectable(node, wrap, pageName);
-        }
-        if (type === "row") {
-          const wrap = document.createElement('div');
-          wrap.className = "ui-row";
-          wrap.style.display = "flex";
-          wrap.style.gap = "12px";
-          applyStyles(wrap, node.styles, theme);
-          (node.layout || []).forEach(child => wrap.appendChild(renderLayout(child, theme, pageName)));
-          return wrapInspectable(node, wrap, pageName);
-        }
-        if (type === "column") {
-          const wrap = document.createElement('div');
-          wrap.className = "ui-column";
-          wrap.style.display = "flex";
-          wrap.style.flexDirection = "column";
-          wrap.style.gap = "12px";
-          applyStyles(wrap, node.styles, theme);
-          (node.layout || []).forEach(child => wrap.appendChild(renderLayout(child, theme, pageName)));
-          return wrapInspectable(node, wrap, pageName);
-        }
-        if (type === "input") {
-          const wrap = document.createElement('div');
-          wrap.className = "ui-input";
-          const label = document.createElement('label');
-          label.textContent = node.label || node.name || "Input";
-          const input = document.createElement('input');
-          input.type = node.field_type || "text";
-          const key = node.name || node.label || Math.random().toString(36).slice(2);
-          if (!(key in previewState)) previewState[key] = "";
-          input.value = previewState[key];
-          input.addEventListener('input', (e) => {
-            previewState[key] = e.target.value;
-          });
-          applyStyles(wrap, node.styles, theme);
-          wrap.appendChild(label);
-          wrap.appendChild(input);
-          return wrap;
-        }
-        if (type === "textarea") {
-          const wrap = document.createElement('div');
-          wrap.className = "ui-textarea";
-          const label = document.createElement('label');
-          label.textContent = node.label || node.name || "Textarea";
-          const textarea = document.createElement('textarea');
-          textarea.rows = 4;
-          const key = node.name || node.label || Math.random().toString(36).slice(2);
-          if (!(key in previewState)) previewState[key] = "";
-          textarea.value = previewState[key];
-          textarea.addEventListener('input', (e) => {
-            previewState[key] = e.target.value;
-          });
-          applyStyles(wrap, node.styles, theme);
-          wrap.appendChild(label);
-          wrap.appendChild(textarea);
-          return wrap;
-        }
-        if (type === "badge") {
-          const el = document.createElement('span');
-          el.className = "ui-badge";
-          el.textContent = node.text || "";
-          el.style.display = "inline-flex";
-          el.style.alignItems = "center";
-          el.style.padding = "4px 8px";
-          el.style.borderRadius = "999px";
-          el.style.background = "#f1f5f9";
-          el.style.fontSize = "12px";
-          el.style.fontWeight = "600";
-          applyStyles(el, node.styles, theme);
-          return wrapInspectable(node, el, pageName);
-        }
-        if (type === "button") {
-          const el = document.createElement('button');
-          el.className = "ui-button";
-          el.textContent = node.label || "Button";
-          applyStyles(el, node.styles, theme);
-          if (node.actions && node.actions.length > 0) {
-            const flowAction = node.actions.find(a => a.kind === "flow");
-            const navAction = node.actions.find(a => a.kind === "goto_page");
-            el.style.cursor = "pointer";
-            el.addEventListener('click', async () => {
-              if (previewMode === "inspect") {
-                setSelected(node.id, pageName);
-                return;
-              }
-              if (navAction) {
-                const targetRoute = navAction.route || `/${navAction.target}`;
-                setRoute(targetRoute, true);
-                return;
-              }
-              if (flowAction) {
-                if (flowRunning) return;
-                flowRunning = true;
-                el.disabled = true;
-                const orig = el.textContent;
-                el.textContent = "Running…";
-                const args = {};
-                Object.entries(flowAction.args || {}).forEach(([k, v]) => {
-                  if (v && v.identifier) {
-                    args[k] = previewState[v.identifier] ?? "";
-                  } else if (v && v.literal !== undefined) {
-                    args[k] = v.literal;
-                  }
-                });
-                const payload = { flow: flowAction.target, args };
-                try {
-                  const res = await fetch('/api/ui/flow/execute', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json', "X-API-Key": API_KEY },
-                    body: JSON.stringify(payload)
-                  });
-                  const data = await res.json();
-                  lastAction = { flow: flowAction.target, payload: args, response: data };
-                  renderConsole();
-                } catch (err) {
-                  lastAction = { flow: flowAction.target, payload: args, response: { success: false, error: String(err) } };
-                  renderConsole();
-                } finally {
-                  flowRunning = false;
-                  el.disabled = false;
-                  el.textContent = orig;
-                }
-              }
-            });
-          }
-          return el;
-        }
-        if (type === "conditional") {
-          const wrap = document.createElement('div');
-          applyStyles(wrap, node.styles, theme);
-          (node.when || []).forEach(child => wrap.appendChild(renderLayout(child, theme, pageName)));
-          return wrapInspectable(node, wrap, pageName);
-        }
-        return document.createElement('div');
-      }
-
-      function getPageByRoute(route) {
-        if (!route || !uiManifest || !uiManifest.pages) return null;
-        return uiManifest.pages.find((p) => p.route === route) || null;
-      }
-
-      function resolvePageForSelection() {
-        if (!uiManifest || !uiManifest.pages || uiManifest.pages.length === 0) return null;
-        if (currentRoute) {
-          const byRoute = getPageByRoute(currentRoute);
-          if (byRoute) return byRoute;
-        }
-        if (currentFile && currentFile.includes("pages/")) {
-          const stem = currentFile.split("/").pop().replace(/\\.ai$/i, "");
-          const byPath = uiManifest.pages.find((p) => p.source_path === currentFile);
-          if (byPath) return byPath;
-          const byName = uiManifest.pages.find((p) => (p.name || "").toLowerCase() === stem.toLowerCase());
-          if (byName) return byName;
-        }
-        return uiManifest.pages[0];
-      }
-
-      function setRoute(route, push=true) {
-        if (!route) return;
-        const page = getPageByRoute(route);
-        if (!page) return;
-        if (push && currentRoute) {
-          routeHistory.push(currentRoute);
-          forwardStack = [];
-        }
-        currentRoute = route;
-        if (routeLabel) routeLabel.textContent = `Route: ${route}`;
-        renderPreview();
-        if (backBtn) backBtn.disabled = routeHistory.length === 0;
-        if (fwdBtn) fwdBtn.disabled = forwardStack.length === 0;
-      }
-
-      function renderPreview() {
-        if (!uiPreview) return;
-        const widths = { desktop: 1200, tablet: 800, phone: 420 };
-        uiPreview.innerHTML = "";
-        if (uiPreviewFrame) uiPreviewFrame.style.maxWidth = `${widths[deviceMode] || widths.desktop}px`;
-        if (previewLoading) {
-          uiPreview.textContent = "Loading UI preview…";
-          return;
-        }
-        if (!uiManifest || !uiManifest.pages || uiManifest.pages.length === 0) {
-          uiPreview.textContent = "No UI pages found. Define a 'page' in your .ai files to see a preview.";
-          return;
-        }
-        const page = resolvePageForSelection();
-        if (!page) {
-          uiPreview.textContent = "Select a page file in the Project sidebar to preview it.";
-          return;
-        }
-        if (!currentRoute) currentRoute = page.route;
-        if (routeLabel && currentRoute) routeLabel.textContent = `Route: ${currentRoute}`;
-        previewState = {};
-        elementIndex = {};
-        const theme = uiManifest.theme || {};
-        const container = document.createElement('div');
-        applyStyles(container, page.styles, theme);
-        (page.layout || []).forEach(child => container.appendChild(renderLayout(child, theme, page.name)));
-        uiPreview.appendChild(container);
-        setPreviewStatus(`Showing: ${page.name || "page"}`);
-        renderInspector();
-      }
-
-      function renderConsole() {
-        const consoleEl = document.getElementById('ui-console');
-        if (!consoleEl) return;
-        if (!lastAction) {
-          consoleEl.textContent = "No actions run yet.";
-          return;
-        }
-        const { flow, payload, response } = lastAction;
-        const lines = [];
-        lines.push(`Flow: ${flow}`);
-        lines.push(`Status: ${response && response.success ? "success" : "failed"}`);
-        if (payload) lines.push(`Args: ${JSON.stringify(payload, null, 2)}`);
-        if (response && response.result) lines.push(`Result: ${JSON.stringify(response.result, null, 2)}`);
-        if (response && response.error) lines.push(`Error: ${response.error}`);
-        if (response && response.diagnostics) lines.push(`Diagnostics: ${JSON.stringify(response.diagnostics)}`);
-        consoleEl.textContent = lines.join("\n");
-      }
-
-      async function performTransform(body) {
-        try {
-          const res = await fetch('/api/studio/code/transform', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json', "X-API-Key": API_KEY },
-            body: JSON.stringify(body),
-          });
-          const data = await res.json();
-          if (!res.ok || !data.success) {
-            alert(`Transform failed: ${data.detail || data.error || res.statusText}`);
-            return null;
-          }
-          if (data.manifest) {
-            uiManifest = data.manifest;
-            if (data.new_element_id) selectedElementId = data.new_element_id;
-            renderPreview();
-          }
-          if (currentFile && currentFile === body.path) {
-            selectFile(currentFile);
-          }
-          return data;
-        } catch (err) {
-          alert(`Transform error: ${err}`);
-          return null;
-        }
-      }
-
-      function openAIModal() {
-        if (previewMode !== "inspect") return;
-        if (aiModal) aiModal.style.display = "flex";
-        if (aiPrompt) aiPrompt.focus();
-      }
-
-      function closeAIModal() {
-        if (aiModal) aiModal.style.display = "none";
-      }
-
-      function fillPrompt(text) {
-        if (aiPrompt) aiPrompt.value = text;
-      }
-
-      async function submitAIGenerate() {
-        if (!aiPrompt) return;
-        const prompt = aiPrompt.value.trim();
-        if (!prompt) {
-          alert("Enter a prompt to generate UI.");
-          return;
-        }
-        if (!currentFile) {
-          alert("Open a page file first.");
-          return;
-        }
-        try {
-          const res = await fetch('/api/studio/ui/generate', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json', "X-API-Key": API_KEY },
-            body: JSON.stringify({
-              prompt,
-              page_path: currentFile,
-              selected_element_id: selectedElementId,
-            }),
-          });
-          const data = await res.json();
-          if (!res.ok || !data.success) {
-            alert(`AI generate failed: ${data.detail || data.error || res.statusText}`);
-            return;
-          }
-          closeAIModal();
-          await selectFile(currentFile);
-          if (data.manifest) {
-            uiManifest = data.manifest;
-            renderPreview();
-          } else {
-            await fetchManifest();
-          }
-        } catch (err) {
-          alert(`AI generate error: ${err}`);
-        }
-      }
-
-      function insertFromPalette(type) {
-        if (previewMode !== "inspect") return;
-        const target = selectedElementId && elementIndex[selectedElementId] ? elementIndex[selectedElementId] : null;
-        const body = {
-          path: currentFile || (target && target.source_path) || (uiManifest && uiManifest.pages && uiManifest.pages[0] && uiManifest.pages[0].source_path) || "pages/home.ai",
-          op: "insert_element",
-          element_id: target ? target.id : null,
-          parent_id: target ? target.parent_id : null,
-          position: target ? "after" : "last_child",
-          new_element: { type, properties: { label: `New ${type}` } },
-        };
-        performTransform(body);
-      }
-
-      function deleteElement(meta) {
-        if (!meta || !meta.source_path) return;
-        if (!confirm("Delete this element?")) return;
-        performTransform({ path: meta.source_path, op: "delete_element", element_id: meta.id });
-      }
-
-      function moveElement(meta, dir) {
-        if (!meta || !meta.source_path) return;
-        performTransform({ path: meta.source_path, op: "move_element", element_id: meta.id, position: dir });
-      }
-
-      function setSelected(id, pageName) {
-        selectedElementId = id;
-        renderPreview(); // re-render to apply highlight
-        renderInspector(pageName);
-      }
-
-      function wrapInspectable(node, el, pageName) {
-        if (!node || !node.id) return el;
-        elementIndex[node.id] = {
-          id: node.id,
-          type: node.type,
-          styles: node.styles || [],
-          properties: node,
-          page: pageName,
-          page_route: (pageRegistry[pageName] && pageRegistry[pageName].route) || null,
-          source_path: (pageRegistry[pageName] && pageRegistry[pageName].source_path) || node.source_path || null,
-          events: node.actions || [],
-          bindings: node.name ? { variable: node.name } : null,
-        };
-        const wrap = document.createElement('div');
-        wrap.className = "ui-hover";
-        if (selectedElementId === node.id) {
-          wrap.classList.add('ui-selected');
-          wrap.scrollIntoView({ block: "nearest" });
-        }
-        wrap.appendChild(el);
-        wrap.addEventListener('click', (e) => {
-          if (previewMode === "inspect") {
-            e.stopPropagation();
-            setSelected(node.id, pageName);
-          }
-        });
-        return wrap;
-      }
-
-      function renderInspector(pageName) {
-        const container = document.getElementById('inspector-body');
-        if (!container) return;
-        container.innerHTML = "";
-        if (!selectedElementId || !elementIndex[selectedElementId]) {
-          container.innerHTML = "<p style='color:var(--muted);'>Click an element in Inspector Mode to inspect it.</p>";
-          return;
-        }
-        const meta = elementIndex[selectedElementId];
-        const add = (title, items) => {
-          const sec = document.createElement('div');
-          sec.className = "inspector-section";
-          const h = document.createElement('h4');
-          h.textContent = title;
-          sec.appendChild(h);
-          items.forEach(txt => {
-            const p = document.createElement('div');
-            p.className = "inspector-item";
-            p.textContent = txt;
-            sec.appendChild(p);
-          });
-          container.appendChild(sec);
-        };
-        const elemLines = [
-          `Type: ${meta.type}`,
-          `ID: ${meta.id}`,
-          meta.source_path ? `Source: ${meta.source_path}` : `Page: ${meta.page}`,
-        ];
-        if (meta.page_route) elemLines.push(`Route: ${meta.page_route}`);
-        add("Element", elemLines);
-        const styleStrings = (meta.styles || []).map(s => `${s.kind}: ${s.value}`);
-        if (styleStrings.length) add("Styles", styleStrings);
-        if (meta.bindings && meta.bindings.variable) {
-          add("Bindings", [`Variable: ${meta.bindings.variable}`]);
-        }
-        if (meta.events && meta.events.length) {
-          const ev = meta.events.map(e => {
-            if (e.kind === "flow") {
-              const args = Object.entries(e.args || {}).map(([k, v]) => `${k} → ${v.identifier || v.literal || "expr"}`).join(", ");
-              return `onClick → flow '${e.target}' ${args ? "(" + args + ")" : ""}`;
-            }
-            return `${e.kind} → ${e.target}`;
-          });
-          add("Events", ev);
-        }
-        const actionsSec = document.createElement('div');
-        actionsSec.className = "inspector-section";
-        const hActions = document.createElement('h4');
-        hActions.textContent = "Actions";
-        actionsSec.appendChild(hActions);
-        const btnDelete = document.createElement('button');
-        btnDelete.className = "btn";
-        btnDelete.textContent = "Delete element";
-        btnDelete.onclick = () => { deleteElement(meta); };
-        const btnUp = document.createElement('button');
-        btnUp.className = "btn";
-        btnUp.style.marginLeft = "6px";
-        btnUp.textContent = "Move up";
-        btnUp.onclick = () => { moveElement(meta, "up"); };
-        const btnDown = document.createElement('button');
-        btnDown.className = "btn";
-        btnDown.style.marginLeft = "6px";
-        btnDown.textContent = "Move down";
-        btnDown.onclick = () => { moveElement(meta, "down"); };
-        actionsSec.appendChild(btnDelete);
-        actionsSec.appendChild(btnUp);
-        actionsSec.appendChild(btnDown);
-        container.appendChild(actionsSec);
-        if (meta.source_path) {
-          const link = document.createElement('button');
-          link.className = "btn";
-          link.textContent = "Open in Code";
-          link.addEventListener('click', () => {
-            selectFile(meta.source_path);
-            mainTabs.forEach(t => {
-              t.classList.remove('active');
-              if (t.dataset.tab === 'code') t.classList.add('active');
-            });
-            Object.keys(contents).forEach(key => {
-              contents[key].style.display = (key === 'code') ? 'block' : 'none';
-            });
-          });
-          container.appendChild(link);
-        }
-      }
-
-      async function fetchManifest() {
-        previewLoading = true;
-        setPreviewStatus("Loading preview…");
-        renderPreview();
-        try {
-          const res = await fetch('/api/ui/manifest', { headers: { "X-API-Key": API_KEY } });
-          if (!res.ok) throw new Error(await res.text());
-          uiManifest = await res.json();
-          pageRegistry = {};
-          (uiManifest.pages || []).forEach(p => {
-            pageRegistry[p.name] = p;
-            if (p.route) pageRegistry[p.route] = p;
-          });
-          const initialPage = resolvePageForSelection();
-          if (initialPage) {
-            setRoute(initialPage.route || "/", false);
-          }
-          previewLoading = false;
-          renderPreview();
-        } catch (err) {
-          previewLoading = false;
-          if (uiPreview) uiPreview.textContent = "Failed to load UI manifest.";
-          setPreviewStatus("Preview error");
-          console.error(err);
-        }
-      }
-      async function fetchTree() {
-        try {
-          const res = await fetch('/api/studio/files', { headers: { "X-API-Key": API_KEY } });
-          if (!res.ok) throw new Error(await res.text());
-          const data = await res.json();
-          treeData = data.root;
-          renderTree();
-        } catch (err) {
-          treeContainer.innerHTML = "<div style='color: var(--danger)'>Failed to load project tree.</div>";
-          console.error(err);
-        }
-      }
-
-      function renderTree() {
-        treeContainer.innerHTML = "";
-        const firstFile = { path: null };
-        if (!treeData || !treeData.children || treeData.children.length === 0) {
-          treeEmpty.style.display = "block";
-          return;
-        }
-        treeEmpty.style.display = "none";
-
-        function renderNode(node, container, depth=0) {
-          const row = document.createElement('div');
-          row.className = 'node';
-          row.style.paddingLeft = `${depth * 12}px`;
-
-          if (node.type === 'directory') {
-            row.classList.add('folder');
-            const caret = document.createElement('span');
-            caret.className = 'caret open';
-            row.appendChild(caret);
-            const label = document.createElement('span');
-            label.textContent = node.name + '/';
-            row.appendChild(label);
-
-            const childrenWrap = document.createElement('div');
-            childrenWrap.style.display = 'block';
-            childrenWrap.style.marginLeft = '0';
-
-            row.addEventListener('click', (e) => {
-              e.stopPropagation();
-              const open = caret.classList.toggle('open');
-              childrenWrap.style.display = open ? 'block' : 'none';
-            });
-
-            container.appendChild(row);
-            if (node.children) {
-              node.children.forEach((child) => {
-                renderNode(child, childrenWrap, depth + 1);
-              });
-            }
-            container.appendChild(childrenWrap);
-          } else {
-            row.dataset.file = node.path;
-            row.textContent = node.name;
-            row.addEventListener('click', (e) => {
-              e.stopPropagation();
-              selectFile(node.path);
-            });
-            container.appendChild(row);
-            if (firstFile.path === null) firstFile.path = node.path;
-          }
-        }
-
-        renderNode(treeData, treeContainer, 0);
-        if (!currentFile && firstFile.path) {
-          selectFile(firstFile.path);
-        } else {
-          highlightSelection();
-        }
-      }
-
-      function highlightSelection() {
-        const nodes = treeContainer.querySelectorAll('.node');
-        nodes.forEach((n) => {
-          if (n.dataset.file === currentFile) {
-            n.classList.add('active');
-          } else {
-            n.classList.remove('active');
-          }
-        });
-      }
-
-      async function selectFile(path) {
-        if (path === currentFile && !dirty) {
-          highlightSelection();
-          return;
-        }
-        try {
-          setStatus("Loading...", "busy");
-          const res = await fetch(`/api/studio/file?path=${encodeURIComponent(path)}`, { headers: { "X-API-Key": API_KEY } });
-          if (!res.ok) throw new Error(await res.text());
-          const data = await res.json();
-          currentFile = data.path;
-          editorEl.value = data.content;
-          dirty = false;
-          fileLabel.textContent = data.path;
-          setStatus("Loaded", "muted");
-          const targetPage = uiManifest && uiManifest.pages ? uiManifest.pages.find(p => p.source_path === data.path) : null;
-          if (targetPage) {
-            setRoute(targetPage.route || `/${targetPage.name}`, false);
-          }
-          highlightSelection();
-          renderPreview();
-        } catch (err) {
-          setStatus("Load failed", "error");
-          console.error(err);
-        }
-      }
-
-      function scheduleSave() {
-        dirty = true;
-        fileLabel.textContent = currentFile ? `${currentFile} *` : "Unsaved";
-        setStatus("Saving...", "busy");
-        if (saveTimer) clearTimeout(saveTimer);
-        saveTimer = setTimeout(saveNow, 800);
-      }
-
-      async function saveNow() {
-        if (!currentFile) return;
-        try {
-          const res = await fetch('/api/studio/file', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json', "X-API-Key": API_KEY },
-            body: JSON.stringify({ path: currentFile, content: editorEl.value })
-          });
-          if (!res.ok) throw new Error(await res.text());
-          dirty = false;
-          fileLabel.textContent = currentFile;
-          setStatus("Saved", "ok");
-          fetchManifest();
-        } catch (err) {
-          setStatus("Save failed", "error");
-          console.error(err);
-        }
-      }
-
-      editorEl.addEventListener('input', () => {
-        if (!currentFile) return;
-        setStatus("Unsaved changes", "busy");
-        scheduleSave();
-      });
-
-      window.addEventListener('keydown', (e) => {
-        if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 's') {
-          e.preventDefault();
-          saveNow();
-        }
-      });
-
-      refreshBtn.addEventListener('click', () => fetchTree());
-      if (uiRefreshBtn) uiRefreshBtn.addEventListener('click', () => fetchManifest());
-      deviceButtons.forEach((btn) => {
-        btn.addEventListener('click', () => {
-          deviceButtons.forEach(b => b.classList.remove('active'));
-          btn.classList.add('active');
-          deviceMode = btn.dataset.device || "desktop";
-          renderPreview();
-        });
-      });
-      if (backBtn) {
-        backBtn.disabled = true;
-        backBtn.addEventListener('click', () => {
-          if (!routeHistory.length) return;
-          const prev = routeHistory.pop();
-          if (currentRoute) forwardStack.push(currentRoute);
-          setRoute(prev, false);
-        });
-      }
-      if (fwdBtn) {
-        fwdBtn.disabled = true;
-        fwdBtn.addEventListener('click', () => {
-          if (!forwardStack.length) return;
-          const next = forwardStack.pop();
-          if (currentRoute) routeHistory.push(currentRoute);
-          setRoute(next, false);
-        });
-      }
-      modeButtons.forEach((btn) => {
-        btn.addEventListener('click', () => {
-          modeButtons.forEach(b => b.classList.remove('active'));
-          btn.classList.add('active');
-          previewMode = btn.dataset.mode || "preview";
-          selectedElementId = null;
-          renderPreview();
-          const palBtns = document.querySelectorAll('#palette button');
-          palBtns.forEach(pb => pb.disabled = previewMode !== "inspect");
-        });
-      });
-
-        const navTabs = document.querySelectorAll('.nav-tab');
-        navTabs.forEach(tab => tab.addEventListener('click', () => {
-          navTabs.forEach(t => t.classList.remove('active'));
-          tab.classList.add('active');
-          const text = tab.dataset.nav || '';
-          const label = document.getElementById('editing-label');
-          if (label) label.textContent = `Viewing: ${text}`;
-        }));
-
-      const mainTabs = document.querySelectorAll('.main-tab');
-      const contents = {
-        code: document.getElementById('content-code'),
-        ui: document.getElementById('content-ui'),
-        graph: document.getElementById('content-graph'),
-      };
-      mainTabs.forEach(tab => tab.addEventListener('click', () => {
-        mainTabs.forEach(t => t.classList.remove('active'));
-        tab.classList.add('active');
-        Object.keys(contents).forEach(key => {
-          contents[key].style.display = (tab.dataset.tab === key) ? 'block' : 'none';
-        });
-      }));
-
-      fetchTree();
-      fetchManifest();
-      const palBtns = document.querySelectorAll('#palette button');
-      palBtns.forEach(pb => pb.disabled = previewMode !== "inspect");
-    </script>
-  </body>
-</html>
-"""
-
-    def do_GET(self):  # type: ignore[override]
-        if self.path.startswith("/studio"):
-            content = self.html.encode("utf-8")
-            self.send_response(200)
-            self.send_header("Content-Type", "text/html; charset=utf-8")
-            self.send_header("Content-Length", str(len(content)))
-            self.end_headers()
-            self.wfile.write(content)
-            return
-        self.send_response(302)
-        self.send_header("Location", "/studio")
-        self.end_headers()
-
-    def log_message(self, format: str, *args):  # pragma: no cover - silence logs
-        return
-
-
-def start_ui_server(port: int) -> tuple[http.server.ThreadingHTTPServer, threading.Thread]:
-    server = http.server.ThreadingHTTPServer(("127.0.0.1", port), _StudioHandler)
-    thread = threading.Thread(target=server.serve_forever, daemon=True)
-    thread.start()
-    return server, thread
-
-
-def start_vite_dev_server(port: int) -> subprocess.Popen:
-    studio_dir = Path(__file__).resolve().parents[2] / "studio"
-    runner = shutil.which("pnpm") or shutil.which("npm")
-    if runner is None:
-        raise RuntimeError("npm/pnpm not found; Vite dev server requires Node.js.")
-    if not studio_dir.exists():
-        raise RuntimeError(f"Studio directory not found at {studio_dir}")
-    package_json = studio_dir / "package.json"
-    if not package_json.exists():
-        raise RuntimeError("Studio package.json not found; cannot start dev server.")
-    env = os.environ.copy()
-    env.setdefault("BROWSER", "none")
-    if Path(runner).name == "pnpm":
-        cmd = [runner, "run", "dev", "--", "--host", "--port", str(port)]
-    else:
-        cmd = [runner, "run", "dev", "--", "--host", "--port", str(port)]
-    return subprocess.Popen(cmd, cwd=studio_dir, env=env)
-
 
 def run_studio_dev(
     backend_port: int = 8000,
@@ -2706,10 +1601,8 @@ def run_studio_dev(
 ) -> None:
     root = _resolve_project_root(project_root, allow_bootstrap=True)
     _check_port_available(backend_port, "backend", flag_hint="n3 studio dev --backend-port <port>")
-    _check_port_available(ui_port, "ui", flag_hint="n3 studio dev --port <port>")
 
     backend_proc: multiprocessing.Process | None = None
-    vite_proc: subprocess.Popen | None = None
     try:
         backend_proc = start_daemon_process(backend_port, root.resolve(), watch=True)
     except Exception as exc:  # pragma: no cover - early startup guard
@@ -2724,36 +1617,21 @@ def run_studio_dev(
     status_messages = _studio_status_messages(status_payload)
 
     active_url = f"http://127.0.0.1:{backend_port}/studio"
-    vite_msg = None
-    try:
-        vite_proc = start_vite_dev_server(ui_port)
-        ready, vite_err = _wait_for_http(f"http://localhost:{ui_port}/")
-        if ready:
-            active_url = f"http://localhost:{ui_port}/studio"
-        else:
-            vite_msg = f"Vite dev server did not become ready on port {ui_port}: {vite_err or 'timeout'}"
-            _stop_subprocess(vite_proc, "vite")
-            vite_proc = None
-    except Exception as exc:
-        vite_msg = f"Studio dev server unavailable: {exc}"
-        vite_proc = None
-
     ai_files = iter_ai_files([root])
     print("\nNamel3ss Studio (dev) is running!\n")
-    print(f"[✓] Project root: {root}")
+    print(f"[âœ“] Project root: {root}")
     if app_name:
-        print(f"[✓] Using app:    \"{app_name}\"")
+        print(f"[âœ“] Using app:    \"{app_name}\"")
     if ai_files:
-        print(f"[✓] Watching {len(ai_files)} .ai file(s)")
-    print(f"[✓] Runtime daemon: http://127.0.0.1:{backend_port}")
-    print(f"[✓] Studio UI:      {active_url}")
+        print(f"[âœ“] Watching {len(ai_files)} .ai file(s)")
+    print(f"[âœ“] Runtime daemon: http://127.0.0.1:{backend_port}")
+    print(f"[âœ“] Studio UI:      {active_url}")
     for msg in status_messages:
         print(msg)
     if status_payload is None and status_err:
         print(f"[!] Could not fetch daemon status: {status_err}")
-    if vite_msg:
-        print(f"[!] {vite_msg}")
-        print("[!] Falling back to packaged Studio assets served by the backend daemon.")
+    if ui_port != backend_port:
+        print(f"[i] UI port flag is ignored; Studio is served by the backend on {backend_port}.")
     print("Press Ctrl+C to stop both the daemon and Studio.\n")
 
     if open_browser:
@@ -2761,7 +1639,6 @@ def run_studio_dev(
             webbrowser.open(active_url)
 
     if not block:
-        _stop_subprocess(vite_proc, "vite")
         _stop_process(backend_proc, "daemon")
         return
 
@@ -2772,9 +1649,8 @@ def run_studio_dev(
                 print("Daemon exited unexpectedly. Check logs above.")
                 break
     except KeyboardInterrupt:
-        print("\nShutting down Studio and daemon…")
+        print("\nShutting down Studio and daemonâ€¦")
     finally:
-        _stop_subprocess(vite_proc, "vite")
         _stop_process(backend_proc, "daemon")
         print("Done.")
 
@@ -2789,46 +1665,38 @@ def run_studio(
     root = _resolve_project_root(project_root, allow_bootstrap=False)
 
     _check_port_available(backend_port, "backend", flag_hint="n3 studio --backend-port <port>")
-    _check_port_available(ui_port, "ui", flag_hint="n3 studio --ui-port <port>")
 
     backend_proc: multiprocessing.Process | None = None
-    ui_server = None
     try:
-        backend_proc = start_backend_process(backend_port, project_root=root)
+        backend_proc = start_daemon_process(backend_port, root.resolve(), watch=True)
     except Exception as exc:  # pragma: no cover - surface early startup issues
         raise SystemExit(f"Could not start backend: {exc}") from exc
+
+    ok, err = _wait_for_http(f"http://127.0.0.1:{backend_port}/health")
+    if not ok:
+        _stop_process(backend_proc, "daemon")
+        raise SystemExit(f"Daemon did not start on port {backend_port}. {err or 'Timed out waiting for /health.'}")
 
     status_payload, status_err = _fetch_studio_status(f"http://127.0.0.1:{backend_port}")
     status_messages = _studio_status_messages(status_payload)
 
-    try:
-        ui_server, _ = start_ui_server(ui_port)
-    except Exception as exc:
-        if backend_proc:
-            backend_proc.terminate()
-        raise SystemExit(f"Could not start Studio UI server: {exc}") from exc
-
-    primary_url = "http://namel3ss.local/studio"
-    fallback_url = f"http://127.0.0.1:{ui_port}/studio"
+    active_url = f"http://127.0.0.1:{backend_port}/studio"
     print("\nNamel3ss Studio is running!\n")
-    print(f"  • Primary URL:  {primary_url}")
-    print(f"  • Fallback URL: {fallback_url}\n")
+    print(f"  â€¢ Studio URL: {active_url}\n")
     for msg in status_messages:
         print(f"  {msg}")
     if status_payload is None and status_err:
         print(f"  [!] Could not fetch daemon status: {status_err}")
-    print("  Press Ctrl+C to stop.")
-    print("  If namel3ss.local does not resolve, add '127.0.0.1 namel3ss.local' to your hosts file.\n")
+    if ui_port != backend_port:
+        print(f"  [i] UI port flag is ignored; Studio is served by the backend on {backend_port}.\n")
+    print("  Press Ctrl+C to stop.\n")
 
     if open_browser:
         with contextlib.suppress(Exception):
-            webbrowser.open(primary_url)
+            webbrowser.open(active_url)
 
     if not block:
-        if ui_server:
-            ui_server.shutdown()
-        if backend_proc:
-            backend_proc.terminate()
+        _stop_process(backend_proc, "daemon")
         return
 
     try:
@@ -2837,10 +1705,7 @@ def run_studio(
     except KeyboardInterrupt:
         print("\nStopping Studio...")
     finally:
-        if ui_server:
-            ui_server.shutdown()
-        if backend_proc:
-            backend_proc.terminate()
+        _stop_process(backend_proc, "daemon")
 
 
 if __name__ == "__main__":  # pragma: no cover
