@@ -16,7 +16,7 @@ def test_gemini_body_includes_tools(monkeypatch):
           kind is "http_json"
           method is "GET"
           url is "https://api.example.com/weather"
-          query:
+          query is:
             city: input.city
 
         ai is "assistant_with_tools":

@@ -22,7 +22,7 @@ ai is "support_ai":
         store is "default_memory"
         scope is "per_user"
         pii_policy is "strip-email-ip"
-        pipeline:
+        pipeline is:
           step is "facts":
             type is "llm_fact_extractor"
     recall:
@@ -48,7 +48,7 @@ ai is "travel_planner":
         retention_days is 365
         time_decay:
           half_life_days is 30
-        pipeline:
+        pipeline is:
           step is "summarise_short_term":
             type is "llm_summariser"
             max_tokens is 512

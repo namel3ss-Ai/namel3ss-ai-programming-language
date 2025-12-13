@@ -189,19 +189,19 @@ memory:
   kinds:
     long_term:
       store is "chat_long"
-      pipeline:
+      pipeline is:
         step is "summarize_session":
           type is "llm_summariser"
           max_tokens is 512
           target_kind is "long_term"
     profile:
       store is "user_profile"
-      pipeline:
+      pipeline is:
         step is "extract_facts":
           type is "llm_fact_extractor"
     semantic:
       store is "semantic_kb"
-      pipeline:
+      pipeline is:
         step is "vectorise_summary":
           type is "vectoriser"
           embedding_model is "default_embedding"

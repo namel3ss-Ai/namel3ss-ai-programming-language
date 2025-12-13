@@ -507,12 +507,30 @@ class IRMatchBranch:
     binding: str | None = None
     actions: list["IRStatement"] = field(default_factory=list)
     label: str | None = None
+    expr: ast_nodes.Expr | None = None
+
+    def __post_init__(self) -> None:
+        _sync_match_branch(self)
 
 
 @dataclass
 class IRMatch:
     target: ast_nodes.Expr | None = None
     branches: list[IRMatchBranch] = field(default_factory=list)
+    expr: ast_nodes.Expr | None = None
+
+    def __post_init__(self) -> None:
+        if self.expr is None and self.target is not None:
+            self.expr = self.target
+        elif self.target is None and self.expr is not None:
+            self.target = self.expr
+
+
+def _sync_match_branch(branch: IRMatchBranch) -> None:
+    if branch.expr is None and branch.pattern is not None:
+        branch.expr = branch.pattern  # type: ignore[assignment]
+    if branch.pattern is None and branch.expr is not None:
+        branch.pattern = branch.expr
 
 
 @dataclass

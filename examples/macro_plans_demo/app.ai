@@ -1,4 +1,4 @@
-use macro "crud_ui" with:
+use macro is "crud_ui" with:
   entity is "Order"
   fields:
     field is "id":
@@ -11,7 +11,7 @@ use macro "crud_ui" with:
       type is "number"
       required is true
 
-use macro "auth_ui"
+use macro is "auth_ui"
 
-use macro "analytics_dashboard" with:
+use macro is "analytics_dashboard" with:
   record is "Order Metric"

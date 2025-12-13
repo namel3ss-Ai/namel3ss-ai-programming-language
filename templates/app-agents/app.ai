@@ -1,22 +1,21 @@
 app is "agents-demo":
-  entry_page "home"
+  entry_page is "home"
 
-page is "home":
-  route "/"
-  section "summary":
-    component "text":
-      value "Agents demo"
-
-model "default":
-  provider "dummy"
+model is "default":
+  provider is "dummy"
 
 agent is "summarizer":
-  goal "Summarize a topic in one sentence."
+  goal is "Summarize a topic in one sentence."
 
 flow is "orchestrate":
-  step "plan":
-    kind "agent"
-    target "summarizer"
-  step "reflect":
-    kind "tool"
-    target "echo"
+  step is "plan":
+    kind is "agent"
+    target is "summarizer"
+  step is "reflect":
+    kind is "tool"
+    target is "echo"
+
+page is "home" at "/":
+  section is "summary":
+    component "text":
+      value is "Agents demo"

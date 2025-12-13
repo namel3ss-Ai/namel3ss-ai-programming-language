@@ -214,14 +214,14 @@ ai is "support_ai":
         scope is "per_user"
         retention_days is 30
         pii_policy is "strip-email"
-        pipeline:
+        pipeline is:
           step is "summarize":
             type is "llm_summariser"
             max_tokens is 256
       profile:
         store is "default_memory"
         extract_facts is true
-        pipeline:
+        pipeline is:
           step is "facts":
             type is "llm_fact_extractor"
     recall:
@@ -448,7 +448,7 @@ tool is "get_weather":
   kind is "http_json"
   method is "GET"
   url is "https://api.example.com/weather"
-  query:
+  query is:
     city: input.city
 
 flow is "weather_now":
@@ -628,7 +628,7 @@ tool is "get_weather":
   kind is "http_json"
   method is "GET"
   url is "https://api.example.com/weather"
-  query:
+  query is:
     city: input.city
 
 flow is "register_user":

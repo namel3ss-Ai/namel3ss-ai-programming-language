@@ -88,7 +88,7 @@ Add table metadata to frames and mix table/multimodal stages into a pipeline:
 frame is "products":
   backend is "memory"
   table is "products"
-  table:
+  table is:
     primary_key is "product_id"
     display_columns are ["name", "category"]
     text_column is "description"

@@ -26,8 +26,8 @@ def test_studio_rag_endpoints(tmp_path: Path):
           provider is "openai:gpt-4.1-mini"
 
         frame is "docs":
-          source:
-            from file "docs.csv"
+          file is "docs.csv"
+          has headers
 
         vector_store is "docs_vs":
           backend is "memory"

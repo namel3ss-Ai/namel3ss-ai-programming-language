@@ -16,13 +16,12 @@ def parse_graph(self) -> ast_nodes.GraphDecl:
         if tok.type == "STRING":
             raise self.error(f'graph "{tok.value}": is not supported. Use graph is "{tok.value}": instead.', tok)
         raise self.error("Expected 'is' after 'graph'", tok)
-    description = None
-    if self.match_value("KEYWORD", "description"):
-        desc_tok = self.consume("STRING")
-        description = desc_tok.value
-    nodes: list[ast_nodes.GraphNodeDecl] = []
-    relationships: list[ast_nodes.GraphRelationshipDecl] = []
-    vector_store = None
+    source_frame: str | None = None
+    id_column: str | None = None
+    text_column: str | None = None
+    entities_cfg: ast_nodes.GraphEntitiesConfig | None = None
+    relations_cfg: ast_nodes.GraphRelationsConfig | None = None
+    storage_cfg: ast_nodes.GraphStorageConfig | None = None
     self.consume("COLON")
     self.consume("NEWLINE")
     if self.check("INDENT"):
@@ -32,74 +31,111 @@ def parse_graph(self) -> ast_nodes.GraphDecl:
                 continue
             field_tok = self.consume_any({"KEYWORD", "IDENT"})
             field = field_tok.value or ""
-            if field == "vector_store":
-                self.consume("KEYWORD", "is")
-                vs_tok = self.consume_any({"STRING", "IDENT", "KEYWORD"})
-                vector_store = vs_tok.value
-            elif field == "nodes":
+            if field == "from":
+                self.consume_any({"KEYWORD", "IDENT"})  # frame
+                if self.match_value("KEYWORD", "is"):
+                    frame_tok = self.consume_any({"STRING", "IDENT", "KEYWORD"})
+                else:
+                    frame_tok = self.consume_any({"STRING", "IDENT", "KEYWORD"})
+                source_frame = frame_tok.value
+            elif field == "id_column":
+                if self.match_value("KEYWORD", "is"):
+                    pass
+                id_tok = self.consume_any({"STRING", "IDENT", "KEYWORD"})
+                id_column = id_tok.value
+            elif field == "text_column":
+                if self.match_value("KEYWORD", "is"):
+                    pass
+                text_tok = self.consume_any({"STRING", "IDENT", "KEYWORD"})
+                text_column = text_tok.value
+            elif field == "entities":
                 self.consume("COLON")
                 self.consume("NEWLINE")
                 if self.check("INDENT"):
                     self.consume("INDENT")
+                    model_name = None
+                    max_entities = None
                     while not self.check("DEDENT"):
                         if self.match("NEWLINE"):
                             continue
                         ent_field = self.consume_any({"KEYWORD", "IDENT"})
-                        if ent_field.value != "entity":
-                            raise self.error("Expected 'entity' in nodes block.", ent_field)
-                        if self.match_value("KEYWORD", "is"):
-                            node_tok = self.consume_any({"STRING", "IDENT", "KEYWORD"})
-                        else:
-                            node_tok = self.consume_any({"STRING", "IDENT", "KEYWORD"})
-                        node_name = node_tok.value or ""
-                        model_name = None
-                        if self.match_value("KEYWORD", "model"):
+                        if ent_field.value == "model":
                             if self.match_value("KEYWORD", "is"):
-                                model_tok = self.consume_any({"STRING", "IDENT", "KEYWORD"})
-                            else:
-                                model_tok = self.consume_any({"STRING", "IDENT", "KEYWORD"})
+                                pass
+                            model_tok = self.consume_any({"STRING", "IDENT", "KEYWORD"})
                             model_name = model_tok.value
-                        nodes.append(
-                            ast_nodes.GraphNodeDecl(
-                                name=node_name,
-                                model=model_name,
-                                span=self._span(node_tok),
-                            )
-                        )
+                        elif ent_field.value == "max_entities_per_doc":
+                            if self.match_value("KEYWORD", "is"):
+                                pass
+                            max_entities = self.parse_expression()
+                        else:
+                            raise self.error(f"Unexpected field '{ent_field.value}' in entities block.", ent_field)
                         self.optional_newline()
                     self.consume("DEDENT")
-            elif field == "relationships":
+                    entities_cfg = ast_nodes.GraphEntitiesConfig(
+                        model=model_name,
+                        max_entities_per_doc=max_entities,
+                        span=self._span(field_tok),
+                    )
+            elif field == "relations":
                 self.consume("COLON")
                 self.consume("NEWLINE")
                 if self.check("INDENT"):
                     self.consume("INDENT")
+                    model_name = None
+                    max_rel = None
                     while not self.check("DEDENT"):
                         if self.match("NEWLINE"):
                             continue
                         rel_field = self.consume_any({"KEYWORD", "IDENT"})
-                        if rel_field.value != "relationship":
-                            raise self.error("Expected 'relationship' in relationships block.", rel_field)
-                        if self.match_value("KEYWORD", "is"):
-                            rel_tok = self.consume_any({"STRING", "IDENT", "KEYWORD"})
-                        else:
-                            rel_tok = self.consume_any({"STRING", "IDENT", "KEYWORD"})
-                        rel_name = rel_tok.value or ""
-                        model_name = None
-                        if self.match_value("KEYWORD", "model"):
+                        if rel_field.value == "model":
                             if self.match_value("KEYWORD", "is"):
-                                model_tok = self.consume_any({"STRING", "IDENT", "KEYWORD"})
-                            else:
-                                model_tok = self.consume_any({"STRING", "IDENT", "KEYWORD"})
+                                pass
+                            model_tok = self.consume_any({"STRING", "IDENT", "KEYWORD"})
                             model_name = model_tok.value
-                        relationships.append(
-                            ast_nodes.GraphRelationshipDecl(
-                                name=rel_name,
-                                model=model_name,
-                                span=self._span(rel_tok),
-                            )
-                        )
+                        elif rel_field.value == "max_relations_per_entity":
+                            if self.match_value("KEYWORD", "is"):
+                                pass
+                            max_rel = self.parse_expression()
+                        else:
+                            raise self.error(f"Unexpected field '{rel_field.value}' in relations block.", rel_field)
                         self.optional_newline()
                     self.consume("DEDENT")
+                    relations_cfg = ast_nodes.GraphRelationsConfig(
+                        model=model_name,
+                        max_relations_per_entity=max_rel,
+                        span=self._span(field_tok),
+                    )
+            elif field == "storage":
+                self.consume("COLON")
+                self.consume("NEWLINE")
+                if self.check("INDENT"):
+                    self.consume("INDENT")
+                    nodes_frame = None
+                    edges_frame = None
+                    while not self.check("DEDENT"):
+                        if self.match("NEWLINE"):
+                            continue
+                        stor_field = self.consume_any({"KEYWORD", "IDENT"})
+                        if stor_field.value == "nodes_frame":
+                            if self.match_value("KEYWORD", "is"):
+                                pass
+                            nf_tok = self.consume_any({"STRING", "IDENT", "KEYWORD"})
+                            nodes_frame = nf_tok.value
+                        elif stor_field.value == "edges_frame":
+                            if self.match_value("KEYWORD", "is"):
+                                pass
+                            ef_tok = self.consume_any({"STRING", "IDENT", "KEYWORD"})
+                            edges_frame = ef_tok.value
+                        else:
+                            raise self.error(f"Unexpected field '{stor_field.value}' in storage block.", stor_field)
+                        self.optional_newline()
+                    self.consume("DEDENT")
+                    storage_cfg = ast_nodes.GraphStorageConfig(
+                        nodes_frame=nodes_frame,
+                        edges_frame=edges_frame,
+                        span=self._span(field_tok),
+                    )
             else:
                 raise self.error(f"Unexpected field '{field}' in graph block", field_tok)
             self.optional_newline()
@@ -107,10 +143,12 @@ def parse_graph(self) -> ast_nodes.GraphDecl:
     self.optional_newline()
     return ast_nodes.GraphDecl(
         name=name.value or "",
-        description=description,
-        vector_store=vector_store,
-        nodes=nodes,
-        relationships=relationships,
+        source_frame=source_frame,
+        id_column=id_column,
+        text_column=text_column,
+        entities=entities_cfg,
+        relations=relations_cfg,
+        storage=storage_cfg,
         span=self._span(start),
     )
 
@@ -126,11 +164,10 @@ def parse_graph_summary(self) -> ast_nodes.GraphSummaryDecl:
         raise self.error("Expected 'is' after 'graph_summary'", tok)
     self.consume("COLON")
     self.consume("NEWLINE")
-    vector_store = None
+    graph = None
+    method = None
+    max_nodes_per_summary = None
     model_name = None
-    description = None
-    max_nodes = None
-    span_nodes = None
     if self.check("INDENT"):
         self.consume("INDENT")
         while not self.check("DEDENT"):
@@ -138,36 +175,25 @@ def parse_graph_summary(self) -> ast_nodes.GraphSummaryDecl:
                 continue
             field_tok = self.consume_any({"KEYWORD", "IDENT"})
             field = field_tok.value or ""
-            if field == "vector_store":
+            if field == "graph":
                 if self.match_value("KEYWORD", "is"):
-                    vs_tok = self.consume_any({"STRING", "IDENT", "KEYWORD"})
-                else:
-                    vs_tok = self.consume_any({"STRING", "IDENT", "KEYWORD"})
-                vector_store = vs_tok.value
+                    pass
+                graph_tok = self.consume_any({"STRING", "IDENT", "KEYWORD"})
+                graph = graph_tok.value
+            elif field == "method":
+                if self.match_value("KEYWORD", "is"):
+                    pass
+                method_tok = self.consume_any({"STRING", "IDENT", "KEYWORD"})
+                method = method_tok.value
+            elif field == "max_nodes_per_summary":
+                if self.match_value("KEYWORD", "is"):
+                    pass
+                max_nodes_per_summary = self.parse_expression()
             elif field == "model":
                 if self.match_value("KEYWORD", "is"):
-                    model_tok = self.consume_any({"STRING", "IDENT", "KEYWORD"})
-                else:
-                    model_tok = self.consume_any({"STRING", "IDENT", "KEYWORD"})
+                    pass
+                model_tok = self.consume_any({"STRING", "IDENT", "KEYWORD"})
                 model_name = model_tok.value
-            elif field == "description":
-                if self.match_value("KEYWORD", "is"):
-                    desc_tok = self.consume("STRING")
-                else:
-                    desc_tok = self.consume("STRING")
-                description = desc_tok.value
-            elif field == "max_nodes":
-                if self.match_value("KEYWORD", "is"):
-                    max_tok = self.consume_any({"STRING", "IDENT", "KEYWORD"})
-                else:
-                    max_tok = self.consume_any({"STRING", "IDENT", "KEYWORD"})
-                max_nodes = max_tok.value
-            elif field == "span_nodes":
-                if self.match_value("KEYWORD", "is"):
-                    span_tok = self.consume_any({"STRING", "IDENT", "KEYWORD"})
-                else:
-                    span_tok = self.consume_any({"STRING", "IDENT", "KEYWORD"})
-                span_nodes = span_tok.value
             else:
                 raise self.error(f"Unexpected field '{field}' in graph_summary block", field_tok)
             self.optional_newline()
@@ -175,10 +201,9 @@ def parse_graph_summary(self) -> ast_nodes.GraphSummaryDecl:
     self.optional_newline()
     return ast_nodes.GraphSummaryDecl(
         name=name.value or "",
-        vector_store=vector_store,
+        graph=graph,
+        method=method,
+        max_nodes_per_summary=max_nodes_per_summary,
         model=model_name,
-        description=description,
-        max_nodes=max_nodes,
-        span_nodes=span_nodes,
         span=self._span(start),
     )

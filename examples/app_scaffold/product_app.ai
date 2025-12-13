@@ -1,4 +1,4 @@
-use macro "app_scaffold" with:
+use macro is "app_scaffold" with:
   entity is "Product"
 
   fields:

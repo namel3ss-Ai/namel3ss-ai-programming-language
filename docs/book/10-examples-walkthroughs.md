@@ -10,7 +10,7 @@ tool is "get_weather":
   kind is "http_json"
   method is "GET"
   url is "https://api.example.com/weather"
-  query:
+  query is:
     city: input.city
 
 flow is "weather_now":

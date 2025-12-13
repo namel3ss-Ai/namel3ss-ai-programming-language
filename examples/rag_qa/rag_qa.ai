@@ -12,9 +12,13 @@ frame is "documents":
   table is "documents"
 
 frame is "eval_questions":
-  source:
-    from file "examples/rag_qa/data/eval_questions.csv"
-    has headers
+  file is "examples/rag_qa/data/eval_questions.csv"
+  has headers
+  fields:
+    question:
+      type is "string"
+    expected_answer:
+      type is "string"
 
 vector_store is "kb":
   backend is "memory"
@@ -48,7 +52,7 @@ rag evaluation is "support_eval":
     - answer_completeness
 
 flow is "ingest_documents":
-  description "Seed a couple of docs and build the vector index."
+  description is "Seed a couple of docs and build the vector index."
   step is "insert_intro":
     kind is "frame_insert"
     frame is "documents"
@@ -68,7 +72,7 @@ flow is "ingest_documents":
     vector_store is "kb"
 
 flow is "ask":
-  description "Call the RAG pipeline to rewrite, retrieve, and answer."
+  description is "Call the RAG pipeline to rewrite, retrieve, and answer."
   step is "answer":
     kind is "rag_query"
     pipeline is "kb_qa"

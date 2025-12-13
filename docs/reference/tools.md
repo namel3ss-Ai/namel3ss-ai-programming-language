@@ -10,7 +10,7 @@ tool is "weather_api":
   headers:
     Accept: "application/json"
     x-api-key: secret.WEATHER_API_KEY
-  query:
+  query is:
     city: input.city
   timeout is 5 seconds
   retry:

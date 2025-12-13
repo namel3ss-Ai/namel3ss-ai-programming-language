@@ -1,4 +1,4 @@
-use macro "crud_ui" with:
+use macro is "crud_ui" with:
   entity is "Product"
   fields:
     field is "name":

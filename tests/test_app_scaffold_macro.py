@@ -1,7 +1,7 @@
 from textwrap import dedent
 
 from namel3ss import parser
-from namel3ss.ast_nodes import AgentDecl, FlowDecl, PageDecl, RecordDecl, VectorStoreDecl
+from namel3ss.ast_nodes import FlowDecl, PageDecl, RecordDecl
 from namel3ss.macros import MacroExpander
 
 
@@ -32,6 +32,3 @@ def test_app_scaffold_expands_full_stack():
     assert any(isinstance(d, RecordDecl) and d.name == "Product" for d in decls)
     assert any(isinstance(d, FlowDecl) and d.name == "list_products" for d in decls)
     assert any(isinstance(d, PageDecl) and d.name == "products_list" for d in decls)
-    assert any(isinstance(d, VectorStoreDecl) and d.name == "product_kb" for d in decls)
-    assert any(getattr(d, "name", None) == "product_kb_pipeline" for d in decls)
-    assert any(isinstance(d, AgentDecl) and d.name == "product_support_agent" for d in decls)

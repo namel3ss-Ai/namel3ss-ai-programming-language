@@ -5,14 +5,20 @@ ai is "product_answer":
   model is "demo-llm"
 
 frame is "product_table":
-  source:
-    from file "examples/multimodal_rag_demo/data/products.csv"
-    has headers
-  table:
-    primary_key is "product_id"
-    display_columns are ["name", "category"]
-    text_column is "description"
-    image_column is "image_url"
+  file is "examples/multimodal_rag_demo/data/products.csv"
+  has headers
+  primary_key is "product_id"
+  fields:
+    product_id:
+      type is "string"
+    name:
+      type is "string"
+    category:
+      type is "string"
+    description:
+      type is "string"
+    image_url:
+      type is "string"
 
 vector_store is "product_vectors":
   backend is "memory"
@@ -46,7 +52,7 @@ rag pipeline is "product_rag":
     ai is "product_answer"
 
 flow is "product_query":
-  description "Blend table lookup, summaries, and multimodal embeds for product questions."
+  description is "Blend table lookup, summaries, and multimodal embeds for product questions."
   step is "answer":
     kind is "rag_query"
     pipeline is "product_rag"

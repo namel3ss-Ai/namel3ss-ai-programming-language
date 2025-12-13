@@ -11,10 +11,9 @@ def test_frame_with_table_block_parses():
     src = dedent(
         '''
     frame is "orders":
-      source:
-        from file "tests/fixtures/sales.csv"
-        has headers
-      table:
+      file is "tests/fixtures/sales.csv"
+      has headers
+      table is:
         primary_key is "id"
         display_columns are ["customer_name", "status"]
         time_column is "created_at"
@@ -63,10 +62,9 @@ def test_rag_stages_parse_with_table_and_multimodal():
         text_column is "description"
 
     frame is "orders":
-      source:
-        from file "tests/fixtures/sales.csv"
-        has headers
-      table:
+      file is "tests/fixtures/sales.csv"
+      has headers
+      table is:
         primary_key is "id"
         display_columns are ["customer_name", "status"]
 

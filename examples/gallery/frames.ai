@@ -1,9 +1,13 @@
 frame is "sales_data":
-  source:
-    from file "sales.csv"
-    has headers
-  select:
-    columns are ["region", "revenue", "country"]
+  file is "sales.csv"
+  has headers
+  fields:
+    region:
+      type is "string"
+    revenue:
+      type is "number"
+    country:
+      type is "string"
 
 flow is "be_revenue":
   step is "filter":

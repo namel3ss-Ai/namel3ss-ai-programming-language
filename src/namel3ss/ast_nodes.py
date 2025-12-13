@@ -1344,15 +1344,30 @@ class ToolDeclaration:
     variables: Dict[str, Expr] = field(default_factory=dict)
     input_fields: list[str] = field(default_factory=list)
     timeout: Expr | None = None
+    timeout_expr: Expr | None = None
     retry: ToolRetryConfig | None = None
     auth: ToolAuthConfig | None = None
     response_schema: ResponseSchema | None = None
     logging: str | None = None
+    logging_level: str | None = None
     rate_limit: ToolRateLimitConfig | None = None
     multipart: Expr | None = None
+    multipart_expr: Expr | None = None
     query_encoding: str | None = None
     function: str | None = None
+    function_path: str | None = None
     span: Optional[Span] = None
+
+    def __post_init__(self) -> None:
+        # Align aliases passed by the parser with legacy attributes.
+        if self.timeout is None and self.timeout_expr is not None:
+            self.timeout = self.timeout_expr
+        if self.multipart is None and self.multipart_expr is not None:
+            self.multipart = self.multipart_expr
+        if self.logging is None and self.logging_level is not None:
+            self.logging = self.logging_level
+        if self.function is None and self.function_path is not None:
+            self.function = self.function_path
 
 
 @dataclass

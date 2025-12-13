@@ -1,26 +1,26 @@
 app is "docs":
-  entry_page "home"
+  entry_page is "home"
 
-page is "home":
-  route "/"
-  section "upload":
-    component "file-upload":
-      value "Upload a document"
-  section "query":
-    component "form":
-      value "Enter your question"
-
-model "default":
-  provider "dummy"
+model is "default":
+  provider is "dummy"
 
 ai is "rewrite":
-  model "default"
+  model is "default"
+  system is "Answer with evidence from documents."
   input from user_input
 
 flow is "answer":
-  step "rewrite":
-    kind "ai"
-    target "rewrite"
-  step "echo":
-    kind "tool"
-    target "echo"
+  step is "rewrite":
+    kind is "ai"
+    target is "rewrite"
+  step is "echo":
+    kind is "tool"
+    target is "echo"
+
+page is "home" at "/":
+  section is "upload":
+    component "file-upload":
+      value is "Upload a document"
+  section is "query":
+    component "form":
+      value is "Enter your question"

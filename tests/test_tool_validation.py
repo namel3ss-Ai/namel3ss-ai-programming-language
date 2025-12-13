@@ -19,7 +19,7 @@ def test_valid_tool_and_registry():
           kind is "http_json"
           method is "GET"
           url is "https://api.example.com/weather"
-          query:
+          query is:
             city: input.city
         '''
     )
@@ -49,9 +49,9 @@ def test_valid_tool_and_registry():
 def test_missing_kind_errors():
     code = dedent(
         '''
-        tool is \"get_weather":
-          method "GET"
-          url "https://api.example.com/weather"
+        tool is "get_weather":
+          method is "GET"
+          url is "https://api.example.com/weather"
         '''
     )
     with pytest.raises(IRError) as exc:
@@ -62,10 +62,10 @@ def test_missing_kind_errors():
 def test_invalid_kind_errors():
     code = dedent(
         '''
-        tool is \"get_weather":
-          kind "xyz"
-          method "GET"
-          url "https://api.example.com/weather"
+        tool is "get_weather":
+          kind is "xyz"
+          method is "GET"
+          url is "https://api.example.com/weather"
         '''
     )
     with pytest.raises(IRError) as exc:
@@ -76,9 +76,9 @@ def test_invalid_kind_errors():
 def test_missing_method_errors():
     code = dedent(
         '''
-        tool is \"get_weather":
-          kind "http_json"
-          url "https://api.example.com/weather"
+        tool is "get_weather":
+          kind is "http_json"
+          url is "https://api.example.com/weather"
         '''
     )
     with pytest.raises(IRError) as exc:
@@ -89,10 +89,10 @@ def test_missing_method_errors():
 def test_invalid_method_errors():
     code = dedent(
         '''
-        tool is \"get_weather":
-          kind "http_json"
-          method "TRACE"
-          url "https://api.example.com/weather"
+        tool is "get_weather":
+          kind is "http_json"
+          method is "TRACE"
+          url is "https://api.example.com/weather"
         '''
     )
     with pytest.raises(IRError) as exc:
@@ -103,9 +103,9 @@ def test_invalid_method_errors():
 def test_missing_url_errors():
     code = dedent(
         '''
-        tool is \"get_weather":
-          kind "http_json"
-          method "GET"
+        tool is "get_weather":
+          kind is "http_json"
+          method is "GET"
         '''
     )
     with pytest.raises(IRError) as exc:
@@ -116,10 +116,10 @@ def test_missing_url_errors():
 def test_duplicate_tool_errors():
     code = dedent(
         '''
-        tool is \"get_weather":
-          kind "http_json"
-          method "GET"
-          url "https://api.example.com/weather"
+        tool is "get_weather":
+          kind is "http_json"
+          method is "GET"
+          url is "https://api.example.com/weather"
 
         tool is "get_weather":
           kind is "http_json"

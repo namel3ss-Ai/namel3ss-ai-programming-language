@@ -209,8 +209,16 @@ class Parser:
     parse_english_component = decl_ui.parse_english_component
     parse_tool = decl_tool.parse_tool
     parse_tool_evaluation = decl_tool.parse_tool_evaluation
+    _parse_tool_retry_block = decl_tool._parse_tool_retry_block
+    _parse_retry_block = decl_tool._parse_retry_block
+    _parse_tool_auth_block = decl_tool._parse_tool_auth_block
+    _parse_auth_block = decl_tool._parse_auth_block
+    _parse_tool_rate_limit_block = decl_tool._parse_tool_rate_limit_block
+    _parse_rate_limit_block = decl_tool._parse_rate_limit_block
+    _parse_response_schema = decl_tool._parse_response_schema
     parse_rag_evaluation = decl_rag.parse_rag_evaluation
     parse_rag_pipeline = decl_rag.parse_rag_pipeline
+    _parse_rag_stage = decl_rag._parse_rag_stage
     parse_vector_store = decl_storage.parse_vector_store
     parse_frame = decl_storage.parse_frame
     parse_graph = decl_graph.parse_graph

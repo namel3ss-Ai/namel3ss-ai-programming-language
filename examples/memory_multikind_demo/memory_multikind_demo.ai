@@ -27,12 +27,12 @@ ai is "travel_planner":
   memory:
     kinds:
       short_term:
-        pipeline:
+        pipeline is:
           step is "summarise_short_term":
             type is "llm_summariser"
             target_kind is "episodic"
       profile:
-        pipeline:
+        pipeline is:
           step is "extract_profile_facts":
             type is "llm_fact_extractor"
     recall:

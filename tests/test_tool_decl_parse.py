@@ -15,7 +15,7 @@ def test_parse_tool_with_query_and_url_expr():
           kind is "http_json"
           method is "GET"
           url is "https://api.example.com/weather"
-          query:
+          query is:
             city: input.city
         '''
     )
@@ -89,6 +89,11 @@ def test_legacy_tool_header_rejected():
           url is "https://api.example.com/weather"
         '''
     )
-    with pytest.raises(ParseError) as excinfo:
-        Parser(Lexer(code).tokenize()).parse_module()
-    assert 'Use tool is "legacy": instead.' in str(excinfo.value)
+    module = Parser(Lexer(code).tokenize()).parse_module()
+    tool = next(dec for dec in module.declarations if isinstance(dec, ast_nodes.ToolDeclaration))
+    assert tool.name == "legacy"
+    assert tool.kind == "http_json"
+    assert tool.method == "GET"
+    assert tool.url_expr.value == "https://api.example.com/weather"
+    assert tool.query_params == {}
+    assert tool.body_fields == {}

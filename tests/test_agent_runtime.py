@@ -76,7 +76,7 @@ def test_agent_runs_ai_with_tools_and_tool_loop(monkeypatch):
           kind is "http_json"
           method is "GET"
           url is "https://api.example.com/weather"
-          query:
+          query is:
             city: input.city
 
         ai is "support_agent":

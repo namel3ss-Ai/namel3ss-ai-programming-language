@@ -17,8 +17,8 @@ ai is "rewrite":
 
 flow is "answer":
   step is "rewrite":
-    kind "ai"
-    target "rewrite"
+    kind is "ai"
+    target is "rewrite"
   step is "echo":
-    kind "tool"
-    target "echo"
+    kind is "tool"
+    target is "echo"

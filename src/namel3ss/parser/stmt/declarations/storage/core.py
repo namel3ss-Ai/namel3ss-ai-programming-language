@@ -21,20 +21,16 @@ def parse_vector_store(self) -> ast_nodes.VectorStoreDecl:
     self.consume("INDENT")
     backend = None
     frame_name = None
-    index_name = None
-    index_id = None
-    embeddings_model = None
-    dimensions = None
-    distance_metric = None
+    text_column = None
+    id_column = None
+    embedding_model = None
     metadata_columns = None
     allowed_fields = {
         "backend",
         "frame",
-        "index_name",
-        "index_id",
-        "embeddings_model",
-        "dimensions",
-        "distance_metric",
+        "text_column",
+        "id_column",
+        "embedding_model",
         "metadata_columns",
     }
     while not self.check("DEDENT"):
@@ -56,36 +52,24 @@ def parse_vector_store(self) -> ast_nodes.VectorStoreDecl:
             else:
                 frame_tok = self.consume_any({"STRING", "IDENT", "KEYWORD"})
             frame_name = frame_tok.value
-        elif field == "index_name":
+        elif field == "text_column":
             if self.match_value("KEYWORD", "is"):
-                idx_tok = self.consume_any({"STRING", "IDENT", "KEYWORD"})
+                text_tok = self.consume_any({"STRING", "IDENT", "KEYWORD"})
             else:
-                idx_tok = self.consume_any({"STRING", "IDENT", "KEYWORD"})
-            index_name = idx_tok.value
-        elif field == "index_id":
+                text_tok = self.consume_any({"STRING", "IDENT", "KEYWORD"})
+            text_column = text_tok.value
+        elif field == "id_column":
             if self.match_value("KEYWORD", "is"):
-                idx_tok = self.consume_any({"STRING", "IDENT", "KEYWORD"})
+                id_tok = self.consume_any({"STRING", "IDENT", "KEYWORD"})
             else:
-                idx_tok = self.consume_any({"STRING", "IDENT", "KEYWORD"})
-            index_id = idx_tok.value
-        elif field == "embeddings_model":
+                id_tok = self.consume_any({"STRING", "IDENT", "KEYWORD"})
+            id_column = id_tok.value
+        elif field == "embedding_model":
             if self.match_value("KEYWORD", "is"):
                 emb_tok = self.consume_any({"STRING", "IDENT", "KEYWORD"})
             else:
                 emb_tok = self.consume_any({"STRING", "IDENT", "KEYWORD"})
-            embeddings_model = emb_tok.value
-        elif field == "dimensions":
-            if self.match_value("KEYWORD", "is"):
-                dim_tok = self.consume_any({"STRING", "IDENT", "KEYWORD"})
-            else:
-                dim_tok = self.consume_any({"STRING", "IDENT", "KEYWORD"})
-            dimensions = dim_tok.value
-        elif field == "distance_metric":
-            if self.match_value("KEYWORD", "is"):
-                dist_tok = self.consume_any({"STRING", "IDENT", "KEYWORD"})
-            else:
-                dist_tok = self.consume_any({"STRING", "IDENT", "KEYWORD"})
-            distance_metric = dist_tok.value
+            embedding_model = emb_tok.value
         elif field == "metadata_columns":
             if self.match_value("KEYWORD", "are"):
                 self.consume_any({"KEYWORD"})
@@ -108,12 +92,10 @@ def parse_vector_store(self) -> ast_nodes.VectorStoreDecl:
         name=name.value or "",
         backend=backend,
         frame=frame_name,
-        index_name=index_name,
-        index_id=index_id,
-        embeddings_model=embeddings_model,
-        dimensions=dimensions,
-        distance_metric=distance_metric,
-        metadata_columns=metadata_columns,
+        text_column=text_column,
+        id_column=id_column,
+        embedding_model=embedding_model,
+        metadata_columns=metadata_columns or [],
         span=self._span(start),
     )
 
@@ -138,6 +120,7 @@ def parse_frame(self) -> ast_nodes.FrameDecl:
     delimiter = None
     has_headers: bool | None = None
     fields: list[ast_nodes.FrameFieldDecl] = []
+    table_config: ast_nodes.FrameTableConfig | None = None
     allowed_fields = {
         "source",
         "backend",
@@ -187,11 +170,64 @@ def parse_frame(self) -> ast_nodes.FrameDecl:
             source = file_tok.value
         elif field == "table":
             self.consume("KEYWORD", "table")
-            if self.match_value("KEYWORD", "is"):
-                table_tok = self.consume_any({"STRING", "IDENT", "KEYWORD"})
+            self.match_value("KEYWORD", "is")
+            if self.match("COLON"):
+                self.consume("NEWLINE")
+                self.consume("INDENT")
+                pk = None
+                display_columns: list[str] = []
+                time_col = None
+                text_col = None
+                image_col = None
+                while not self.check("DEDENT"):
+                    if self.match("NEWLINE"):
+                        continue
+                    prop_tok = self.consume_any({"KEYWORD", "IDENT"})
+                    if prop_tok.value == "primary_key":
+                        if self.match_value("KEYWORD", "is"):
+                            pass
+                        pk_tok = self.consume_any({"STRING", "IDENT", "KEYWORD"})
+                        pk = pk_tok.value
+                    elif prop_tok.value == "display_columns":
+                        if self.match_value("KEYWORD", "is") or self.match_value("KEYWORD", "are"):
+                            pass
+                        cols_expr = self.parse_expression()
+                        if isinstance(cols_expr, ast_nodes.ListLiteral):
+                            display_columns = [
+                                el.value for el in cols_expr.items if isinstance(el, ast_nodes.Literal)
+                            ]
+                    elif prop_tok.value == "time_column":
+                        if self.match_value("KEYWORD", "is"):
+                            pass
+                        time_tok = self.consume_any({"STRING", "IDENT", "KEYWORD"})
+                        time_col = time_tok.value
+                    elif prop_tok.value == "text_column":
+                        if self.match_value("KEYWORD", "is"):
+                            pass
+                        text_tok = self.consume_any({"STRING", "IDENT", "KEYWORD"})
+                        text_col = text_tok.value
+                    elif prop_tok.value == "image_column":
+                        if self.match_value("KEYWORD", "is"):
+                            pass
+                        img_tok = self.consume_any({"STRING", "IDENT", "KEYWORD"})
+                        image_col = img_tok.value
+                    else:
+                        raise self.error(f"Unexpected field '{prop_tok.value}' in table block", prop_tok)
+                    self.optional_newline()
+                self.consume("DEDENT")
+                table_config = ast_nodes.FrameTableConfig(
+                    primary_key=pk,
+                    display_columns=display_columns,
+                    time_column=time_col,
+                    text_column=text_col,
+                    image_column=image_col,
+                    span=self._span(tok),
+                )
+                if primary_key is None and pk is not None:
+                    primary_key = pk
             else:
                 table_tok = self.consume_any({"STRING", "IDENT", "KEYWORD"})
-            table = table_tok.value
+                table = table_tok.value
         elif field == "primary_key":
             self.consume("KEYWORD", "primary_key")
             pk_tok = self.consume_any({"STRING", "IDENT", "KEYWORD"})
@@ -282,5 +318,6 @@ def parse_frame(self) -> ast_nodes.FrameDecl:
         primary_key=primary_key,
         delimiter=delimiter,
         has_headers=has_headers,
+        table_config=table_config,
         span=self._span(start),
     )

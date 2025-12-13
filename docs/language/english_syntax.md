@@ -238,16 +238,16 @@ ai is "support_bot":
 memory:
   kinds:
     short_term:
-      pipeline:
+      pipeline is:
         step is "summarise_short":
           type is "llm_summariser"
           target_kind is "episodic"
     profile:
-      pipeline:
+      pipeline is:
         step is "extract_user_facts":
           type is "llm_fact_extractor"
     semantic:
-      pipeline:
+      pipeline is:
         step is "vectorise_memories":
           type is "vectoriser"
           embedding_model is "default_embedding"
@@ -402,7 +402,7 @@ Vector stores index a frame for retrieval:
 frame is "documents":
   backend is "memory"
   table is "documents"
-  table:
+  table is:
     primary_key is "id"
     display_columns are ["title", "category"]
     text_column is "content"

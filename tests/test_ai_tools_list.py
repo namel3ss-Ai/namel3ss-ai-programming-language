@@ -14,7 +14,7 @@ def test_ai_with_tools_list_parses_and_validates():
           kind is "http_json"
           method is "GET"
           url is "https://api.example.com/weather"
-          query:
+          query is:
             city: input.city
 
         model is "gpt-4.1-mini":

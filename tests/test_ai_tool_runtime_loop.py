@@ -93,7 +93,7 @@ def test_ai_tool_loop_happy_path(monkeypatch):
           kind is "http_json"
           method is "GET"
           url is "https://api.example.com/weather"
-          query:
+          query is:
             city: input.city
 
         ai is "assistant_with_tools":
@@ -141,7 +141,7 @@ def test_ai_tool_loop_unknown_tool_errors(monkeypatch):
           kind is "http_json"
           method is "GET"
           url is "https://api.example.com/weather"
-          query:
+          query is:
             city: input.city
 
         ai is "assistant_with_tools":

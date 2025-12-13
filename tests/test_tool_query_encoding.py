@@ -36,7 +36,7 @@ def _run_and_capture(url_mode: str):
           kind is "http_json"
           method is "GET"
           url is "https://api.example.com/search"
-          query:
+          query is:
             ids: [1, 2, 3]
           query_encoding is "{url_mode}"
 

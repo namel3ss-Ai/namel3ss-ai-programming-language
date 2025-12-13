@@ -1,22 +1,21 @@
 app is "hello":
-  entry_page "home"
+  entry_page is "home"
 
-page is "home":
-  route "/"
-  section "hero":
-    component "text":
-      value "Welcome to Namel3ss"
-    component "form":
-      value "Enter your name"
-
-model "default":
-  provider "dummy"
+model is "default":
+  provider is "dummy"
 
 ai is "greet":
-  model "default"
+  model is "default"
   input from user_input
 
 flow is "pipeline":
-  step "call":
-    kind "ai"
-    target "greet"
+  step is "call":
+    kind is "ai"
+    target is "greet"
+
+page is "home" at "/":
+  section is "hero":
+    component "text":
+      value is "Welcome to Namel3ss"
+    component "form":
+      value is "Enter your name"

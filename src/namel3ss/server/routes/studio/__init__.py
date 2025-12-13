@@ -72,6 +72,7 @@ def build_studio_router(
         log_buffer=log_buffer,
         studio_status_payload=studio_status_payload,
         get_program=_get_program,
+        project_program=project_program,
         build_project_engine=build_project_engine,
         parse_source_to_ir=parse_source_to_ir,
         build_canvas_manifest_fn=build_canvas_manifest_fn,

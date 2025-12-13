@@ -38,7 +38,7 @@ def test_tool_flow_runtime_success(monkeypatch):
           kind is "http_json"
           method is "GET"
           url is "https://api.example.com/weather"
-          query:
+          query is:
             city: input.city
 
         flow is "check_weather":
@@ -96,7 +96,7 @@ def test_tool_flow_runtime_missing_arg_errors(monkeypatch):
           kind is "http_json"
           method is "GET"
           url is "https://api.example.com/weather"
-          query:
+          query is:
             city: input.city
 
         flow is "check_weather":
@@ -120,7 +120,7 @@ def test_tool_flow_runtime_http_error(monkeypatch):
           kind is "http_json"
           method is "GET"
           url is "https://api.example.com/weather"
-          query:
+          query is:
             city: input.city
 
         flow is "check_weather":

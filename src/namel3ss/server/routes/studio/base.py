@@ -29,6 +29,7 @@ def register_base_routes(
     log_buffer,
     studio_status_payload: Callable[[], Dict[str, Any]],
     get_program: Callable[..., Any],
+    project_program: Callable[[], Any],
     build_project_engine: Callable[[Any], Any],
     parse_source_to_ir: Callable[[str], Any],
     build_canvas_manifest_fn,

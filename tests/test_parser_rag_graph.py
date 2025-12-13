@@ -58,8 +58,8 @@ def test_graph_pipeline_stage_parses_and_validates():
         graph_summary is "gs"
 
     frame is "f":
-      source:
-        from file "tests/fixtures/sales.csv"
+      file is "tests/fixtures/sales.csv"
+      has headers
 
     graph is "g":
       from frame is "f"
@@ -88,8 +88,8 @@ def test_missing_graph_in_stage_raises():
         graph is "unknown"
 
     frame is "f":
-      source:
-        from file "tests/fixtures/sales.csv"
+      file is "tests/fixtures/sales.csv"
+      has headers
     '''
     )
     module = parse_source(src)

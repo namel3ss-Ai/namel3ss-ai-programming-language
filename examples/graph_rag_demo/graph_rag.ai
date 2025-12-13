@@ -6,11 +6,13 @@ ai is "graph_answer":
   system is "Answer with evidence from graph context, graph summaries, and retrieved passages."
 
 frame is "support_docs":
-  source:
-    from file "examples/graph_rag_demo/data/support_notes.csv"
-    has headers
-  select:
-    columns are ["id", "content"]
+  file is "examples/graph_rag_demo/data/support_notes.csv"
+  has headers
+  fields:
+    id:
+      type is "string"
+    content:
+      type is "string"
 
 graph is "support_graph":
   from frame is "support_docs"
@@ -60,7 +62,7 @@ rag pipeline is "support_graph_qa":
     ai is "graph_answer"
 
 flow is "graph_rag_demo":
-  description "Graph-enhanced QA that blends graph hops, graph summaries, and vector matches."
+  description is "Graph-enhanced QA that blends graph hops, graph summaries, and vector matches."
   step is "ask":
     kind is "rag_query"
     pipeline is "support_graph_qa"

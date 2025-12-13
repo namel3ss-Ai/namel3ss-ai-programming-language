@@ -1085,68 +1085,7 @@ class MacroExpander:
     def _generate_app_scaffold(self, args: Dict[str, Any]) -> str:
         entity, slug, plural, frame_name, id_field, field_specs = self._normalize_entity_fields(args)
         crud_lines = self._render_crud_scaffold(entity, slug, plural, frame_name, id_field, field_specs)
-
-        docs_frame = f"{slug}_docs"
-        vector_store = f"{slug}_kb"
-        pipeline = f"{slug}_kb_pipeline"
-        ai_name = f"{slug}_support_ai"
-        agent_name = f"{slug}_support_agent"
-        eval_frame = f"{slug}_eval_questions"
-        eval_name = f"{slug}_support_eval"
-        text_field = next(
-            (_sanitize_identifier(f.name) for f in field_specs if (f.field_type or "").lower() in {"string", "text"}),
-            "content",
-        )
-
-        rag_lines: list[str] = []
-        rag_lines.append(f'frame is "{docs_frame}":')
-        rag_lines.append('  backend is "memory"')
-        rag_lines.append(f'  table is "{docs_frame}"')
-        rag_lines.append("")
-
-        rag_lines.append(f'vector_store is "{vector_store}":')
-        rag_lines.append('  backend is "memory"')
-        rag_lines.append(f'  frame is "{docs_frame}"')
-        rag_lines.append(f'  text_column is "{text_field}"')
-        rag_lines.append(f'  id_column is "{id_field}"')
-        rag_lines.append('  embedding_model is "default_embedding"')
-        rag_lines.append("")
-
-        rag_lines.append(f'ai is "{ai_name}":')
-        rag_lines.append('  model is "gpt-4.1-mini"')
-        rag_lines.append('  provider is "openai_default"')
-        rag_lines.append("")
-
-        rag_lines.append(f'rag pipeline is "{pipeline}":')
-        rag_lines.append('  stage is "retrieve":')
-        rag_lines.append('    type is "vector_retrieve"')
-        rag_lines.append(f'    vector_store is "{vector_store}"')
-        rag_lines.append("    top_k is 5")
-        rag_lines.append('  stage is "answer":')
-        rag_lines.append('    type is "ai_answer"')
-        rag_lines.append(f'    ai is "{ai_name}"')
-        rag_lines.append("")
-
-        rag_lines.append(f'agent is "{agent_name}":')
-        rag_lines.append(f'  goal is "Help users with questions about {entity}."')
-        rag_lines.append(f'  personality is "You are a helpful support agent for {entity}."')
-        rag_lines.append("")
-
-        rag_lines.append(f'frame is "{eval_frame}":')
-        rag_lines.append('  backend is "memory"')
-        rag_lines.append(f'  table is "{eval_frame}"')
-        rag_lines.append("")
-
-        rag_lines.append(f'rag evaluation is "{eval_name}":')
-        rag_lines.append(f'  pipeline is "{pipeline}"')
-        rag_lines.append("  dataset:")
-        rag_lines.append(f'    from frame "{eval_frame}"')
-        rag_lines.append('    question_column is "question"')
-        rag_lines.append('    answer_column is "expected_answer"')
-        rag_lines.append("")
-
-        combined = "\n".join(crud_lines + rag_lines).strip() + "\n"
-        return combined
+        return "\n".join(crud_lines).strip() + "\n"
 
     def _generate_auth_ui_plan(self, args: Dict[str, Any]) -> MacroPlan:
         record_name = args.get("record") or args.get("entity") or "User"

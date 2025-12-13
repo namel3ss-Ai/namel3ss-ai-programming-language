@@ -328,19 +328,19 @@ ai is "support_bot":
   memory:
     kinds:
       short_term:
-        pipeline:
+        pipeline is:
           step is "summarise_short_term":
             type is "llm_summariser"
             max_tokens is 512
             target_kind is "episodic"
       profile:
         store is "user_profiles"
-        pipeline:
+        pipeline is:
           step is "extract_profile_facts":
             type is "llm_fact_extractor"
       semantic:
         store is "semantic_kb"
-        pipeline:
+        pipeline is:
           step is "prepare_semantic_vectors":
             type is "vectoriser"
             embedding_model is "travel-embed"
@@ -472,7 +472,7 @@ All of these surfaces honour the configured scopes, retention filtering, and PII
           backend is "postgres"
           url is env.DATABASE_URL
           table is "orders"
-        table:
+        table is:
           primary_key is "id"
           display_columns are ["customer_name", "total_amount", "status"]
           time_column is "created_at"

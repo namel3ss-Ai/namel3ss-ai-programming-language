@@ -16,4 +16,4 @@ ai is "greet":
 flow is "pipeline":
   step is "call":
     kind is "ai"
-    target "greet"
+    target is "greet"

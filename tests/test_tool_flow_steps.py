@@ -15,7 +15,7 @@ def test_parse_flow_tool_step_with_args():
           kind is "http_json"
           method is "GET"
           url is "https://api.example.com/weather"
-          query:
+          query is:
             city: input.city
 
         flow is "check_weather":
